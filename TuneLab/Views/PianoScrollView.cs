@@ -284,6 +284,7 @@ internal partial class PianoScrollView : View, IPianoScrollView
                 SynthesisStatus.SynthesisFailed => Colors.Red.Opacity(0.5).ToBrush(),
                 SynthesisStatus.SynthesisSucceeded => Colors.Green.Opacity(0.5).ToBrush(),
                 SynthesisStatus.Synthesizing => Colors.Orange.Opacity(0.5).ToBrush(),
+                SynthesisStatus.SynthesisHalfSuccessed => Colors.Orange.Opacity(0.5).ToBrush(),
                 _ => throw new UnreachableException(),
             };
             double left = TickAxis.Tick2X(tempoManager.GetTick(piece.StartTime()));
