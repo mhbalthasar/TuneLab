@@ -73,6 +73,7 @@ internal partial class PianoScrollView : View, IPianoScrollView
         mWaveformPhonemeResizeOperation = new(this);
         mSelectionOperation = new(this);
         mAnchorSelectOperation = new(this);
+        mAnchorDeleteOperation = new(this);
 
         mDependency.PartProvider.ObjectChanged.Subscribe(Update, s);
         mDependency.PartProvider.When(p => p.Modified).Subscribe(Update, s);
@@ -245,8 +246,6 @@ internal partial class PianoScrollView : View, IPianoScrollView
 
         // draw note
         double round = 4;
-        IBrush noteBrush = NoteColor.ToBrush();
-        IBrush selectedNoteBrush = SelectedNoteColor.ToBrush();
         IBrush lyricBrush = Colors.White.Opacity(0.7).ToBrush();
         IBrush pronunciationBrush = Style.LIGHT_WHITE.ToBrush();
         foreach (var note in Part.Notes)
@@ -258,7 +257,8 @@ internal partial class PianoScrollView : View, IPianoScrollView
                 break;
 
             var rect = this.NoteRect(note);
-            context.FillRectangle(note.IsSelected ? selectedNoteBrush : noteBrush, rect, (float)round);
+            //context.FillRectangle(getPartColor(Part.Track,note.IsSelected).ToBrush(), rect, (float)round);
+            context.FillRectangle((note.IsSelected?Style.HIGH_LIGHT:Style.ITEM).ToBrush(), rect, (float)round);
 
             rect = rect.Adjusted(8, -28, -8, 0);
             if (rect.Width <= 0)
@@ -469,36 +469,6 @@ internal partial class PianoScrollView : View, IPianoScrollView
         foreach (var pitchPoints in pitchLines)
         {
             context.DrawCurve(pitchPoints, pitchColor, thickness);
-        }
-
-        if (mDependency.PianoTool != PianoTool.Anchor)
-            return;
-
-        IBrush pointBrush = pitchColor.ToBrush();
-        IPen pointPen = new Pen(pointBrush);
-        foreach (var anchorGroup in Part.Pitch.AnchorGroups)
-        {
-            if (anchorGroup.End <= start)
-                continue;
-
-            if (anchorGroup.Start >= end)
-                break;
-
-            foreach (var anchor in anchorGroup)
-            {
-                if (anchor.Pos < start)
-                    continue;
-
-                if (anchor.Pos > end)
-                    break;
-
-                var center = new Point(TickAxis.Tick2X(pos + anchor.Pos), PitchAxis.Pitch2Y(anchor.Value + 0.5));
-                context.DrawEllipse(pointBrush, null, center, 2, 2);
-                if (!anchor.IsSelected)
-                    continue;
-
-                context.DrawEllipse(null, pointPen, center, 5.5, 5.5);
-            }
         }
     }
 
@@ -895,6 +865,18 @@ internal partial class PianoScrollView : View, IPianoScrollView
                     Part.Commit();
                 }
                 break;
+            case PianoTool.Anchor:
+                if (mSelection.IsAcitve)
+                {
+                    Part.ClearParameters(mSelection.Start - pos, mSelection.End - pos);
+                    Part.Commit();
+                }
+                else
+                {
+                    Part.Pitch.DeleteAllSelectedAnchors();
+                    Part.Commit();
+                }
+                break;
             case PianoTool.Select:
                 if (mSelection.IsAcitve)
                 {
@@ -1000,6 +982,13 @@ internal partial class PianoScrollView : View, IPianoScrollView
         mInputLyricNote = null;
     }
 
+    Color getPartColor(ITrack? track, bool isHighLight)
+    {
+        var color = track != null ? track.Color.Value : Style.TRACK_COLORS[0];
+        if (isHighLight) return new Color(color.A, (byte)(color.R + 40).Limit(0, 255), (byte)(color.G + 40).Limit(0, 255), (byte)(color.B + 40).Limit(0, 255));
+        return color;
+    }
+
     Rect LyricInputRect()
     {
         if (mInputLyricNote == null)
@@ -1024,8 +1013,6 @@ internal partial class PianoScrollView : View, IPianoScrollView
     Color WhiteKeyColor => GUI.Style.WHITE_KEY;
     Color BlackKeyColor => GUI.Style.BLACK_KEY;
     Color LineColor => GUI.Style.LINE;
-    Color NoteColor => GUI.Style.ITEM;
-    Color SelectedNoteColor => GUI.Style.HIGH_LIGHT;
     Color SelectionColor => GUI.Style.HIGH_LIGHT;
     const double MIN_GRID_GAP = 12;
     const double MIN_REALITY_GRID_GAP = MIN_GRID_GAP * 2;

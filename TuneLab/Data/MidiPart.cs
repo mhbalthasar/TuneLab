@@ -38,7 +38,7 @@ internal class MidiPart : Part, IMidiPart
     public IReadOnlyList<ISynthesisPiece> SynthesisPieces => mSynthesisPieces;
     public IReadOnlyDataObjectList<Vibrato> Vibratos => mVibratos;
 
-    public MidiPart(ITempoManager tempoManager, ITimeSignatureManager timeSignatureManager, MidiPartInfo info) : base(tempoManager, timeSignatureManager)
+    public MidiPart(ITrack track, MidiPartInfo info) : base(track)
     {
         mReSegmentMergeHandler = new(ReSegmentImpl);
         mPrepareMergeHandler = new(() => { foreach (var piece in mSynthesisPieces) piece.Prepare(); });
@@ -60,7 +60,7 @@ internal class MidiPart : Part, IMidiPart
         mPitchLine.RangeModified.Subscribe(OnPitchRangeModified);
         mNotes.ListModified.Subscribe(ReSegment);
         mVibratos.Any(vibrato => vibrato.RangeModified).Subscribe(OnPitchRangeModified);
-        tempoManager.Modified.Subscribe(ReGeneratePieces); // TODO: 改为tempoManager改变发出重分片信号
+        TempoManager.Modified.Subscribe(ReGeneratePieces); // TODO: 改为tempoManager改变发出重分片信号
         Pos.Modified.Subscribe(ReGeneratePieces); // TODO: 改为tempoManager改变发出重分片信号
         IDataObject<MidiPartInfo>.SetInfo(this, info);
     }
@@ -607,7 +607,7 @@ internal class MidiPart : Part, IMidiPart
     readonly NoteList mNotes;
     readonly DataObjectList<Vibrato> mVibratos;
     readonly DataObjectMap<string, IAutomation> mAutomations;
-    readonly piecewiseCurve mPitchLine;
+    readonly PiecewiseCurve mPitchLine;
     readonly Voice mVoice;
     readonly Voice mVoice2;
 

@@ -12,6 +12,7 @@ using TuneLab.Extensions.Formats.DataInfo;
 using TuneLab.Extensions.Voices;
 using TuneLab.Utils;
 using TuneLab.Base.Utils;
+using Avalonia.Media;
 
 namespace TuneLab.Data;
 
@@ -25,6 +26,7 @@ internal class Track : DataObject, ITrack
     public DataProperty<bool> IsSolo { get; }
     public DataProperty<double> Gain { get; }
     public DataProperty<double> Pan { get; }
+    public DataProperty<Color> Color { get; }
     public IReadOnlyDataObjectLinkedList<IPart> Parts => mParts;
 
     IDataProperty<string> ITrack.Name => Name;
@@ -35,6 +37,7 @@ internal class Track : DataObject, ITrack
 
     IDataProperty<double> ITrack.Gain => Gain;
     IDataProperty<double> ITrack.Pan => Pan;
+    IDataProperty<Color> ITrack.Color => Color;
 
     public Track(IProject project, TrackInfo info)
     {
@@ -44,10 +47,11 @@ internal class Track : DataObject, ITrack
         IsSolo = new DataStruct<bool>(this);
         Gain = new DataStruct<double>(this);
         Pan = new DataStruct<double>(this);
+        Color = new DataStruct<Color>(this);
         mParts = new();
         mParts.Attach(this);
 
-        mParts.ItemAdded.Subscribe(part => { part.Activate(); });
+        mParts.ItemAdded.Subscribe(part => { part.Track = this; part.Activate(); });
         mParts.ItemRemoved.Subscribe(part => { part.Deactivate(); });
 
         IDataObject<TrackInfo>.SetInfo(this, info);
@@ -65,12 +69,12 @@ internal class Track : DataObject, ITrack
 
     public MidiPart CreatePart(MidiPartInfo info)
     {
-        return new MidiPart(TempoManager, TimeSignatureManager, info);
+        return new MidiPart(this, info);
     }
 
     public AudioPart CreatePart(AudioPartInfo info)
     {
-        return new AudioPart(TempoManager, TimeSignatureManager, info);
+        return new AudioPart(this, info);
     }
 
     public Part CreatePart(PartInfo info)
@@ -110,6 +114,7 @@ internal class Track : DataObject, ITrack
             Solo = IsSolo,
             Gain = Gain,
             Pan = Pan,
+            Color = System.Drawing.Color.FromArgb(Color.Value.A,Color.Value.R,Color.Value.G,Color.Value.B),
             Parts = mParts.GetInfo().ToInfo()
         };
     }
@@ -122,6 +127,7 @@ internal class Track : DataObject, ITrack
         IDataObject<TrackInfo>.SetInfo(Gain, info.Gain);
         IDataObject<TrackInfo>.SetInfo(Pan, info.Pan);
         IDataObject<TrackInfo>.SetInfo(mParts, info.Parts.Convert(CreatePart).ToArray());
+        IDataObject<TrackInfo>.SetInfo(Color, new Color(info.Color.A,info.Color.R,info.Color.G,info.Color.B));
     }
 
     class PartList : DataObjectLinkedList<IPart>
