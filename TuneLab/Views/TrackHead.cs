@@ -30,7 +30,7 @@ internal class TrackHead : DockPanel
         mPanSlider.ValueChanged.Subscribe(() => { if (Track == null) return; var value = mPanSlider.Value; Track.Pan.Discard(); Track.Pan.Set(value); });
         mPanSlider.ValueCommited.Subscribe(() => { if (Track == null) return; var value = mPanSlider.Value; Track.Pan.Discard(); Track.Pan.Set(value); Track.Pan.Commit(); });
         mMuteToggle
-            .AddContent(new() { Item = new BorderItem() { CornerRadius = 3 }, CheckedColorSet = new() { Color = new(255, 0, 186, 173) }, UncheckedColorSet = new() { Color = Style.BACK } };
+            .AddContent(new() { Item = new BorderItem() { CornerRadius = 3 }, CheckedColorSet = new() { Color = new(255, 0, 186, 173) }, UncheckedColorSet = new() { Color = Style.BACK } })
             .AddContent(new() { Item = new IconItem() { Icon = GUI.Assets.M }, CheckedColorSet = new() { Color = Colors.White }, UncheckedColorSet = new() { Color = Style.LIGHT_WHITE } });
         mMuteToggle.Switched += () => { if (Track == null) return; Track.IsMute.Set(Track.Gain.GetInfo()<=mGainSlider.MinValue || mMuteToggle.IsChecked); Track.IsMute.Commit(); };
         mSoloToggle
@@ -47,7 +47,7 @@ internal class TrackHead : DockPanel
         {
             mIndexPanel.Children.Add(mIndexLabel);
             rightArea.AddDock(mIndexPanel);
-        }r
+        }
         this.AddDock(rightArea, Dock.Right);
         var topArea = new DockPanel() { Margin = new(12, 12, 12, 0) };
         {
@@ -74,7 +74,7 @@ internal class TrackHead : DockPanel
         var trackBarMenu = new ContextMenu();
         {
             {
-                var menuItem = new MenuItem().SetName("Move Up").SetAction(() =>
+                var menuItem = new MenuItem().SetName("Move Up".Tr(TC.Menu)).SetAction(() =>
                 {
                     var track = Track;
                     if (track == null)
@@ -105,7 +105,7 @@ internal class TrackHead : DockPanel
                 };
             }
             {
-                var menuItem = new MenuItem().SetName("Move Down").SetAction(() =>
+                var menuItem = new MenuItem().SetName("Move Down".Tr(TC.Menu)).SetAction(() =>
                 {
                     var track = Track;
                     if (track == null)
@@ -136,7 +136,7 @@ internal class TrackHead : DockPanel
                 };
             }
             {
-                var menuItem = new MenuItem().SetName("Set Color");
+                var menuItem = new MenuItem().SetName("Set Color".Tr(TC.Menu));
                 {
                     foreach (var color in Style.TRACK_COLORS)
                     {
