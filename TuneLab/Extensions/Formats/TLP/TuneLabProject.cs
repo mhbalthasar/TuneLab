@@ -70,7 +70,8 @@ internal class TuneLabProject : IImportFormat, IExportFormat
                     Gain = (double)track["gain"],
                     Pan = (double)track["pan"],
                     Mute = (bool)track["mute"],
-                    Solo = (bool)track["solo"]
+                    Solo = (bool)track["solo"],
+                    Color = (System.Drawing.Color)(track.ContainsKey("color") ? System.Drawing.Color.FromArgb((int)track["color"]) : System.Drawing.Color.FromArgb(255, 58, 63, 105))
                 };
 
                 var parts = track["parts"].ToArray();
@@ -87,6 +88,11 @@ internal class TuneLabProject : IImportFormat, IExportFormat
                         midiPartInfo.Properties = FromJson(part["properties"]);
                         midiPartInfo.Voice.Type = (string)part["voice"]["type"];
                         midiPartInfo.Voice.ID = (string)part["voice"]["id"];
+                        if (part.ContainsKey("voice2"))
+                        {
+                            midiPartInfo.Voice2.Type = (string)part["voice2"]["type"];
+                            midiPartInfo.Voice2.ID = (string)part["voice2"]["id"];
+                        }
 
                         var notes = part["notes"].ToArray();
                         foreach (JObject note in notes)
@@ -266,6 +272,7 @@ internal class TuneLabProject : IImportFormat, IExportFormat
             track.Add("pan", trackInfo.Pan);
             track.Add("mute", trackInfo.Mute);
             track.Add("solo", trackInfo.Solo);
+            track.Add("color", trackInfo.Color.ToArgb());
 
             var parts = new JArray();
             foreach (var partInfo in trackInfo.Parts)
@@ -283,6 +290,11 @@ internal class TuneLabProject : IImportFormat, IExportFormat
                     {
                         { "type", midiPartInfo.Voice.Type },
                         { "id", midiPartInfo.Voice.ID },
+                    });
+                    part.Add("voice2", new JObject()
+                    {
+                        { "type", midiPartInfo.Voice2.Type },
+                        { "id", midiPartInfo.Voice2.ID },
                     });
                     part.Add("properties", ToJson(midiPartInfo.Properties));
 

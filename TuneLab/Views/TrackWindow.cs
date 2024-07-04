@@ -16,6 +16,7 @@ using TuneLab.Base.Science;
 using TuneLab.GUI;
 using TuneLab.Utils;
 using TuneLab.Extensions.Formats.DataInfo;
+using TuneLab.I18N;
 
 namespace TuneLab.Views;
 
@@ -49,7 +50,7 @@ internal class TrackWindow : DockPanel, TimelineView.IDependency, TrackScrollVie
         mTickAxis = new();
         mTrackVerticalAxis = new(this);
 
-        mTrackHeadList = new(this) { Width = 200, Margin = new(1, 0) };
+        mTrackHeadList = new(this) { Width = 232, Margin = new(1, 0) };
         var headArea = new DockPanel();
         {
             var title = new DockPanel() { Height = 48, Background = Style.INTERFACE.ToBrush(), Margin = new(1, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
@@ -58,7 +59,7 @@ internal class TrackWindow : DockPanel, TimelineView.IDependency, TrackScrollVie
                 title.AddDock(border, Dock.Bottom);
                 var icon = new Image() { Source = Assets.Track.GetImage(Style.LIGHT_WHITE), Width = 24, Height = 24, Margin = new(16, 12, 12, 12) };
                 title.AddDock(icon, Dock.Left);
-                var name = new Label() { Content = "Track", FontSize = 16, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, Foreground = Style.TEXT_LIGHT.ToBrush() };
+                var name = new Label() { Content = "Track".Tr(TC.Dialog), FontSize = 16, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, Foreground = Style.TEXT_LIGHT.ToBrush() };
                 title.AddDock(name);
             }
             headArea.AddDock(title, Dock.Top);

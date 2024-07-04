@@ -247,8 +247,6 @@ internal partial class PianoScrollView : View, IPianoScrollView
 
         // draw note
         double round = 4;
-        IBrush noteBrush = NoteColor.ToBrush();
-        IBrush selectedNoteBrush = SelectedNoteColor.ToBrush();
         IBrush lyricBrush = Colors.White.Opacity(0.7).ToBrush();
         IBrush pronunciationBrush = Style.LIGHT_WHITE.ToBrush();
         foreach (var note in Part.Notes)
@@ -260,7 +258,8 @@ internal partial class PianoScrollView : View, IPianoScrollView
                 break;
 
             var rect = this.NoteRect(note);
-            context.FillRectangle(note.IsSelected ? selectedNoteBrush : noteBrush, rect, (float)round);
+            //context.FillRectangle(getPartColor(Part.Track,note.IsSelected).ToBrush(), rect, (float)round);
+            context.FillRectangle((note.IsSelected?Style.HIGH_LIGHT:Style.ITEM).ToBrush(), rect, (float)round);
 
             rect = rect.Adjusted(8, -28, -8, 0);
             if (rect.Width <= 0)
@@ -286,6 +285,7 @@ internal partial class PianoScrollView : View, IPianoScrollView
                 SynthesisStatus.SynthesisFailed => Colors.Red.Opacity(0.5).ToBrush(),
                 SynthesisStatus.SynthesisSucceeded => Colors.Green.Opacity(0.5).ToBrush(),
                 SynthesisStatus.Synthesizing => Colors.Orange.Opacity(0.5).ToBrush(),
+                SynthesisStatus.SynthesisHalfSuccessed => Colors.Orange.Opacity(0.5).ToBrush(),
                 _ => throw new UnreachableException(),
             };
             double left = TickAxis.Tick2X(tempoManager.GetTick(piece.StartTime()));
@@ -983,6 +983,13 @@ internal partial class PianoScrollView : View, IPianoScrollView
         mInputLyricNote = null;
     }
 
+    Color getPartColor(ITrack? track, bool isHighLight)
+    {
+        var color = track != null ? track.Color.Value : Style.TRACK_COLORS[0];
+        if (isHighLight) return new Color(color.A, (byte)(color.R + 40).Limit(0, 255), (byte)(color.G + 40).Limit(0, 255), (byte)(color.B + 40).Limit(0, 255));
+        return color;
+    }
+
     Rect LyricInputRect()
     {
         if (mInputLyricNote == null)
@@ -1007,8 +1014,6 @@ internal partial class PianoScrollView : View, IPianoScrollView
     Color WhiteKeyColor => GUI.Style.WHITE_KEY;
     Color BlackKeyColor => GUI.Style.BLACK_KEY;
     Color LineColor => GUI.Style.LINE;
-    Color NoteColor => GUI.Style.ITEM;
-    Color SelectedNoteColor => GUI.Style.HIGH_LIGHT;
     Color SelectionColor => GUI.Style.HIGH_LIGHT;
     const double MIN_GRID_GAP = 12;
     const double MIN_REALITY_GRID_GAP = MIN_GRID_GAP * 2;
