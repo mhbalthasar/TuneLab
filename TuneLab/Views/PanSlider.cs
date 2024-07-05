@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using TuneLab.Base.Science;
 using TuneLab.GUI;
 using TuneLab.GUI.Components;
+using TuneLab.I18N;
 using TuneLab.Utils;
 
 namespace TuneLab.Views;
@@ -31,7 +32,7 @@ internal class PanSlider : AbstractSlider
             string.Format("R+{0}", Value.ToString("f2")) :
             Value < 0 ?
             string.Format("L+{0}", (-Value).ToString("f2")) :
-            "Balance"
+            "Balance".Tr(TC.Tooltip)
             );
     }
 

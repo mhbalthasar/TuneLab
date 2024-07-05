@@ -14,6 +14,8 @@ using TuneLab.Base.Utils;
 using TuneLab.Utils;
 using TuneLab.Base.Science;
 using Avalonia.Controls.Primitives;
+using Slider = TuneLab.GUI.Components.Slider;
+using TuneLab.I18N;
 
 namespace TuneLab.Views;
 
@@ -34,7 +36,7 @@ internal class TrackHead : DockPanel
         mMuteToggle.Switched += () => { if (Track == null) return; Track.IsMute.Set(Track.Gain.GetInfo()<=mGainSlider.MinValue || mMuteToggle.IsChecked); Track.IsMute.Commit(); };
         mSoloToggle
             .AddContent(new() { Item = new BorderItem() { CornerRadius = 3 }, CheckedColorSet = new() { Color = new(255, 135, 84, 255) }, UncheckedColorSet = new() { Color = Style.BACK } })
-            .AddContent(new() { Item = new IconItem() { Icon = GUI.Assets.S }, CheckedColorSet = new() { Color = Colors.White }, UncheckedColorSet = new() { Color = Style.LIGHT_WHITE } });
+            .AddContent(new() { Item = new IconItem() { Icon = Assets.S }, CheckedColorSet = new() { Color = Colors.White }, UncheckedColorSet = new() { Color = Style.LIGHT_WHITE } });
         mSoloToggle.Switched += () => { if (Track == null) return; Track.IsSolo.Set(mSoloToggle.IsChecked); Track.IsSolo.Commit(); };
         mIndexLabel.EndInput.Subscribe(() => { if (Track == null) return; if (!int.TryParse(mIndexLabel.Text, out int newIndex)) mIndexLabel.Text = mTrackIndex.ToString(); newIndex = newIndex.Limit(1, Track.Project.Tracks.Count()); newIndex--; MoveToIndex(newIndex); });
         var leftArea = new DockPanel() { Margin = new(6, 2, 0, 3) };
@@ -73,7 +75,7 @@ internal class TrackHead : DockPanel
         var trackBarMenu = new ContextMenu();
         {
             {
-                var menuItem = new MenuItem().SetName("Move Up").SetAction(() =>
+                var menuItem = new MenuItem().SetName("Move Up".Tr(TC.Menu)).SetAction(() =>
                 {
                     var track = Track;
                     if (track == null)
@@ -104,7 +106,7 @@ internal class TrackHead : DockPanel
                 };
             }
             {
-                var menuItem = new MenuItem().SetName("Move Down").SetAction(() =>
+                var menuItem = new MenuItem().SetName("Move Down".Tr(TC.Menu)).SetAction(() =>
                 {
                     var track = Track;
                     if (track == null)
@@ -135,7 +137,7 @@ internal class TrackHead : DockPanel
                 };
             }
             {
-                var menuItem = new MenuItem().SetName("Set Color");
+                var menuItem = new MenuItem().SetName("Set Color".Tr(TC.Menu));
                 {
                     foreach (var color in Style.TRACK_COLORS)
                     {
@@ -186,7 +188,7 @@ internal class TrackHead : DockPanel
 
         var menu = new ContextMenu();
         {
-            var menuItem = new MenuItem().SetName("Export Audio").SetAction(async () =>
+            var menuItem = new MenuItem().SetName("Export Audio".Tr(TC.Menu)).SetAction(async () =>
             {
                 if (Track == null)
                     return;
@@ -197,11 +199,11 @@ internal class TrackHead : DockPanel
 
                 var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
                 {
-                    Title = "Save File",
+                    Title = "Save File".Tr(TC.Dialog),
                     DefaultExtension = ".wav",
                     SuggestedFileName = Track.Name.Value,
                     ShowOverwritePrompt = true,
-                    FileTypeChoices = [new("WAVE File") { Patterns = ["*.wav"] }]
+                    FileTypeChoices = [new("WAVE File".Tr(TC.Dialog)) { Patterns = ["*.wav"] }]
                 });
                 var result = file?.TryGetLocalPath();
                 if (result == null)
@@ -213,13 +215,13 @@ internal class TrackHead : DockPanel
                 }
                 catch (Exception ex)
                 {
-                    await this.ShowMessage("Error", "Export failed: \n" + ex.Message);
+                    await this.ShowMessage("Error".Tr(TC.Dialog), "Export failed: \n".Tr(TC.Dialog) + ex.Message);
                 }
             });
             menu.Items.Add(menuItem);
         }
         {
-            var menuItem = new MenuItem().SetName("Delete").SetAction(() =>
+            var menuItem = new MenuItem().SetName("Delete".Tr(TC.Menu)).SetAction(() =>
             {
                 if (Track == null)
                     return;
