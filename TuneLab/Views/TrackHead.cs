@@ -180,7 +180,7 @@ internal class TrackHead : DockPanel
                     if (Track == null)
                         return;
 
-                    menuItem.SetName(!Track.IsGuide.GetInfo() ? "Visible as Guide" : "Hidden as Guide");
+                    menuItem.SetName(!Track.IsGuide.GetInfo() ? "Visible as Guide".Tr(TC.Menu) : "Hidden as Guide".Tr(TC.Menu));
                 };
             }
         }

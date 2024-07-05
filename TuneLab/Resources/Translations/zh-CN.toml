@@ -118,6 +118,9 @@
 "Move Down" = "上移"
 "Set Color" = "设置颜色"
 
+"Visible as Guide" = "显示为参考轨"
+"Hidden as Guide" = "隐藏为参考轨"
+
 [Tooltip]
 "Balance" = "平衡"
 "Play" = "播放"
