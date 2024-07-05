@@ -13,6 +13,7 @@ using TuneLab.Data;
 using TuneLab.Base.Utils;
 using TuneLab.Utils;
 using TuneLab.Base.Science;
+using Avalonia.Controls.Primitives;
 using Slider = TuneLab.GUI.Components.Slider;
 using TuneLab.I18N;
 
@@ -155,13 +156,32 @@ internal class TrackHead : DockPanel
                         colorItem.Margin = new Avalonia.Thickness(5);
                         colorItem.SetAction(() =>
                         {
-                            Track.Color.Set((Color)colorItem.Tag);
+                            Track.Color.Set(((Color)colorItem.Tag).ToString());
                             Track.Color.Commit();
                         });
                         menuItem.Items.Add(colorItem);
                     }
                 }
                 trackBarMenu.Items.Add(menuItem);
+            }
+            {
+                var menuItem = new MenuItem().SetName("Guide Visible").SetAction(() =>
+                {
+                    var track = Track;
+                    if (track == null)
+                        return;
+
+                    track.IsGuide.Set(!track.IsGuide.GetInfo());
+                    track.IsGuide.Commit();
+                });
+                trackBarMenu.Items.Add(menuItem);
+                trackBarMenu.Opening += (s, e) =>
+                {
+                    if (Track == null)
+                        return;
+
+                    menuItem.SetName(!Track.IsGuide.GetInfo() ? "Visible as Guide" : "Hidden as Guide");
+                };
             }
         }
         rightArea.ContextMenu = trackBarMenu;
@@ -252,9 +272,9 @@ internal class TrackHead : DockPanel
             mSoloToggle.Display(Track.IsSolo.Value);
             AudioEngine.ProgressChanged += AudioEngine_ProgressChanged;
             AudioEngine.PlayStateChanged += AudioEngine_PlayStateChanged;
-            mIndexLabel.Background = Track.Color.Value.ToBrush();
-            mIndexPanel.Background = Track.Color.Value.ToBrush();
-            Track.Color.Modified.Subscribe(() => {mIndexLabel.Background = Track.Color.Value.ToBrush();mIndexPanel.Background = Track.Color.Value.ToBrush();});
+            mIndexLabel.Background = Track.GetColor().ToBrush();
+            mIndexPanel.Background = Track.GetColor().ToBrush();
+            Track.Color.Modified.Subscribe(() => {mIndexLabel.Background = Track.GetColor().ToBrush();mIndexPanel.Background = Track.GetColor().ToBrush();});
         }
     }
 

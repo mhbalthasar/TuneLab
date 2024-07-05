@@ -81,7 +81,8 @@ internal partial class PianoScrollView : View, IPianoScrollView
         mDependency.PartProvider.When(p => p.SynthesisStatusChanged).Subscribe(OnSynthesisStatusChanged, s);
         mDependency.PartProvider.When(p => p.Notes.SelectionChanged).Subscribe(InvalidateVisual, s);
         mDependency.PartProvider.When(p => p.Vibratos.Any(vibrato => vibrato.SelectionChanged)).Subscribe(InvalidateVisual, s);
-        mDependency.PartProvider.When(p => p.Pitch.Modified).Subscribe(InvalidateVisual, s);
+        mDependency.PartProvider.When(p => p.Pitch.Modified).Subscribe(InvalidateVisual, s); 
+        mDependency.PartProvider.When(p => p.Track.Project.Tracks.Any(track => track.IsGuide.Modified)).Subscribe(Update, s);
         mDependency.WaveformBottomChanged.Subscribe(InvalidateVisual, s);
         mDependency.PianoToolChanged.Subscribe(InvalidateVisual);
         TickAxis.AxisChanged += Update;
@@ -244,9 +245,36 @@ internal partial class PianoScrollView : View, IPianoScrollView
                 }
             }
         }
+        // draw guide note
+        if (Part.Track != null && Part.Track.Project != null)
+            foreach (var track in Part.Track.Project.Tracks)
+            {
+                if (track == Part.Track) continue;
+                if (!track.IsGuide.GetInfo()) continue;
+                double guideRound = 4;
+                IBrush guideBrush = getPartColor(track, false).ToBrush();
+                foreach (var part in track.Parts)
+                {
+                    if (part.EndPos() < minVisibleTick) continue;
+                    if (part.StartPos() > maxVisibleTick) continue;
+                    if (!(part is MidiPart midiPart)) continue;
+                    foreach(var note in midiPart.Notes)
+                    {
+                        if (note.GlobalEndPos() < minVisibleTick)
+                            continue;
 
+                        if (note.GlobalStartPos() > maxVisibleTick)
+                            break;
+
+                        var rect = this.GuideRect(note);
+                        context.FillRectangle(guideBrush, rect, (float)guideRound);
+                    }
+                }
+            }
         // draw note
         double round = 4;
+        IBrush noteBrush = Style.ITEM.ToBrush();
+        IBrush selectedNoteBrush = Style.HIGH_LIGHT.ToBrush();
         IBrush lyricBrush = Colors.White.Opacity(0.7).ToBrush();
         IBrush pronunciationBrush = Style.LIGHT_WHITE.ToBrush();
         foreach (var note in Part.Notes)
@@ -259,7 +287,7 @@ internal partial class PianoScrollView : View, IPianoScrollView
 
             var rect = this.NoteRect(note);
             //context.FillRectangle(getPartColor(Part.Track,note.IsSelected).ToBrush(), rect, (float)round);
-            context.FillRectangle((note.IsSelected?Style.HIGH_LIGHT:Style.ITEM).ToBrush(), rect, (float)round);
+            context.FillRectangle(note.IsSelected ? selectedNoteBrush : noteBrush, rect, (float)round);
 
             rect = rect.Adjusted(8, -28, -8, 0);
             if (rect.Width <= 0)
@@ -985,7 +1013,7 @@ internal partial class PianoScrollView : View, IPianoScrollView
 
     Color getPartColor(ITrack? track, bool isHighLight)
     {
-        var color = track != null ? track.Color.Value : Style.TRACK_COLORS[0];
+        var color = track != null ? track.GetColor() : Style.TRACK_COLORS[0];
         if (isHighLight) return new Color(color.A, (byte)(color.R + 40).Limit(0, 255), (byte)(color.G + 40).Limit(0, 255), (byte)(color.B + 40).Limit(0, 255));
         return color;
     }
