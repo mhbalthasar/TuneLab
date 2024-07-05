@@ -57,27 +57,17 @@ namespace TuneLab.GUI.Components
                 r.Width, r.Height * percent
                 );
         }
-        private bool isOverAmp(double Amplitude)
-        {
-            var maxValue = LevelUnit ? Db2Amp(mMaxAmpValue) : mMaxAmpValue;
-            var ampValue = LevelUnit ? Db2Amp(Amplitude) : Amplitude;
-            return ampValue > maxValue;
-        }
         public override void Render(DrawingContext context)
         {
             context.FillRectangle(Style.BACK.ToBrush(), this.Rect());//Bg
 
             Rect delayRect = AmpRect(mDelayAmpValue);
             Rect ampRect = AmpRect(mAmpValue);
+            context.FillRectangle(Style.AMP_DELAY.ToBrush(), delayRect);
 
-            Brush normalBrush = isOverAmp(mAmpValue) ? Style.AMP_OVERFLOW_NORMAL.ToBrush() : Style.AMP_NORMAL.ToBrush();
-            Brush delayBrush = isOverAmp(mDelayAmpValue) ? Style.AMP_OVERFLOW_DELAY.ToBrush() : Style.AMP_DELAY.ToBrush();
+            context.FillRectangle(Style.AMP_NORMAL.ToBrush(), ampRect);
 
-            context.FillRectangle(delayBrush, delayRect);
-
-            context.FillRectangle(normalBrush, ampRect);
-
-            if (delayRect.Height > 0) context.DrawLine(new Pen(normalBrush), delayRect.TopLeft, delayRect.TopRight);
+            if (delayRect.Height > 0) context.DrawLine(new Pen(Style.AMP_NORMAL.ToBrush()), delayRect.TopLeft, delayRect.TopRight);
         }
 
         public void Reset()
