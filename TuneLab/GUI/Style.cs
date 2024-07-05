@@ -31,6 +31,8 @@ internal static class Style
 
     public static readonly Color AMP_NORMAL = new(255, 102, 255, 51);
     public static readonly Color AMP_DELAY = new((int)(0.5 * 255), 102, 255, 51);
+    public static readonly Color AMP_OVERFLOW_NORMAL = new(255, 255, 102, 51);
+    public static readonly Color AMP_OVERFLOW_DELAY = new((int)(0.5 * 255), 255, 102, 51);
 
     public static readonly List<Color> TRACK_COLORS =
     [
