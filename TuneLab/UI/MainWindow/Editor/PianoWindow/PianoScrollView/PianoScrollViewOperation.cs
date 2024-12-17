@@ -231,7 +231,48 @@ internal partial class PianoScrollView
                                             });
                                             menu.Items.Add(menuItem);
                                         }
+                                        {
+                                            var allSelectedItem=Part.Notes.AllSelectedItems().ToArray();
+                                            bool isNeighbor = allSelectedItem.Length > 1;
+                                            if(isNeighbor)for(int i=1;i<allSelectedItem.Length;i++)
+                                            {
+                                                    var prev = allSelectedItem[i - 1];
+                                                    var cur = allSelectedItem[i];
+                                                    if (prev.NextInSegment != cur) { isNeighbor = false;break; }
+                                            }
+                                            if (isNeighbor)
+                                            {
+                                                var menuItem = new MenuItem().SetName("Merge".Tr(TC.Menu)).SetAction(() =>
+                                                {
+                                                    var baseNoteIndex = 0;
+                                                    while (true)
+                                                    {
+                                                        if (baseNoteIndex >= allSelectedItem.Length)
+                                                        {
+                                                            baseNoteIndex = 0;
+                                                            break;
+                                                        }
+                                                        if (allSelectedItem[baseNoteIndex].Lyric.Value != "-") break;
+                                                    }
 
+                                                    var info = allSelectedItem[baseNoteIndex].GetInfo();
+                                                    info.Pos = allSelectedItem.First().StartPos();
+                                                    info.Dur = allSelectedItem.Last().EndPos() - allSelectedItem.First().StartPos();
+
+                                                    Part.BeginMergeDirty();
+                                                    foreach (var note in allSelectedItem)
+                                                    {
+                                                        Part.RemoveNote(note);
+                                                    }
+                                                    Part.InsertNote(Part.CreateNote(info));
+                                                    Part.EndMergeDirty();
+                                                    Part.Commit();
+                                                    Part.Notes.DeselectAllItems();
+                                                });
+                                                menu.Items.Add(new Avalonia.Controls.Separator());
+                                                menu.Items.Add(menuItem);
+                                            }
+                                        }
                                         menu.Items.Add(new Avalonia.Controls.Separator());
                                         {
                                             var menuItem = new MenuItem().SetName("Copy".Tr(TC.Menu)).SetAction(Copy).SetInputGesture(Key.C, ModifierKeys.Ctrl);
