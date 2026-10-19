@@ -175,7 +175,8 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 - 所以 v1 的 `Device` 输出 = **绕过 Master、直接进默认设备**。实际用途是"把某条轨 / 某条 AUX 单独送出去"，
   与 Master 共用同一个物理设备（混在同一个流里）。**注意：它不经 Master 推子**，
   这一点必须在 UI 上可读（§6.4）。
-- 多设备留 v2：每个设备一个 sink + 漂移补偿。
+- 多设备留 v2：每个设备一个 sink + 漂移补偿。**用途明确是监听**（例如主输出走音箱、某条轨或某条 AUX
+  单独走耳机），不是"多房间扩声"；所以 v2 可以接受"监听端允许极少量丢补样"的简化漂移补偿。
 
 ### 4.5 daw_cable（保留）
 
@@ -311,39 +312,79 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 - 删除：AUX 条右键菜单 `删除此 AUX`（要确认，因为会改路由，§4.1）。
 - v1 只放调音台，不在编辑器轨道列表里重复开一个入口（两处 UI 容易两套状态）。
 
-## 7. 补丁层边界（本次最需要你拍板的事）
+## 7. 引擎放哪、怎么接（已定）
 
-v1 能"零冲突"，是因为它**只读宿主已有状态**。v2 要改引擎：图、设备 sink、插入宿主、工程格式。
-这些**不可能**塞进补丁层——补丁层碰不到宿主 internal 类型，更不该在别人的音频线程里跑 DSP。
+**决定**：引擎代码**放在 `ExperimentalPatch/` 下**，但是一个**独立工程**（`MixerEngine`），
+宿主反过来引用它，只在少数几个位置"接驳"。
 
-| 选项 | 做法 | 代价 |
-|---|---|---|
-| **A（推荐）** | 引擎进宿主（新目录 `TuneLab/Audio/Mixer/`、`TuneLab/Audio/Inserts/`，对 `AudioGraph` / `AudioEngine` 只做小改），**界面仍留补丁层** | 合并冲突从"零"变"中"（集中在 3~5 个核心文件）。但这是唯一能让补丁层继续只管 UI 的划法 |
-| B | 全塞补丁层 | 需要一个巨大的宿主契约（节点 / 缓冲 / DSP / 设备），等于把引擎重新暴露一遍；补丁层失去存在意义 |
-| C | 直接按上游特性做（PR 系列），补丁层只留实验性 UI | 最干净，但要先和上游维护者对齐（这是个大特性） |
+为什么这样放（而不是放进宿主目录）：
 
-**推荐 A，并承认**：这个特性已经不适合长期留在 `experimental` 分支上。
-它是"引擎特性 + 实验性界面"，最终应该走 C 进上游；A 只是让它在实验期能跑起来。
+1. 上游更新后 `ExperimentalPatch/` 整个目录不产生冲突——引擎和 UI 一样天然躲开合并；
+   冲突只剩宿主那几处接驳点，而接驳点是**带标记的小块**，重接成本可估。
+2. 引擎是纯 DSP + 图，**不引用宿主、不引用 Avalonia** → 可以独立单测。
+   这是最值钱的一条：环路检测、PDC、拓扑序、退化路径都能在没有音频设备的情况下验证。
+3. 依赖方向仍是单向的，与现有纪律同构：
 
-具体划法：
-- **补丁层**：调音台窗口、通道条、send / FX 浮窗、output 菜单、`+ AUX` 入口，以及 `IMixerModel` 的**消费**。
-- **宿主**：图的构建与渲染、PDC、设备 sink、插入宿主（VST2 / VST3 / JSFX）、
-  数据模型（AUX / Send / Insert）、工程格式、undo。
-- 契约只加"宿主 → 补丁"方向：`ProvideMixerModel` 返回的模型上多了路由 / 插入的读写口。
+```
+   TuneLab（宿主） ──引用──> ExperimentalPatch（UI 补丁）
+        │
+        └──────────引用──> ExperimentalPatch/MixerEngine（纯 DSP）
+                           ExperimentalPatch/InsertHost（VST/JSFX 适配）
 
-## 8. 宿主改动清单
+   两个补丁侧工程都不引用宿主。
+```
 
-| # | 位置 | 改动 | 冲突风险 |
-|---|---|---|---|
-| 1 | `TuneLab/Audio/Mixer/`（**新目录**） | 节点 / 边 / 快照 / 拓扑序 / PDC | 零（新文件） |
-| 2 | `TuneLab/Audio/Inserts/`（**新目录**） | `IInsertHost` + VST2 / VST3 / JSFX + 扫描缓存 | 零（新文件） |
-| 3 | `Audio/AudioGraph.cs` | `MixData` 改为"渲染图"；回调里的 `lock` 换快照；保留 `AddData` 给 stem 导出 / 电平 | **中**（核心文件） |
-| 4 | `Audio/AudioEngine.cs` | 设备 sink、Master 增益移进 Master 节点、Master 电平查询、导出走图 | **中**（核心文件） |
-| 5 | `Data/Track.cs` / `ITrack.cs` | 加 `Output` / `Sends` / `Inserts` | 中 |
-| 6 | `Data/Project.cs` | AUX 有序表 + 增删命令 | 中 |
-| 7 | `Data/NativeTrackInfo.cs` + `TuneLabProjectCbor.cs` | 序列化路由 / 插入；**版本 +1** | 中（格式文件） |
-| 8 | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（v1 已规划） | 低 |
-| 9 | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatch*.cs`（新） | `CreateMixerModel()` 薄转发 + 适配器 | 零 / 低 |
+- 引擎只认自己的三个接口：`IMixSource`（一块一块出样本）、`IMixInsert`（处理 / 延迟 / 状态）、
+  `IMixBlock`（缓冲）。
+- 宿主把 `Track` / `AudioSource` / 工程模型**编译**成引擎的 `MixSnapshot`
+  （新文件 `TuneLab/ExperimentalPatchMixerAudio.cs`，零冲突）。引擎不知道 `Track` 存在。
+- 路由 / 插入的**数据模型**（undo、序列化）仍在宿主 `Data/`（那是 `DataObject` 的地盘）；
+  引擎只吃编译后的快照。
+- 插入的 VST / JSFX 适配放 `ExperimentalPatch/InsertHost/`：同样不引用宿主，
+  只实现引擎的 `IMixInsert`，这样它也能独立测（用一个假插件）。
+
+**代价要说明**：这样一来 `ExperimentalPatch/` 里有一个**必需**的工程——从解决方案里删掉它，
+宿主就不编译。这是有意的取舍：引擎不是"可选补丁"，而是**寄居在补丁目录里的宿主组件**。
+可选的是**界面**：没有 UI 补丁时引擎照跑，路由仍然生效。
+
+### 7.1 接驳点必须带标记
+
+宿主里每一处改动都用固定注释标记，例如：
+
+```csharp
+// [EP-MIXER-1] MixData -> 渲染图。见 ExperimentalPatch/.agents/mixer-reconnect.md
+```
+
+- 标记 id 与 `mixer-reconnect.md` 的表格一一对应。
+- 一个接驳点**只做一件事**，尽量"整段替换"而不是散点修改。
+- 上游改了这些代码 → 重接就是"按表逐个核对标记"，而不是"重新理解整个引擎"。
+- 重接指南单独成文：`ExperimentalPatch/.agents/mixer-reconnect.md`（假设执行者是 AI agent）。
+
+### 7.2 无路由时的等价性（本层底线的新版本）
+
+- 没有路由、没有插入时，图退化成"每轨求和 → 按轨序累加到 Master → 乘 MasterGain"，
+  **算术顺序与今天完全一致**（同一批乘法、同一批加法、同样的顺序）。
+- 因此验收标准是**逐样本 bit 相同**（不是"听感一致"）：同一工程分别用旧 `MixData` 与新图渲染，
+  缓冲区必须完全相等。这是 M3 的硬验收。
+
+## 8. 宿主改动清单（= 接驳点清单）
+
+| # | 标记 | 位置 | 改动 | 冲突风险 |
+|---|---|---|---|---|
+| 1 | — | `ExperimentalPatch/MixerEngine/`（**新工程**） | 节点 / 边 / 快照 / 拓扑序 / PDC / 环路 | 零 |
+| 2 | — | `ExperimentalPatch/InsertHost/`（**新工程**） | VST2 / VST3 / JSFX 的 `IMixInsert` 实现 + 扫描缓存 | 零 |
+| 3 | — | `ExperimentalPatch/Patches/Mixer/`（**已有**） | UI：通道条新三行、send / FX 浮窗、output 菜单、`+ AUX` | 零 |
+| 4 | `EP-MIXER-1` | `Audio/AudioGraph.cs` | `MixData` → 渲染图；回调里的 `lock` 换快照；保留 `AddData` 给 stem 导出 / 电平 | **中** |
+| 5 | `EP-MIXER-2` | `Audio/AudioEngine.cs` | `ExportMaster` / `ExportTrack` 走图 | **中** |
+| 6 | `EP-MIXER-3` | `Audio/AudioEngine.cs` | 播放回调：Master 增益移进 Master 节点、设备 sink、Master 电平查询 | **中** |
+| 7 | `EP-MIXER-4` | `Data/Track.cs` / `ITrack.cs` | `Output` / `Sends` / `Inserts` | 中 |
+| 8 | `EP-MIXER-5` | `Data/Project.cs` | AUX 有序表 + 增删命令 | 中 |
+| 9 | `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `TuneLabProjectCbor.cs` | 序列化路由 / 插入；**版本 +1** | 中 |
+| 10 | `EP-MIXER-7` | `TuneLab.csproj` | 两条 `ProjectReference`（`ExperimentalPatch` 已有，加 `MixerEngine` + `InsertHost`） | 低 |
+| 11 | `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（v1 已规划） | 低 |
+| 12 | `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | 零 / 低 |
+
+`EP-MIXER-*` 的逐条说明、断点症状与重接步骤见 `.agents/mixer-reconnect.md`。
 
 ## 9. 工程格式（tlpx）
 
@@ -370,7 +411,7 @@ ProjectInfo(native) += auxes : [ { id, name, gainDb, output, sends, inserts } ]
 | M0 | 外观稿（**已完成**）：控件 + 通道条 + 窗口 | 出图 |
 | M1 | 契约 + `app.mixer` 锚点 + 适配器（只读） | harness 打印所有轨的 gain/pan/mute/solo/选中 |
 | M2 | 双向写回（推子 / pan / M/S）+ 一次拖动一步 undo | 编辑器与调音台互相同步 |
-| M3 | **图引擎（无 AUX）**：节点 / 边 / 快照 / 拓扑序；退化时行为不变 | 播放与导出**听感一致**；`TuneLab.Tests` 全绿 |
+| M3 | **图引擎（无 AUX）**：节点 / 边 / 快照 / 拓扑序；退化时行为不变 | 同一工程分别用旧 `MixData` 与新图渲染，缓冲区**逐样本 bit 相同**（§7.2）；`TuneLab.Tests` 全绿 |
 | M4 | AUX + output + send：模型 / 图 / UI（下拉 + 浮窗）/ undo / 持久化 | 建两条 AUX、做 send，电平与听感符合预期；环路被拒；存读一致 |
 | M5 | 插入宿主 `IInsertHost` + **VST3** 一条能跑通的链 | 挂一个 VST3：出声、存读、延迟被补偿 |
 | M6 | VST2（Windows） | 同上 |
@@ -390,15 +431,21 @@ ProjectInfo(native) += auxes : [ { id, name, gainDb, output, sends, inserts } ]
 | 上游合并冲突 | 中 | §7 选项 A；改动集中在 3~5 个文件，尽量整段替换而非散点修改 |
 | 范围失控 | 高 | v1 明确不含：多设备、pre-fader send、AUX 重命名 / pan、分轨批量导出、参数自动化 |
 
-## 12. 待你拍板
+## 12. 决策记录（2026-10-19，均已拍板）
 
-| # | 问题 | 我的建议 |
+| # | 问题 | 决定 |
 |---|---|---|
-| Q1 | 引擎代码放哪：A（进宿主、界面留补丁）/ B（全塞补丁）/ C（直接做上游特性）？ | **A**，接受合并冲突从"零"变"中"；长期应走 C |
-| Q2 | 多设备输出进 v1 吗？ | **不进**。v1 只有 settings 里那一个设备；多设备要解决时钟漂移 |
-| Q3 | `ExportMaster` 是否把 `MasterGain`（以及 Master 插入）算进去？ | **算**。Master 有插入之后"导出不含母带链"就说不通了；实际影响面≈0 |
-| Q4 | JSFX 进 v1 吗？ | **先 spike 再定**。VST2 / VST3 先跑通；JSFX 依赖一个 C++ 解释器或自写 EEL2，风险与工作量都大一个量级 |
-| Q5 | send 上限 +12 dB、AUX 不设 pan、v1 不做 pre-fader send | 按此执行，除非你有别的偏好 |
+| Q1 | 引擎代码放哪？ | **放在 `ExperimentalPatch/` 下、独立工程**（`MixerEngine` / `InsertHost`），宿主反向引用并在少数位置接驳；接驳点带 `EP-MIXER-*` 标记，重接指南见 `.agents/mixer-reconnect.md`。§7 有依赖方向图 |
+| Q2 | 多设备输出进 v1 吗？ | **不进**。v1 只有 settings 里那一个设备；多设备 v2，用途是**监听** |
+| Q3 | `ExportMaster` 算不算 `MasterGain` 与 Master 插入？ | **算**。Master 有插入之后"导出不含母带链"说不通；实际影响面≈0 |
+| Q4 | JSFX 进 v1 吗？ | **先做 VST2 / VST3，JSFX 等 spike 后再定**（ysfx 能否 P/Invoke + @gfx + 许可） |
+| Q5 | send 上限 +12 dB、AUX 不设 pan、v1 不做 pre-fader send | 按此执行 |
+
+仍然开放（实现到那一步再定，不阻塞现在）：
+
+- AUX 条是否要重命名 / 换色（现在自动命名 + 固定 AUX 色）。
+- 插入效果是否需要参数自动化（v1 只存 state，不做曲线）。
+- 分轨批量导出（v1 只做单轨 stem）。
 
 ## 13. v1 已定稿、v2 不改的部分
 

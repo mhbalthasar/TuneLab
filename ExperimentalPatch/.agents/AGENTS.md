@@ -6,11 +6,16 @@
 ## 0. 一句话架构
 
 ```
-宿主 TuneLab  ──ProjectReference──▶  ExperimentalPatch
-      │                                    │
-      │  只认四个调用点 + IHostServices      ├─ Abstractions/   契约（双方共享的唯一界面）
-      └───────────────────────────────────▶├─ FunctionHooker/ 耦合层（宿主唯一的入口）
-                                           └─ Patches/        补丁实现（加/删只动这里）
+宿主 TuneLab  ──ProjectReference──▶  ExperimentalPatch          （UI 补丁）
+     │                                    ├─ Abstractions/     契约（双方共享的唯一界面）
+     │  只认四个调用点 + IHostServices      ├─ FunctionHooker/   耦合层（宿主唯一的入口）
+     │                                    └─ Patches/          补丁实现（加/删只动这里）
+     │
+     ├──ProjectReference──▶ ExperimentalPatch/MixerEngine        （纯 DSP：混音图 / PDC / 环路）
+     └──ProjectReference──▶ ExperimentalPatch/InsertHost         （VST2 / VST3 / JSFX 适配）
+
+     后两个住在 ExperimentalPatch/ 目录下，但是**独立工程**、**被宿主引用**；
+     方向与 UI 补丁一致（宿主 → 补丁侧），没有任何一边引用宿主。
 ```
 
 宿主对补丁层的认知被压到**四个静态方法 + 一份 `IHostServices`**：
@@ -25,6 +30,15 @@
 | `TuneLab/TuneLab.csproj` + `TuneLab.sln` | — | 一个 `ProjectReference` + 一条工程项 |
 
 除以上六处、以及**允许新增的 `TuneLab/ExperimentalPatch*.cs` 适配器文件**（见 §5），宿主其余文件一律不改。
+
+**例外（第三类接缝）：引擎接驳点。** 混音器引擎需要在宿主已有文件里改**几小块**（`MixData`、导出、
+播放回调、`Track` 的属性、工程格式）。这些点**不算**上面的"六处"，也不适合塞进适配器文件，
+所以单独立一条纪律：
+
+- 每一处都带 `// [EP-MIXER-n]` 标记，并登记在 `.agents/mixer-reconnect.md` 的接驳点表里。
+- 一处只做一件事，尽量整段替换而不是散点修改。
+- **新增任何宿主改动都必须先登记再写代码**；没登记的改动会在下一次上游同步时被当成上游代码删掉。
+- 上游更新后的重接流程、验证标准、断点症状表都在 `.agents/mixer-reconnect.md`。
 
 **适配器文件**：当一个补丁需要宿主 `internal` 类型（`Track` / `Project` / `AudioEngine` …）时，
 翻译代码放一个**新增的** `TuneLab/ExperimentalPatch<功能>.cs` 里（一个功能一个文件），
@@ -47,6 +61,8 @@
 | `Abstractions/` | 契约：`IPatch` / `IAnchorTable` / 锚点 payload / `IHostServices`。**补丁能看到宿主的全部**就是这里。 | 加锚点时改 |
 | `FunctionHooker/` | 耦合层：`PatchHost`（宿主唯一入口）、`PatchRegistry`（反射发现）、`AnchorHub`（锚点分发 + 异常隔离 + 订阅回收）。 | 极少改 |
 | `Patches/<功能>/` | 补丁实现。 | 日常改这里 |
+| `MixerEngine/` | **独立工程**：混音图 / 节点 / 边 / 拓扑序 / PDC / 环路检测。纯 DSP，**不引用宿主、不引用 Avalonia**，可独立单测。 | 混音器引擎 |
+| `InsertHost/` | **独立工程**：VST2 / VST3 / JSFX 的 `IMixInsert` 实现 + 插件扫描。同样不引用宿主。 | 插入效果 |
 | `UI/` | 跨补丁共用的视觉基础设施：`Palette`（宿主主题的**镜像**，见文件头注释）。只放「多个补丁都要画同一个东西」的那一小撮，不放控件——控件归各自的功能目录。 | 宿主主题变了才改 |
 | `.agents/` | 本约定。 | 约定变了才改 |
 
@@ -146,7 +162,8 @@ payload 需要宿主能力时：优先在 `IHostServices` 上加一个**语义�
 
 | 类别 | 规则 |
 |---|---|
-| 宿主已有文件 | **只允许** §0 表格里那六处。其余一律不碰。 |
+| 宿主已有文件 | 只允许 §0 的六处 + **已登记的 `EP-MIXER-*` 接驳点**。其余一律不碰。 |
+| 引擎接驳点（`EP-MIXER-*`） | 先登记进 `.agents/mixer-reconnect.md`，再写代码，代码带标记；一处只做一件事；旁边留一句"为什么"。 |
 | 宿主侧适配器 | 需要宿主 `internal` 类型时，**新增** `TuneLab/ExperimentalPatch<功能>.cs`（上游没有同名文件 → 零冲突）。别把这些代码塞进 `ExperimentalPatchBootstrap.cs`。 |
 | `TuneLab/ExperimentalPatchBootstrap.cs` | 属于「缝」，**尽量只增不改**；逻辑写到这里面就等于写回了上游文件。 |
 | `TuneLab/App.axaml.cs` 的启动段 | 已被 `app.splash` 整段搬进 `ContinueStartup`（含音频设备）。**搬移时逐字保留上游原文**（只加相位标记），上游改这段时的对齐成本才最低。 |
@@ -180,6 +197,12 @@ git merge upstream/master      # 或 rebase
 预期冲突面（全部在 §0 表格的六个位置）：`TuneLab.sln`、`TuneLab.csproj`、`Program.cs`、`App.axaml.cs`
 （含被搬到 `ContinueStartup` 的启动慢段）、`ExperimentalPatchBootstrap.cs`（后者除非上游新动，否则不冲突）。
 `ExperimentalPatch/` 整体与上游无关，不会产生冲突。
+
+**混音器引擎另算**：它在宿主里还有 9 个带标记的接驳点（`EP-MIXER-1..9`），涉及
+`Audio/AudioGraph.cs`、`Audio/AudioEngine.cs`、`Data/Track.cs`、`Data/Project.cs`、
+`Data/NativeTrackInfo.cs`、`Extensions/Formats/TLP/TuneLabProjectCbor.cs`、`TuneLab.csproj`、
+`UI/MainWindow/Editor/Editor.cs`。同步后**必须**按 `.agents/mixer-reconnect.md` 走一遍
+（那里有重接流程、三级验证与断点症状表）；只编译过不算接好。
 
 合并后**必做**：
 

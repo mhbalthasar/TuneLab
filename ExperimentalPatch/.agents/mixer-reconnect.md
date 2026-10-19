@@ -1,0 +1,90 @@
+# 混音器引擎：接驳点与上游更新后的重接指南
+
+> 读者：**将来做上游同步的 AI agent（或人）**。本文假设你手上是一个刚 merge / rebase 完 upstream 的分支，
+> 可能编译不过、也可能编译过但混音不对，而你对混音器引擎一无所知。
+>
+> 状态：**M3 / M4 落地前，本文是计划**；每落地一个接驳点，就把"实际代码形状"补进 §2 的表里
+> （这是硬要求，不是可选项——否则下一次重接就退化成重新理解整个引擎）。
+
+## 0. 先读这三行
+
+- 引擎（纯 DSP）在 `ExperimentalPatch/MixerEngine/`，插入宿主在 `ExperimentalPatch/InsertHost/`。
+  **这两个目录与上游无关，永远不会冲突**——出问题时不要先去那里改。
+- 冲突只可能发生在宿主里的 9 个接驳点（§2 的表），每个点都带 `[EP-MIXER-n]` 注释。
+- 判断"接驳是否完好"：`dotnet build` 通过只是第一关，**必须**跑完 §4 的三级验证。
+
+## 1. 依赖方向（违反这条，后面的设计都不成立）
+
+```
+TuneLab（宿主）
+  ├──> ExperimentalPatch            （UI 补丁：调音台窗口、浮窗、菜单）
+  ├──> ExperimentalPatch/MixerEngine（纯 DSP：图、节点、PDC、环路）
+  └──> ExperimentalPatch/InsertHost （VST2 / VST3 / JSFX 适配）
+
+补丁侧三个工程都不引用 TuneLab。
+```
+
+- 引擎**不知道** `Track` / `Project` / Avalonia 存在：宿主把模型编译成 `MixSnapshot` 再交给它。
+- 如果你为了让引擎编译而想加一条 `ProjectReference` 到 `TuneLab` → **方向反了，停下来**，
+  正确做法是在引擎里加接口、在宿主侧写适配器。
+
+## 2. 接驳点清单
+
+| 标记 | 文件 | 改什么 | 形状 | 上游改坏时的症状 | 重接要点 |
+|---|---|---|---|---|---|
+| `EP-MIXER-1` | `Audio/AudioGraph.cs` | `MixData` 改为"渲染图快照"；去掉回调里的 `lock` | 整段替换 `MixData` 主体；`AddData` / `Tracks` / `EndTime` 保持不变 | 编译过但无声 / 只出一部分声；或 `MixData` 签名对不上 | 先确认 `AddData` 仍是"逐轨求和"的原语（stem 导出与电平依赖它）；新 `MixData` 只负责"按快照渲染 + 混音" |
+| `EP-MIXER-2` | `Audio/AudioEngine.cs` | `ExportMaster` / `ExportTrack` 走图 | 两个方法体各一段 | 导出无声、导出比播放小/大、Master 插入不进文件 | `ExportMaster` = 渲染图到文件 sink；`ExportTrack` = 只渲染该轨节点（pre-routing） |
+| `EP-MIXER-3` | `Audio/AudioEngine.cs` | 播放回调：Master 增益移进 Master 节点、设备 sink、Master 电平查询 | `AudioSampleProvider.Read` 一段 + 新增一个查询方法 | 播放音量不对（乘了两次 / 没乘）、Master 表不动 | Master 增益**只能在一个地方乘**（Master 节点）。回调里不许再乘 |
+| `EP-MIXER-4` | `Data/Track.cs` / `ITrack.cs` | `Output` / `Sends` / `Inserts` 三个 `DataProperty` | 属性 + 默认值 | 路由不生效 / 不进 undo / 不序列化 | 三个都必须是 `DataProperty`（否则 undo 与 tlpx 都不会有） |
+| `EP-MIXER-5` | `Data/Project.cs` | AUX 有序表 + 增删命令 | 一个 `DataObjectList` + 两个命令 | 加 AUX 后工程存不住 / undo 不对 | AUX 的 id 必须稳定（引用它的是路由） |
+| `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `Extensions/Formats/TLP/TuneLabProjectCbor.cs` | 序列化路由 / 插入，版本 +1 | reader/writer 各一段 + 版本常量 | 老工程打不开 / 新工程丢了路由 / 版本号对不上 | **只动 native DTO**，别动 SDK 的 `TrackInfo`（冻结面） |
+| `EP-MIXER-7` | `TuneLab.csproj` | 加 `MixerEngine` / `InsertHost` 两条 `ProjectReference` | 两行 | 编译找不到命名空间 | 上游若重排了 csproj 的 ItemGroup，把这两条加回去即可 |
+| `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（从补丁收集命令） | `CreateMenu` 里一段 | 菜单消失 / 点了没反应 | 菜单项本身来自补丁；宿主只负责"渲染一个从补丁收集来的菜单" |
+| `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | 转发一行 + 新文件 | 调音台打开是空的 / 读到旧数据 | 编译器负责 `Project` → `MixSnapshot`；别把逻辑写进 `ExperimentalPatchBootstrap.cs` |
+
+## 3. 重接流程（merge / rebase 之后照这个顺序）
+
+1. `git diff upstream/master -- TuneLab/Audio/AudioGraph.cs TuneLab/Audio/AudioEngine.cs ...`
+   —— 只看 §2 里那 5 个宿主文件的差异，别的不用管。
+2. `grep -rn "EP-MIXER-" TuneLab/` —— 标记还在不在？被上游整段替换掉的，按 §2 的"重接要点"重新插入。
+3. 编译。报错信息通常会直接指出是哪个接驳点（类型/签名变了）。
+4. 跑 §4 的三级验证。**任何一级不过，都不算重接完成。**
+5. 把这一轮"上游改了什么、你怎么接的"补进 §6（给下一个人/AI 留经验）。
+
+## 4. 验证（三级，缺一不可）
+
+| 级别 | 做法 | 通过标准 |
+|---|---|---|
+| 1 编译 | `dotnet build TuneLab.sln -c Debug` | 0 error |
+| 2 单测 | `dotnet test tests/TuneLab.Tests/...` + `dotnet test tests/MixerEngine.Tests/...`（引擎自己的纯 DSP 测试） | 全绿；引擎测试**不依赖音频设备** |
+| 3 等价性 | 同一工程分别用"旧 MixData"与"新图"渲染（引擎测试里保留一条 legacy 参照实现） | 缓冲区**逐样本 bit 相同**（无路由时，见 DESIGN.md §7.2） |
+
+再补一条人工冒烟（有 UI 时）：打开调音台 → 播放 → 推子/pan/M/S 与编辑器互相同步 → 建一条 AUX 与一条 send →
+听感正常 → 存盘再打开，路由与插入都还在。
+
+## 5. 断点症状 → 先查哪
+
+| 症状 | 先查 |
+|---|---|
+| 播放完全无声 | `EP-MIXER-1`（图没跑）或 `EP-MIXER-3`（sink 没接） |
+| 只有一部分轨出声 | `EP-MIXER-1`（快照没包含全部轨，或拓扑序漏节点） |
+| 音量整体差一倍 / 差 6 dB | `EP-MIXER-3`：Master 增益乘了两次，或 pan 律被重复应用 |
+| 静音按钮不起作用 | `EP-MIXER-1`：门控被放到了总线而不是源头（DESIGN.md §3.3） |
+| 导出与播放不一致 | `EP-MIXER-2`（导出没走图）或 `EP-MIXER-3`（播放多乘了一次） |
+| 老工程打不开 | `EP-MIXER-6`：版本号或 reader 分支 |
+| 存盘再开路由丢了 | `EP-MIXER-4/5/6`：属性不是 `DataProperty`，或 native DTO 没写 |
+| 挂上插件后声音"薄、空心" | PDC（DESIGN.md §3.5）：延迟补偿没生效 |
+| 改路由后爆音 / 崩溃 | 快照切换：音频线程还在用旧快照就被释放了 |
+
+## 6. 上游更新日志（每轮同步后补一行）
+
+| 日期 | 上游改了什么 | 我们怎么接的 | 遗留 |
+|---|---|---|---|
+| — | （还没有发生过） | — | — |
+
+## 7. 维护纪律
+
+- **新增任何宿主改动**：必须先在 §2 加一行、再给代码打 `[EP-MIXER-n]` 标记，最后写清"断点症状"。
+  没有登记表的接驳点，下一次同步时会被当成上游代码删掉。
+- 接驳点**只做一件事**；需要更多逻辑时，写进补丁侧工程或 `TuneLab/ExperimentalPatch*.cs`（新文件）。
+- 每个接驳点的代码旁边留一句"为什么"，不要只留"做了什么"——重接的人需要判断"上游的改动是否让这个理由失效"。
