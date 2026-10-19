@@ -28,6 +28,12 @@ public sealed class MixerWindow : Window
     readonly IHostServices mHost;
 
     readonly StackPanel mStrips = new() { Orientation = Orientation.Horizontal };
+    readonly StackPanel mLeftPinned = new() { Orientation = Orientation.Horizontal };
+    readonly StackPanel mRightPinned = new() { Orientation = Orientation.Horizontal };
+    readonly Border mLeftDivider = new() { Width = 2, Background = Palette.Brush(Palette.Line, 0.85), IsVisible = false };
+    readonly Border mRightDivider = new() { Width = 2, Background = Palette.Brush(Palette.Line, 0.85), IsVisible = false };
+    // 轨道组与 AUX 组之间的分割线（在滚动区内，随内容一起滚）。
+    readonly Border mGroupDivider = new() { Width = 2, Background = Palette.Brush(Palette.Line, 0.85) };
     readonly ScrollViewer mScroller;
     readonly TextBlock mEmptyHint;
     readonly Border mMasterSlot = new();
@@ -116,11 +122,31 @@ public sealed class MixerWindow : Window
         mMasterSlot.BorderBrush = Palette.Brush(Palette.Line, 0.5);
         mMasterSlot.BorderThickness = new Thickness(1, 0, 0, 0);
 
-        var body = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        Grid.SetColumn(stripsArea, 0);
-        Grid.SetColumn(mMasterSlot, 1);
-        body.Children.Add(stripsArea);
-        body.Children.Add(mMasterSlot);
+        // 左固定 | 分隔 | 滚动区 | 分隔 | 右固定 | Master
+        var body = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto,Auto") };
+
+        void Place(Control control, int column)
+        {
+            Grid.SetColumn(control, column);
+            body.Children.Add(control);
+        }
+
+        Place(mLeftPinned, 0);
+        Place(mLeftDivider, 1);
+        Place(stripsArea, 2);
+        Place(mRightDivider, 3);
+        Place(mRightPinned, 4);
+        Place(mMasterSlot, 5);
+
+        // 滚轮 → 横向滚动（竖向本来就不滚，见 mScroller 的 VerticalScrollBarVisibility）。
+        mScroller.PointerWheelChanged += (_, e) =>
+        {
+            if (e.Delta.Y == 0)
+                return;
+
+            ScrollBy(-e.Delta.Y * 60);
+            e.Handled = true;
+        };
 
         var header = BuildHeader();
         var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
@@ -391,10 +417,16 @@ public sealed class MixerWindow : Window
     void Rebuild()
     {
         mStrips.Children.Clear();
+        mLeftPinned.Children.Clear();
+        mRightPinned.Children.Clear();
         mStripViews.Clear();
 
         int trackIndex = 0;
         int auxIndex = 0;
+        bool anyLeft = false;
+        bool anyRight = false;
+        bool dividerAdded = false;
+        bool scrollerHasTrack = false;
 
         foreach (var channel in mModel.Channels)
         {
@@ -405,14 +437,43 @@ public sealed class MixerWindow : Window
 
             var strip = new MixerChannelStrip(channel, label);
             HookStrip(strip);
-
-            // AUX 条右键 → 删除（一步可撤销；见适配器 RemoveAux 的注释）。
-            if (channel.Kind == MixerChannelKind.Aux)
-                strip.ContextMenu = BuildAuxMenu(channel);
+            strip.ContextMenu = BuildChannelMenu(channel);
 
             mStripViews.Add(strip);
-            mStrips.Children.Add(strip);
+
+            // pin 的条不进滚动区：靠左/靠右各自堆叠，横向滚动时纹丝不动。
+            switch (channel.Pin)
+            {
+                case MixerPin.Left:
+                    mLeftPinned.Children.Add(strip);
+                    anyLeft = true;
+                    break;
+
+                case MixerPin.Right:
+                    mRightPinned.Children.Add(strip);
+                    anyRight = true;
+                    break;
+
+                default:
+                    // 轨道组与 AUX 组之间一道亮一点的分割线（两组都有内容才出现）。
+                    if (channel.Kind == MixerChannelKind.Aux && !dividerAdded && scrollerHasTrack)
+                    {
+                        mStrips.Children.Add(mGroupDivider);
+                        dividerAdded = true;
+                    }
+
+                    mStrips.Children.Add(strip);
+
+                    if (channel.Kind == MixerChannelKind.Track)
+                        scrollerHasTrack = true;
+
+                    break;
+            }
         }
+
+        // 分隔线只在那一组真的有内容时出现（空组不留一条孤零零的亮线）。
+        mLeftDivider.IsVisible = anyLeft;
+        mRightDivider.IsVisible = anyRight;
 
         // Master 的实例会随换工程而换，所以按实例判等，变了才重建。
         if (!ReferenceEquals(mMasterChannel, mModel.Master))
@@ -432,16 +493,54 @@ public sealed class MixerWindow : Window
         strip.SendRequested += ShowSendPopup;
         strip.FxRequested += ShowFxPopup;
         strip.OutputRequested += ShowOutputMenu;
+        strip.PanRequested += ScrollBy;   // 拖通道条头部 = 横向平移
     }
 
-    // AUX 条的右键菜单。目前只有"删除"（重命名 / 换色留到需要时再加）。
-    ContextMenu BuildAuxMenu(IMixerChannel channel)
+    // 通道条右键菜单：固定到左/右 + （AUX）删除。Master 不滚动，也就没有固定这回事。
+    ContextMenu BuildChannelMenu(IMixerChannel channel)
     {
         var menu = new ContextMenu();
-        var remove = new MenuItem { Header = L("删除此 AUX", "Delete this AUX") };
-        remove.Click += (_, _) => mModel.RemoveAux(channel);
-        menu.Items.Add(remove);
+
+        if (channel.Kind != MixerChannelKind.Master)
+        {
+            menu.Items.Add(PinItem(channel, MixerPin.Left, L("固定到左侧", "Pin to left")));
+            menu.Items.Add(PinItem(channel, MixerPin.Right, L("固定到右侧", "Pin to right")));
+            menu.Items.Add(PinItem(channel, MixerPin.None, L("取消固定", "Unpin")));
+        }
+
+        if (channel.Kind == MixerChannelKind.Aux)
+        {
+            menu.Items.Add(new Separator());
+
+            var remove = new MenuItem { Header = L("删除此 AUX", "Delete this AUX") };
+            remove.Click += (_, _) => mModel.RemoveAux(channel);
+            menu.Items.Add(remove);
+        }
+
         return menu;
+    }
+
+    static MenuItem PinItem(IMixerChannel channel, MixerPin pin, string header)
+    {
+        var item = new MenuItem
+        {
+            Header = header,
+            ToggleType = MenuItemToggleType.Radio,
+            IsChecked = channel.Pin == pin,
+        };
+
+        item.Click += (_, _) => channel.Pin = pin;
+        return item;
+    }
+
+    // 横向滚动。Offset 是 DIP，夹在 [0, extent - viewport]。
+    void ScrollBy(double dx)
+    {
+        double max = Math.Max(0, mScroller.Extent.Width - mScroller.Viewport.Width);
+        double x = Math.Clamp(mScroller.Offset.X + dx, 0, max);
+
+        if (x != mScroller.Offset.X)
+            mScroller.Offset = new Vector(x, 0);
     }
 
     void ShowSendPopup(MixerChannelStrip strip)

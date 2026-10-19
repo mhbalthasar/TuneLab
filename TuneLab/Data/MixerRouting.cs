@@ -40,6 +40,7 @@ internal class AuxBus : DataObject
     public DataProperty<bool> IsSolo { get; }
     public DataProperty<MixerRoute> Output { get; }
     public DataObjectList<Send> Sends { get; }
+    public DataProperty<MixerPin> Pinned { get; }
 
     public AuxBus(string id, string name, DataObject parent) : base(parent)
     {
@@ -55,5 +56,6 @@ internal class AuxBus : DataObject
         Output.SetInfo(MixerRoute.Master);
 
         Sends = new DataObjectList<Send>(this);
+        Pinned = new DataStruct<MixerPin>(this);
     }
 }

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using TuneLab.Audio;
+using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Foundation;
 using TuneLab.SDK;
 
@@ -23,6 +24,7 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     IDataProperty<string> Color { get; }
     new IDataProperty<MixerRoute> Output { get; }
     new IReadOnlyDataObjectList<Send> Sends { get; }
+    IDataProperty<MixerPin> Pinned { get; }
     bool ExportEnabled { get; set; }
     int ExportChannels { get; set; }
     IReadOnlyDataObjectLinkedList<IPart> Parts { get; }

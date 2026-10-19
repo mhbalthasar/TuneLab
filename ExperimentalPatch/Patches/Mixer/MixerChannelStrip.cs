@@ -1,6 +1,7 @@
 using System;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
@@ -27,6 +28,7 @@ internal sealed class MixerChannelStrip : UserControl
     readonly Border mHeaderBar = new();
     readonly TextBlock mIndex = new();
     readonly TextBlock mName = new();
+    readonly TextBox mNameEdit = new();
     readonly PanKnob mPan = new();
     readonly StripButton mSend = new();
     readonly StripButton mFx = new();
@@ -48,6 +50,12 @@ internal sealed class MixerChannelStrip : UserControl
     public event Action<MixerChannelStrip>? SendRequested;
     public event Action<MixerChannelStrip>? FxRequested;
     public event Action<MixerChannelStrip>? OutputRequested;
+
+    // 拖住通道条头部左右拖 → 请求横向滚动。正数 = 内容往右移（滚到更左）。
+    public event Action<double>? PanRequested;
+
+    bool mPanning;
+    PixelPoint mPanScreen;
 
     public MixerChannelStrip(IMixerChannel channel, string label)
     {
@@ -112,7 +120,52 @@ internal sealed class MixerChannelStrip : UserControl
 
         mHeaderBar.Height = MixerMetrics.IndexHeight;
         mHeaderBar.Child = mIndex;
+
+        // 拖住头部左右拖 = 横向平移。用**屏幕坐标**算增量：通道条自身会随滚动移动，
+        // 用窗口内坐标会把"滚动"与"指针移动"叠在一起（与窗口改大小的坑同一个）。
+        mHeaderBar.Cursor = new Cursor(StandardCursorType.SizeAll);
+        mHeaderBar.PointerPressed += OnHeaderPressed;
+        mHeaderBar.PointerMoved += OnHeaderMoved;
+        mHeaderBar.PointerReleased += OnHeaderReleased;
+
         return mHeaderBar;
+    }
+
+    void OnHeaderPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        mPanning = true;
+        mPanScreen = this.PointToScreen(e.GetPosition(this));
+        e.Pointer.Capture(mHeaderBar);
+        e.Handled = true;
+    }
+
+    void OnHeaderMoved(object? sender, PointerEventArgs e)
+    {
+        if (!mPanning)
+            return;
+
+        var screen = this.PointToScreen(e.GetPosition(this));
+        double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        double dx = (screen.X - mPanScreen.X) / (scale > 0 ? scale : 1);
+        mPanScreen = screen;
+
+        if (dx != 0)
+            PanRequested?.Invoke(-dx);   // 指针往右拖 = 内容往右 = 偏移减小
+
+        e.Handled = true;
+    }
+
+    void OnHeaderReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!mPanning)
+            return;
+
+        mPanning = false;
+        e.Pointer.Capture(null);
+        e.Handled = true;
     }
 
     Control BuildName()
@@ -126,7 +179,79 @@ internal sealed class MixerChannelStrip : UserControl
         mName.VerticalAlignment = VerticalAlignment.Center;
         mName.TextTrimming = TextTrimming.CharacterEllipsis;
         mName.Margin = new Thickness(4, 0);
-        return mName;
+        mName.Cursor = new Cursor(StandardCursorType.Ibeam);
+        mName.PointerPressed += OnNamePressed;
+
+        // 双击就地改名：TextBlock 与 TextBox 叠在同一格，谁可见谁说话。
+        mNameEdit.FontSize = 11;
+        mNameEdit.Foreground = Palette.Brush(Palette.TextLight);
+        mNameEdit.Background = Palette.Brush(Palette.Back);
+        mNameEdit.BorderBrush = Palette.Brush(Palette.HighLight);
+        mNameEdit.BorderThickness = new Thickness(1);
+        mNameEdit.Padding = new Thickness(2, 0);
+        mNameEdit.HorizontalContentAlignment = HorizontalAlignment.Center;
+        mNameEdit.VerticalContentAlignment = VerticalAlignment.Center;
+        mNameEdit.Margin = new Thickness(2, 0);
+        mNameEdit.IsVisible = false;
+        mNameEdit.KeyDown += OnNameKeyDown;
+        mNameEdit.LostFocus += (_, _) => CommitName();
+
+        var panel = new Panel();
+        panel.Children.Add(mName);
+        panel.Children.Add(mNameEdit);
+        return panel;
+    }
+
+    void OnNamePressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.ClickCount < 2 || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        mNameEdit.Text = mChannel.Name;
+        mName.IsVisible = false;
+        mNameEdit.IsVisible = true;
+        mNameEdit.Focus();
+        mNameEdit.SelectAll();
+
+        e.Handled = true;
+    }
+
+    void OnNameKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            CommitName();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            CancelName();
+            e.Handled = true;
+        }
+    }
+
+    void CommitName()
+    {
+        if (!mNameEdit.IsVisible)
+            return;
+
+        string text = (mNameEdit.Text ?? string.Empty).Trim();
+
+        mNameEdit.IsVisible = false;
+        mName.IsVisible = true;
+
+        // 空名字不接受（轨道头也靠名字认轨），改回原名即可。
+        if (text.Length == 0 || text == mChannel.Name)
+            return;
+
+        mChannel.Name = text;
+        mName.Text = text;
+    }
+
+    void CancelName()
+    {
+        mNameEdit.IsVisible = false;
+        mName.IsVisible = true;
     }
 
     Control BuildPan()

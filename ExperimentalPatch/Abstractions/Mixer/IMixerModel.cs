@@ -77,6 +77,14 @@ public interface IMixerOutput
     bool IsAvailable { get; }
 }
 
+// 通道在调音台里的固定位置：固定后不随横向滚动，靠左或靠右堆叠（DESIGN.md §6.8）。
+public enum MixerPin
+{
+    None,
+    Left,
+    Right,
+}
+
 public interface IMixerChannel
 {
     MixerChannelKind Kind { get; }
@@ -84,7 +92,11 @@ public interface IMixerChannel
     // 稳定 id（轨道的 id / AUX 的 id）。路由与"不能输出到自己"的判定靠它，不靠序号。
     string Id { get; }
 
-    string Name { get; }
+    // 可写：调音台里双击名字就地改名（写回 Track.Name / AuxBus.Name，一步 undo）。
+    string Name { get; set; }
+
+    // 固定到窗口左/右（不随横向滚动）。Master 恒为 None。
+    MixerPin Pin { get; set; }
 
     // 空串 = 用主题默认色（AUX / Master 用各自的固定色）。
     string ColorHex { get; }

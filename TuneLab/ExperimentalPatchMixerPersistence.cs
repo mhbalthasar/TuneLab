@@ -61,6 +61,7 @@ internal static class MixerPersistence
                 Solo = aux.IsSolo.Value,
                 Output = ToDto(aux.Output.Value),
                 Sends = ToDtos(aux.Sends),
+                Pin = aux.Pinned.Value.ToString(),
             });
         }
 
@@ -73,6 +74,7 @@ internal static class MixerPersistence
                 Name = track.Name.Value,
                 Output = ToDto(track.Output.Value),
                 Sends = ToDtos(track.Sends),
+                Pin = track.Pinned.Value.ToString(),
             });
         }
 
@@ -162,6 +164,7 @@ internal static class MixerPersistence
             aux.IsMute.SetInfo(dto.Mute);
             aux.IsSolo.SetInfo(dto.Solo);
             aux.Output.SetInfo(FromDto(dto.Output));
+            aux.Pinned.SetInfo(ParsePin(dto.Pin));
             ApplySends(aux.Sends, dto.Sends);
 
             auxes[dto.Id] = aux;
@@ -185,6 +188,7 @@ internal static class MixerPersistence
             }
 
             track.Output.SetInfo(FromDto(dto.Output));
+            track.Pinned.SetInfo(ParsePin(dto.Pin));
             ApplySends((DataObjectList<Send>)track.Sends, dto.Sends);
             matched++;
         }
@@ -253,6 +257,9 @@ internal static class MixerPersistence
         return list;
     }
 
+    static MixerPin ParsePin(string? value)
+        => Enum.TryParse<MixerPin>(value, out var pin) ? pin : MixerPin.None;
+
     static MixerRoute FromDto(RouteDto? dto)
     {
         if (dto == null)
@@ -298,6 +305,7 @@ internal static class MixerPersistence
         public bool Solo { get; set; }
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
+        public string? Pin { get; set; }
     }
 
     sealed class TrackDto
@@ -306,6 +314,7 @@ internal static class MixerPersistence
         public string? Name { get; set; }
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
+        public string? Pin { get; set; }
     }
 
     class RouteDto

@@ -126,6 +126,9 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         RoutingChanged?.Invoke();
     }
 
+    // pin 变化会让**布局**变（进/出滚动区），所以要整表重建。
+    internal void RaiseChannelsChanged() => ChannelsChanged?.Invoke();
+
     // 把 UI 给的 IMixerOutput 翻回内存里的路由值。
     internal MixerRoute RouteOf(IMixerOutput output) => new(output.Kind, output.Id, output.Name);
 
@@ -372,9 +375,26 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 
     public abstract MixerChannelKind Kind { get; }
     public abstract string Id { get; }
-    public abstract string Name { get; }
+
+    // 名字可写：双击就地改名（写回 Name 属性，一步 undo）。
+    public string Name
+    {
+        get => NameProperty.Value;
+        set => Edit.Write(NameProperty, value);
+    }
+
     public abstract string ColorHex { get; }
     public abstract bool IsSelected { get; }
+
+    public abstract IDataProperty<string> NameProperty { get; }
+    public abstract IDataProperty<MixerPin> PinProperty { get; }
+
+    // 固定到窗口左/右（不随横向滚动）。
+    public MixerPin Pin
+    {
+        get => PinProperty.Value;
+        set => Edit.Write(PinProperty, value);
+    }
 
     public abstract double GainDb { get; set; }
     public abstract double Pan { get; set; }
@@ -536,6 +556,7 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         track.Color.Modified.Subscribe(OnStateModified);
         track.Output.Modified.Subscribe(RaiseRoutingChanged);
         track.Sends.MembershipModified.Subscribe(RaiseRoutingChanged);
+        track.Pinned.Modified.Subscribe(OnPinChanged);
         track.SelectionChanged.Subscribe(OnStateModified);
     }
 
@@ -544,7 +565,8 @@ internal sealed class MixerTrackChannel : MixerChannelBase
     // TODO(持久化): 换序/删轨后序号会变。落盘时会换成随工程保存的稳定 id。
     public override string Id => "track:" + mIndex;
 
-    public override string Name => mTrack.Name.Value;
+    public override IDataProperty<string> NameProperty => mTrack.Name;
+    public override IDataProperty<MixerPin> PinProperty => mTrack.Pinned;
     public override string ColorHex => mTrack.Color.Value;
     public override bool IsSelected => mTrack.IsSelected;
 
@@ -597,10 +619,13 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         mTrack.Color.Modified.Unsubscribe(OnStateModified);
         mTrack.Output.Modified.Unsubscribe(RaiseRoutingChanged);
         mTrack.Sends.MembershipModified.Unsubscribe(RaiseRoutingChanged);
+        mTrack.Pinned.Modified.Unsubscribe(OnPinChanged);
         mTrack.SelectionChanged.Unsubscribe(OnStateModified);
     }
 
     void OnStateModified() => RaiseStateChanged();
+
+    void OnPinChanged() => Owner.RaiseChannelsChanged();
 
     readonly ITrack mTrack;
     readonly int mIndex;
@@ -620,6 +645,7 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         aux.Name.Modified.Subscribe(OnStateModified);
         aux.Output.Modified.Subscribe(RaiseRoutingChanged);
         aux.Sends.MembershipModified.Subscribe(RaiseRoutingChanged);
+        aux.Pinned.Modified.Subscribe(OnPinChanged);
     }
 
     public AuxBus Bus { get; }
@@ -627,7 +653,9 @@ internal sealed class MixerAuxChannel : MixerChannelBase
     public override MixerChannelKind Kind => MixerChannelKind.Aux;
 
     public override string Id => Bus.Id;
-    public override string Name => Bus.Name.Value;
+
+    public override IDataProperty<string> NameProperty => Bus.Name;
+    public override IDataProperty<MixerPin> PinProperty => Bus.Pinned;
     public override string ColorHex => string.Empty;
     public override bool IsSelected => false;
 
@@ -677,9 +705,12 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         Bus.Name.Modified.Unsubscribe(OnStateModified);
         Bus.Output.Modified.Unsubscribe(RaiseRoutingChanged);
         Bus.Sends.MembershipModified.Unsubscribe(RaiseRoutingChanged);
+        Bus.Pinned.Modified.Unsubscribe(OnPinChanged);
     }
 
     void OnStateModified() => RaiseStateChanged();
+
+    void OnPinChanged() => Owner.RaiseChannelsChanged();
 }
 
 // Master 条：推子就是 AudioEngine.MasterGain（不是 DataProperty → 不进 undo、不序列化）。
@@ -692,7 +723,17 @@ internal sealed class MixerMasterChannel : IMixerChannel
 
     public MixerChannelKind Kind => MixerChannelKind.Master;
     public string Id => "master";
-    public string Name => "MASTER";
+    public string Name
+    {
+        get => "MASTER";
+        set { }   // Master 不能改名
+    }
+
+    public MixerPin Pin
+    {
+        get => MixerPin.None;
+        set { }   // Master 本来就不滚动，不需要固定
+    }
     public string ColorHex => string.Empty;
     public bool IsSelected => false;
 

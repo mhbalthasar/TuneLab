@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using TuneLab.Audio;
+using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Foundation;
 using TuneLab.SDK;
 using TuneLab.Utils;
@@ -26,6 +27,8 @@ internal class Track : DataObject, ITrack
     // 路由：output 单选出入口 + 并联 send（DESIGN.md §4.2 / §4.3）。
     public DataProperty<MixerRoute> Output { get; }
     public DataObjectList<Send> Sends { get; }
+    // 调音台里的固定位置（靠左/靠右，不随横向滚动）。纯视图状态，但跟着工程走。
+    public DataProperty<MixerPin> Pinned { get; }
     public bool ExportEnabled { get; set; } = false;
     public int ExportChannels { get; set; } = 1;
     public IReadOnlyDataObjectLinkedList<IPart> Parts => mParts;
@@ -47,6 +50,7 @@ internal class Track : DataObject, ITrack
     IDataProperty<string> ITrack.Color => Color;
     IDataProperty<MixerRoute> ITrack.Output => Output;
     IReadOnlyDataObjectList<Send> ITrack.Sends => Sends;
+    IDataProperty<MixerPin> ITrack.Pinned => Pinned;
 
     public Track(IProject project, TrackInfo info)
     {
@@ -62,6 +66,7 @@ internal class Track : DataObject, ITrack
         // 构造期尚未接上 document：这条命令被丢弃、只落值（见 DataProperty.SetInfo）。
         Output.SetInfo(MixerRoute.Master);
         Sends = new DataObjectList<Send>(this);
+        Pinned = new DataStruct<MixerPin>(this);
         mParts = new();
         mParts.Attach(this);
 

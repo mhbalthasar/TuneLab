@@ -189,6 +189,21 @@ public class MixerModelAdapterTests
     }
 
     [Fact]
+    public void Name_IsWritableAndUndoable()
+    {
+        var (document, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            model.Channels[0].Name = "改名了";
+            Assert.Equal("改名了", project.Tracks[0].Name.Value);
+
+            document.Undo();
+            Assert.Equal("t1", project.Tracks[0].Name.Value);
+        }
+    }
+
+    [Fact]
     public void Master_ReadsAndWritesEngineGain()
     {
         var (_, _, model) = Create(Track("t1"));

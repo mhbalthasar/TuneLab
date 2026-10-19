@@ -222,6 +222,28 @@ public class MixerPersistenceTests
         }
     }
 
+    // pin 跟着工程走（它是视图状态，但用户希望下次打开还在）。
+    [Fact]
+    public void Pin_SurvivesSaveAndLoad()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var source = NewProject("主唱");
+            source.Tracks[0].Pinned.SetInfo(MixerPin.Left);
+            MixerPersistence.Save(source, path);
+
+            var target = NewProject("主唱");
+            MixerPersistence.Load(target, path);
+
+            Assert.Equal(MixerPin.Left, target.Tracks[0].Pinned.Value);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
     // 门面：工程被替换后，补丁手里的同一个模型要跟着换，并通知界面重建。
     [Fact]
     public void Facade_FollowsProjectReplacement()
