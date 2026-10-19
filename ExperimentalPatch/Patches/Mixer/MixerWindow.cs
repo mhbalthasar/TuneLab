@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -39,9 +41,20 @@ public sealed class MixerWindow : Window
     FxPopupWindow? mFxPopup;
 
     bool mResizing;
-    double mResizeStartWidth;
-    double mResizeStartHeight;
-    Point mResizeStartPointer;
+    ResizeEdge mResizeEdge;
+    double mStartWidth;
+    double mStartHeight;
+    PixelPoint mStartPosition;
+    PixelPoint mStartScreen;
+
+    enum ResizeEdge
+    {
+        Left,
+        Right,
+        Bottom,
+        BottomLeft,
+        BottomRight,
+    }
 
     public MixerWindow(IMixerModel model, IHostServices host)
     {
@@ -79,6 +92,7 @@ public sealed class MixerWindow : Window
         };
 
         Content = BuildContent();
+        LoadGeometry();
 
         mModel.ChannelsChanged += Rebuild;
         mModel.MetersUpdated += PumpMeters;
@@ -117,7 +131,7 @@ public sealed class MixerWindow : Window
 
         var corners = new Grid();
         corners.Children.Add(grid);
-        corners.Children.Add(BuildResizeGrip());
+        corners.Children.Add(BuildResizeHandles());
 
         return new Border
         {
@@ -156,8 +170,12 @@ public sealed class MixerWindow : Window
             Height = 22,
             HoverColor = Palette.CloseHover,
         };
-        // 关闭 = 隐藏：窗口与轨道订阅都留着，下次打开是瞬时的。
-        close.Click += Hide;
+        // 关闭 = 隐藏：窗口与轨道订阅都留着，下次打开是瞬时的；顺手记住尺寸。
+        close.Click += () =>
+        {
+            SaveGeometry();
+            Hide();
+        };
 
         var buttons = new StackPanel
         {
@@ -195,9 +213,26 @@ public sealed class MixerWindow : Window
         return header;
     }
 
-    Control BuildResizeGrip()
+    // 无边框窗没有系统可拖的边角，自己铺一层透明命中区：
+    // 左右两条边（宽 5）、下边（高 5）、两个下角（14×14），再叠一个**不可命中**的可视把手。
+    // 之前的实现只有一个 15×15 的 Path —— Path 只有描边能命中，那条 1px 斜线几乎拖不到，
+    // 所以"窗口能调大小"在手上等于不存在。
+    Control BuildResizeHandles()
     {
-        var grip = new ShapePath
+        var layer = new Grid();
+
+        layer.Children.Add(Edge(ResizeEdge.Left, HorizontalAlignment.Left, VerticalAlignment.Stretch,
+            5, double.NaN, StandardCursorType.SizeWestEast));
+        layer.Children.Add(Edge(ResizeEdge.Right, HorizontalAlignment.Right, VerticalAlignment.Stretch,
+            5, double.NaN, StandardCursorType.SizeWestEast));
+        layer.Children.Add(Edge(ResizeEdge.Bottom, HorizontalAlignment.Stretch, VerticalAlignment.Bottom,
+            double.NaN, 5, StandardCursorType.SizeNorthSouth));
+        layer.Children.Add(Edge(ResizeEdge.BottomLeft, HorizontalAlignment.Left, VerticalAlignment.Bottom,
+            14, 14, StandardCursorType.BottomLeftCorner));
+        layer.Children.Add(Edge(ResizeEdge.BottomRight, HorizontalAlignment.Right, VerticalAlignment.Bottom,
+            14, 14, StandardCursorType.BottomRightCorner));
+
+        layer.Children.Add(new ShapePath
         {
             Data = StreamGeometry.Parse("M2,13 L13,2 M8,13 L13,8 M12,13 L13,12"),
             Stroke = Palette.Brush(Palette.LightWhite, 0.45),
@@ -207,45 +242,142 @@ public sealed class MixerWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom,
             Margin = new Thickness(0, 0, 3, 3),
-            Cursor = new Cursor(StandardCursorType.BottomRightCorner),
+            IsHitTestVisible = false,
+        });
+
+        return layer;
+    }
+
+    Control Edge(ResizeEdge edge, HorizontalAlignment horizontal, VerticalAlignment vertical,
+        double width, double height, StandardCursorType cursor)
+    {
+        var border = new Border
+        {
+            // 必须给透明背景：null 背景的控件不参与命中测试。
+            Background = Brushes.Transparent,
+            HorizontalAlignment = horizontal,
+            VerticalAlignment = vertical,
+            Width = width,
+            Height = height,
+            Cursor = new Cursor(cursor),
         };
 
-        // 无边框窗没有系统可拖的边角，自己算尺寸。窗口左上角不动，故指针相对窗口的位移就是尺寸增量。
-        grip.PointerPressed += (_, e) =>
+        border.PointerPressed += (_, e) => BeginResize(e, edge, border);
+        border.PointerMoved += (_, e) => UpdateResize(e);
+        border.PointerReleased += (_, e) => EndResize(e);
+        return border;
+    }
+
+    // 用**屏幕坐标**算增量：拖左边/左下角时窗口原点也在动，用窗口内坐标会把两个位移叠在一起。
+    // 屏幕坐标是物理像素，除以 RenderScaling 换算回 DIP（Width/Height 是 DIP）。
+    void BeginResize(PointerPressedEventArgs e, ResizeEdge edge, Control grip)
+    {
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        mResizing = true;
+        mResizeEdge = edge;
+        mStartWidth = Width;
+        mStartHeight = Height;
+        mStartPosition = Position;
+        mStartScreen = this.PointToScreen(e.GetPosition(this));
+        e.Pointer.Capture(grip);
+        e.Handled = true;
+    }
+
+    void UpdateResize(PointerEventArgs e)
+    {
+        if (!mResizing)
+            return;
+
+        var screen = this.PointToScreen(e.GetPosition(this));
+        double scale = RenderScaling > 0 ? RenderScaling : 1;
+        double dx = (screen.X - mStartScreen.X) / scale;
+        double dy = (screen.Y - mStartScreen.Y) / scale;
+
+        double width = mStartWidth;
+        double height = mStartHeight;
+        int x = mStartPosition.X;
+
+        if (mResizeEdge is ResizeEdge.Left or ResizeEdge.BottomLeft)
         {
-            if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            // 左边拖动：宽度减、原点右移；夹住最小宽度时原点也不能再动。
+            dx = Math.Min(dx, mStartWidth - MinWidth);
+            width = mStartWidth - dx;
+            x = mStartPosition.X + (int)Math.Round(dx * scale);
+        }
+        else if (mResizeEdge is ResizeEdge.Right or ResizeEdge.BottomRight)
+        {
+            width = Math.Max(MinWidth, mStartWidth + dx);
+        }
+
+        if (mResizeEdge is ResizeEdge.Bottom or ResizeEdge.BottomLeft or ResizeEdge.BottomRight)
+            height = Math.Max(MinHeight, mStartHeight + dy);
+
+        Width = width;
+        Height = height;
+
+        if (mResizeEdge is ResizeEdge.Left or ResizeEdge.BottomLeft)
+            Position = new PixelPoint(x, Position.Y);
+
+        e.Handled = true;
+    }
+
+    void EndResize(PointerReleasedEventArgs e)
+    {
+        if (!mResizing)
+            return;
+
+        mResizing = false;
+        e.Pointer.Capture(null);
+        SaveGeometry();
+        e.Handled = true;
+    }
+
+    // ── 窗口几何记忆（落在宿主数据目录，受沙盒重定向）──
+
+    void LoadGeometry()
+    {
+        try
+        {
+            string path = GeometryPath;
+            if (!File.Exists(path))
                 return;
 
-            mResizing = true;
-            mResizeStartWidth = Width;
-            mResizeStartHeight = Height;
-            mResizeStartPointer = e.GetPosition(this);
-            e.Pointer.Capture(grip);
-            e.Handled = true;
-        };
-
-        grip.PointerMoved += (_, e) =>
-        {
-            if (!mResizing)
+            var geometry = JsonSerializer.Deserialize<WindowGeometry>(File.ReadAllText(path));
+            if (geometry == null)
                 return;
 
-            var point = e.GetPosition(this);
-            Width = Math.Max(MinWidth, mResizeStartWidth + point.X - mResizeStartPointer.X);
-            Height = Math.Max(MinHeight, mResizeStartHeight + point.Y - mResizeStartPointer.Y);
-            e.Handled = true;
-        };
-
-        grip.PointerReleased += (_, e) =>
+            if (geometry.Width >= MinWidth)
+                Width = geometry.Width;
+            if (geometry.Height >= MinHeight)
+                Height = geometry.Height;
+        }
+        catch
         {
-            if (!mResizing)
-                return;
+            // 几何读不出来就用默认尺寸 —— 不值得为它打扰用户。
+        }
+    }
 
-            mResizing = false;
-            e.Pointer.Capture(null);
-            e.Handled = true;
-        };
+    void SaveGeometry()
+    {
+        try
+        {
+            Directory.CreateDirectory(mHost.DataFolder);
+            File.WriteAllText(GeometryPath,
+                JsonSerializer.Serialize(new WindowGeometry { Width = Width, Height = Height }));
+        }
+        catch
+        {
+        }
+    }
 
-        return grip;
+    string GeometryPath => Path.Combine(mHost.DataFolder, "mixer-window.json");
+
+    sealed class WindowGeometry
+    {
+        public double Width { get; set; }
+        public double Height { get; set; }
     }
 
     void Rebuild()
