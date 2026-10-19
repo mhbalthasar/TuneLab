@@ -176,12 +176,15 @@ internal class NAudioCodec : IAudioCodec
         return new AudioInfo() { duration = reader.TotalTime.TotalSeconds };
     }
 
-    static byte[] To16BitsBytes(float[] data)
+    // [EP-MIXER-10] 夹到 [−1, 1] 再换算。
+    // 原实现是 `(short)(data[i] * 32768)`：1.0 会得到 32768 → 回绕成 −32768（满量程正峰变负峰），
+    // 超过 1 的样本更是直接符号翻转——导出里听到的"刺啦刺啦"就是它。用 32767 做满量程回避溢出。
+    internal static byte[] To16BitsBytes(float[] data)
     {
         byte[] results = new byte[data.Length * 2];
         for (int i = 0; i < data.Length; i++)
         {
-            short shortValue = (short)(data[i] * 32768);
+            short shortValue = (short)Math.Round(Math.Clamp(data[i], -1f, 1f) * 32767f);
             byte[] shortBytes = BitConverter.GetBytes(shortValue);
             results[i * 2] = shortBytes[0];
             results[i * 2 + 1] = shortBytes[1];
@@ -189,13 +192,13 @@ internal class NAudioCodec : IAudioCodec
         return results;
     }
 
-    static byte[] To24BitsBytes(float[] data)
+    // 同上：先把 float 夹住再乘，避免"先转 int 再 clamp"在极端值上先溢出。
+    internal static byte[] To24BitsBytes(float[] data)
     {
         byte[] results = new byte[data.Length * 3];
         for (int i = 0; i < data.Length; i++)
         {
-            int intValue = (int)(data[i] * 8388608); // 2^23
-            intValue = Math.Clamp(intValue, -8388608, 8388607);
+            int intValue = (int)Math.Round(Math.Clamp(data[i], -1f, 1f) * 8388607f);
             results[i * 3] = (byte)(intValue & 0xFF);
             results[i * 3 + 1] = (byte)((intValue >> 8) & 0xFF);
             results[i * 3 + 2] = (byte)((intValue >> 16) & 0xFF);

@@ -17,6 +17,7 @@ internal class AudioGraph()
         set
         {
             mSampleRate = value;
+            mMixer.Limiter.SampleRate = value;
             lock (mTrackLockObject)
             {
                 foreach (var track in mTracks)
@@ -134,6 +135,11 @@ internal class AudioGraph()
         // 只有播放路径会传 masterInput；导出不传，故导出语义不受影响。
         if (isStereo && masterInput != null)
             ApplyPreviewAndMasterGain(endPosition - position, buffer, offset, masterInput);
+
+        // [EP-MIXER-10] 旧路径（单声道导出 / 图建失败时的兜底）也要限幅，
+        // 否则"单声道导出"与"设备输出"的听感会不一致。
+        if (mMixer.LimiterEnabled)
+            mMixer.Limiter.Process(buffer, offset, endPosition - position, isStereo ? 2 : 1);
     }
 
     void MixDataLegacy(int position, int endPosition, bool isStereo, float[] buffer, int offset)
@@ -229,6 +235,6 @@ internal class AudioGraph()
 
     readonly object mTrackLockObject = new();
 
-    readonly Mixer mMixer = new();
+    readonly Mixer mMixer = new() { LimiterEnabled = true };
     readonly MixerGraphCompiler mCompiler = new();
 }

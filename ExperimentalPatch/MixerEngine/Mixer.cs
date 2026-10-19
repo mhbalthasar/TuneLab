@@ -29,6 +29,12 @@ public sealed class Mixer
 
     public MixSnapshot? Snapshot => mRuntime?.Snapshot;
 
+    // 输出级限幅（DESIGN.md §3.10）。默认**关**：引擎单测要验证"纯混音"的 bit 相同，
+    // 限幅是另一层语义。宿主在 AudioGraph 里把它打开。
+    public PeakLimiter Limiter { get; } = new();
+
+    public bool LimiterEnabled { get; set; }
+
     public void SetSnapshot(MixSnapshot? snapshot)
     {
         mRuntime = snapshot == null ? null : new Runtime(snapshot, mMaxBlockSize);
@@ -46,6 +52,12 @@ public sealed class Mixer
         {
             int n = Math.Min(count, mMaxBlockSize);
             RenderChunk(runtime, position, n, buffer, offset, masterInput);
+
+            // 限幅在**整块渲染完之后**做：各节点的电平抽头（表）已经在这一块里取过了，
+            // 所以表显示的是限幅前的峰值（DESIGN.md §3.10）。
+            if (LimiterEnabled)
+                Limiter.Process(buffer, offset, n);
+
             position += n;
             offset += n * 2;
             count -= n;

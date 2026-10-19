@@ -38,7 +38,11 @@ public class MixerAudioSeamTests
             mData = new float[count];
             var random = new Random(seed);
             for (int i = 0; i < count; i++)
-                mData[i] = (float)(random.NextDouble() * 2 - 1);
+            {
+                // 幅度压到 0.25：这几条测试验证的是"混音/路由的算术与旧路径一致"，
+                // 不该让输出级限幅器介入（它有自己的用例）。
+                mData[i] = (float)(random.NextDouble() * 2 - 1) * 0.25f;
+            }
 
             SampleCount = count;
         }

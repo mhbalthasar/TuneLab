@@ -290,6 +290,82 @@ public class MixerEngineTests
         Assert.True(MixGraphBuilder.WouldCreateCycle([], "aux-1", "aux-1"));
     }
 
+    // ── 输出级限幅（DESIGN.md §3.10）──
+
+    [Fact]
+    public void Limiter_NeverExceedsCeilingAndKeepsTheStereoRatio()
+    {
+        var limiter = new PeakLimiter();
+        var buffer = new[] { 3f, -2f };
+
+        limiter.Process(buffer, 0, 1);
+
+        Assert.True(Math.Abs(buffer[0]) <= limiter.Ceiling + 1e-6f);
+        Assert.True(Math.Abs(buffer[1]) <= limiter.Ceiling + 1e-6f);
+
+        // 立体声联动：两声道用同一个增益，声像不会被压歪。
+        Assert.Equal(-2f / 3f, buffer[1] / buffer[0], 4);
+    }
+
+    [Fact]
+    public void Limiter_ReleasesBackToUnity()
+    {
+        var limiter = new PeakLimiter(releaseSeconds: 0.01) { SampleRate = 1000 };   // 10 帧回到 1
+
+        var hot = new[] { 5f, 5f };
+        limiter.Process(hot, 0, 1);
+        Assert.True(limiter.Gain < 0.5f);
+
+        var quiet = new float[64];
+        Array.Fill(quiet, 0.1f);
+        limiter.Process(quiet, 0, 32);
+
+        Assert.Equal(1f, limiter.Gain, 3);
+    }
+
+    [Fact]
+    public void Limiter_LeavesInRangeSignalUntouched()
+    {
+        var limiter = new PeakLimiter();
+        var buffer = new[] { 0.5f, -0.5f, 0.25f, -0.25f };
+
+        limiter.Process(buffer, 0, 2);
+
+        Assert.Equal(new[] { 0.5f, -0.5f, 0.25f, -0.25f }, buffer);
+        Assert.Equal(1f, limiter.Gain);
+    }
+
+    [Fact]
+    public void Mixer_LimiterCapsTheOutputButTheMeterStillSeesTheOvershoot()
+    {
+        const int frames = 32;
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState());
+
+        for (int t = 0; t < 4; t++)
+        {
+            var data = new float[frames * 2];
+            Array.Fill(data, 0.9f);   // 4 条相加 = 3.6，远超 1
+
+            var node = builder.AddNode("track-" + t, MixNodeKind.Track, new TestState(), new ArraySource(data));
+            builder.Connect(node, master, 1f);
+        }
+
+        var mixer = new Mixer { LimiterEnabled = true };
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[frames * 2];
+        mixer.Render(0, frames, buffer, 0);
+
+        // 写进设备 / WAV 的样本不越界。
+        Assert.All(buffer, sample => Assert.True(Math.Abs(sample) <= mixer.Limiter.Ceiling + 1e-5f));
+
+        // 但表（限幅前抽头）仍然显示越界 —— 用户要求"不影响动态条显示它越界"。
+        Assert.True(mixer.TryGetPeakDb("master", out double left, out _));
+        Assert.True(left > 0);
+    }
+
     // ── 电平抽头（AUX / Master 的表）──
 
     [Fact]
