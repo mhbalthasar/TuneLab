@@ -290,6 +290,35 @@ public class MixerEngineTests
         Assert.True(MixGraphBuilder.WouldCreateCycle([], "aux-1", "aux-1"));
     }
 
+    // 直接去设备的通道不受 Master 推子影响。
+    // 用户报的 bug：唯一有声的轨 → AUX → 设备，Master 没输入；拉 Master 却把 AUX 也压了
+    // （原因是两个 sink 共用同一个输出缓冲，Master 的增益乘到了整块上）。
+    [Fact]
+    public void DeviceRoutedChannel_IsNotAffectedByTheMasterFader()
+    {
+        const int frames = 32;
+
+        var data = new float[frames * 2];
+        Array.Fill(data, 0.5f);
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState { Volume = 0.1 });   // 狠压 Master
+        var device = builder.AddNode("device", MixNodeKind.Device);
+        var aux = builder.AddNode("aux-1", MixNodeKind.Aux, new TestState());
+        var track = builder.AddNode("track-0", MixNodeKind.Track, new TestState(), new ArraySource(data));
+
+        builder.Connect(track, aux, 1f);
+        builder.Connect(aux, device, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[frames * 2];
+        mixer.Render(0, frames, buffer, 0);
+
+        Assert.All(buffer, sample => Assert.Equal(0.5f, sample, 5));
+    }
+
     // ── 输出级限幅（DESIGN.md §3.10）──
 
     [Fact]

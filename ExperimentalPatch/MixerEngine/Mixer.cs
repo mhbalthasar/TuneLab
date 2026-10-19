@@ -86,20 +86,16 @@ public sealed class Mixer
     {
         var nodes = runtime.Snapshot.Nodes;
 
-        // 1) 清空所有非 sink 节点的输入缓冲（Master / Device 直接用调用方的输出缓冲）。
+        // 1) 清空所有节点的缓冲（含 sink：sink 也用自己的缓冲，最后统一混进输出）。
         for (int i = 0; i < nodes.Count; i++)
-        {
-            if (!IsSink(nodes[i]))
-                Array.Clear(runtime.Buffers[i], 0, count * 2);
-        }
+            Array.Clear(runtime.Buffers[i], 0, count * 2);
 
         // 2) 按拓扑序逐节点：出声 → 推子 → 分发。
         for (int i = 0; i < nodes.Count; i++)
         {
             var node = nodes[i];
-            bool isSink = IsSink(node);
-            var target = isSink ? output : runtime.Buffers[i];
-            int targetOffset = isSink ? outputOffset : 0;
+            var target = runtime.Buffers[i];
+            const int targetOffset = 0;
 
             bool hasSignal = true;
 
@@ -122,7 +118,7 @@ public sealed class Mixer
             else if (node.Kind == MixNodeKind.Master)
             {
                 // 预览音在 Master 增益之前混进来 —— 与旧路径（MixData → AddData(预览) → MasterGain）同序。
-                masterInput?.AddData(position, count, output, outputOffset, 1f, 1f);
+                masterInput?.AddData(position, count, target, targetOffset, 1f, 1f);
                 ApplyGain(node.State, target, targetOffset, count);
             }
             else if (node.Kind == MixNodeKind.Device)
@@ -148,9 +144,8 @@ public sealed class Mixer
             for (int e = 0; e < edges.Count; e++)
             {
                 var edge = edges[e];
-                bool toSink = IsSink(nodes[edge.TargetIndex]);
-                var destination = toSink ? output : runtime.Buffers[edge.TargetIndex];
-                int destinationOffset = toSink ? outputOffset : 0;
+                var destination = runtime.Buffers[edge.TargetIndex];
+                const int destinationOffset = 0;
                 float gain = edge.CurrentGain;
 
                 if (edge.DelaySamples > 0)
@@ -162,6 +157,15 @@ public sealed class Mixer
                     Accumulate(target, targetOffset, destination, destinationOffset, count, gain);
                 }
             }
+        }
+
+        // 3) 所有 sink（Master / Device）混进输出缓冲。
+        //    每个 sink 用自己的缓冲 → Master 的增益只作用于 Master 自己的输入，
+        //    "直接去设备"的通道因此不受 Master 推子影响（这是混音台的语义，不是优化）。
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (IsSink(nodes[i]))
+                Accumulate(runtime.Buffers[i], 0, output, outputOffset, count, 1f);
         }
     }
 
