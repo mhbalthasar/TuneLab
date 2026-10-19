@@ -23,4 +23,9 @@ public interface IHostServices
 
     // exception 可空：只有一句话、没有异常对象时用 LogError(message)。
     void LogError(string message, Exception? exception = null);
+
+    // 混音台的模型（宿主实现，见 TuneLab/ExperimentalPatchMixerModel.cs）。
+    // 没有打开的工程 / 编辑器尚未就绪时返回 null —— 调用方负责重试或显示空态。
+    // 默认实现返回 null：让只做日志/闪屏的旧实现（harness）不必跟着改。
+    IMixerModel? CreateMixerModel() => null;
 }

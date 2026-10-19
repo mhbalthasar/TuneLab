@@ -115,6 +115,12 @@ public interface IMixerChannel
     // 峰值电平（dB）。null = 无信号 / 被静音 / 被 solo 压制 —— 即"此刻听不到"。
     (double LeftDb, double RightDb)? Peak { get; }
 
+    // 交互式编辑会话：拖动开始时 BeginEdit()、结束时 EndEdit()。
+    // 中间的多次 set 会被宿主合并成**一步 undo**（与轨道头滑杆同一套 merge 机制）。
+    // 不调也安全：单次 set 就是一步 undo。
+    void BeginEdit();
+    void EndEdit();
+
     // 别处改了这条通道的推子 / pan / M / S / 选中 → 刷新该条。
     event Action? StateChanged;
 

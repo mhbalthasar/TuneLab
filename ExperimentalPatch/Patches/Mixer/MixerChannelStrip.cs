@@ -238,11 +238,18 @@ internal sealed class MixerChannelStrip : UserControl
             mReadout.Text = Fader.FormatDb(value);
         };
 
+        // 一次拖动 = 一步 undo（宿主的 merge 作用域）。
+        mFader.EditStarted += () => { if (!mSyncing) mChannel.BeginEdit(); };
+        mFader.EditEnded += () => { if (!mSyncing) mChannel.EndEdit(); };
+
         mPan.PanEdited += value =>
         {
             if (!mSyncing)
                 mChannel.Pan = value;
         };
+
+        mPan.EditStarted += () => { if (!mSyncing) mChannel.BeginEdit(); };
+        mPan.EditEnded += () => { if (!mSyncing) mChannel.EndEdit(); };
 
         mMute.Toggled += value =>
         {

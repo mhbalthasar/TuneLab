@@ -56,6 +56,10 @@ public sealed class Fader : Control
     // 用户改动了值（不是程序设值）。写入端靠它回写数据源——比订阅属性变化再判断"是不是自己在改"干净。
     public event Action<double>? ValueEdited;
 
+    // 一次拖动 = 一步 undo：按下开始会话、松手结束（宿主侧用 merge 作用域实现）。
+    public event Action? EditStarted;
+    public event Action? EditEnded;
+
     static Fader()
     {
         // Render() 直接读 Value，属性变化要触发重绘。
@@ -133,6 +137,7 @@ public sealed class Fader : Control
 
         mDragging = true;
         e.Pointer.Capture(this);
+        EditStarted?.Invoke();
         SetValueFromY(e.GetPosition(this).Y);
         e.Handled = true;
     }
@@ -157,6 +162,7 @@ public sealed class Fader : Control
 
         mDragging = false;
         e.Pointer.Capture(null);
+        EditEnded?.Invoke();
         e.Handled = true;
     }
 

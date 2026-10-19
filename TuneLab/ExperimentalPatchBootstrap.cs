@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.FunctionHooker;
 using TuneLab.Foundation;
+using TuneLab.UI;
 using HostLog = TuneLab.Foundation.Log;
 
 namespace TuneLab;
@@ -43,8 +47,47 @@ internal static class ExperimentalPatchBootstrap
     // 退出收尾调用（App 的 desktop.Exit），须早于宿主引擎销毁。
     public static void Stop()
     {
+        mMixerModel?.Dispose();
+        mMixerModel = null;
+        mMixerModelProject = null;
+
         Guard(PatchHost.Shutdown, "shutdown");
     }
+
+    // 混音台的模型（补丁经 IHostServices 取）。一个工程一个实例：
+    // Project 实例在"打开工程"时被复用（内容替换），所以这里按实例判等即可。
+    public static IMixerModel? CreateMixerModel()
+    {
+        try
+        {
+            var project = CurrentProject();
+            if (project == null)
+                return null;
+
+            if (mMixerModel == null || !ReferenceEquals(mMixerModelProject, project))
+            {
+                mMixerModel?.Dispose();
+                mMixerModel = new MixerModelAdapter(project);
+                mMixerModelProject = project;
+            }
+
+            return mMixerModel;
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error("Experimental patch mixer model failed: " + ex);
+            return null;
+        }
+    }
+
+    static Project? CurrentProject()
+    {
+        var desktop = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+        return (desktop?.MainWindow as MainWindow)?.Editor.Project;
+    }
+
+    static MixerModelAdapter? mMixerModel;
+    static Project? mMixerModelProject;
 
     // 补丁层【永不允许】把异常抛回宿主：出问题就是「这次补丁不生效」，主程序照常跑。
     static void Guard(Action action, string what)
@@ -74,6 +117,8 @@ internal static class ExperimentalPatchBootstrap
 
         public void LogError(string message, Exception? exception = null)
             => HostLog.Error(Prefix + message + (exception == null ? string.Empty : Environment.NewLine + exception));
+
+        public IMixerModel? CreateMixerModel() => ExperimentalPatchBootstrap.CreateMixerModel();
 
         const string Prefix = "[ExperimentalPatch] ";
     }

@@ -18,7 +18,7 @@
      方向与 UI 补丁一致（宿主 → 补丁侧），没有任何一边引用宿主。
 ```
 
-宿主对补丁层的认知被压到**四个静态方法 + 一份 `IHostServices`**：
+宿主对补丁层的认知被压到**五个静态方法 + 一份 `IHostServices`**：
 
 | 宿主文件 | 位置 | 干什么 |
 |---|---|---|
@@ -26,8 +26,9 @@
 | `TuneLab/App.axaml.cs` | `OnFrameworkInitializationCompleted` 开头 | `ExperimentalPatchBootstrap.CreateStartupScreen()` → 取闪屏并据此分派整段启动 |
 | `TuneLab/App.axaml.cs` | `HandleStartupArgs(args[1..])` 之后 | `ExperimentalPatchBootstrap.Ready()` → 触发 `app.ready` |
 | `TuneLab/App.axaml.cs` | `desktop.Exit` 首行 | `ExperimentalPatchBootstrap.Stop()` → 触发 `app.shutdown` + 卸载补丁 |
-| `TuneLab/ExperimentalPatchBootstrap.cs` | — | `IHostServices` 实现 + 异常兜底 |
-| `TuneLab/TuneLab.csproj` + `TuneLab.sln` | — | 一个 `ProjectReference` + 一条工程项 |
+| `TuneLab/ExperimentalPatchBootstrap.cs` | — | `IHostServices` 实现 + 异常兜底 + `CreateMixerModel()`（宿主侧 `IMixerModel` 适配器，按工程缓存） |
+| `TuneLab/ExperimentalPatchMixerModel.cs` | — | **新增文件**：`IMixerModel` / `IMixerChannel` 的宿主实现（读 `Track` 的 DataProperty，写回带 undo merge） |
+| `TuneLab/TuneLab.csproj` + `TuneLab.sln` | — | 两个 `ProjectReference`（`ExperimentalPatch` / `MixerEngine`）+ 一条工程项 |
 
 除以上六处、以及**允许新增的 `TuneLab/ExperimentalPatch*.cs` 适配器文件**（见 §5），宿主其余文件一律不改。
 
