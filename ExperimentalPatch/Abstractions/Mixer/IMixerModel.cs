@@ -22,6 +22,13 @@ public interface IMixerModel
     // 当前可用的插入格式（VST3 可用、VST2 仅 Windows、JSFX 未实现…）。
     IReadOnlyList<IMixerInsertFormat> InsertFormats { get; }
 
+    // ── 能力标志 ──
+    // 阶段一只有混音器（轨 → Master）：AUX / send / 插入还没接。界面据此**隐藏**对应的"添加"入口，
+    // 而不是让用户点出一个异常，或点一个没反应的按钮（DESIGN.md §3.3 同一条纪律）。
+    bool SupportsAux { get; }
+    bool SupportsSends { get; }
+    bool SupportsInserts { get; }
+
     // 轨 / AUX 增删、换序、换工程 → 整表重建。轨数在人类尺度上很小，重建比增量 diff 更不容易错。
     event Action? ChannelsChanged;
 

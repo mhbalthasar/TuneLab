@@ -38,6 +38,11 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     public IReadOnlyList<IMixerOutput> Outputs => mOutputs;
     public IReadOnlyList<IMixerInsertFormat> InsertFormats => mFormats;
 
+    // 阶段一：只有轨 → Master。AUX / send / 插入在 M4 / M6 接入。
+    public bool SupportsAux => false;
+    public bool SupportsSends => false;
+    public bool SupportsInserts => false;
+
     public event Action? ChannelsChanged;
     public event Action? RoutingChanged;
     public event Action? MetersUpdated;

@@ -146,6 +146,8 @@ public sealed class MixerWindow : Window
         };
 
         mAddAux.Click += () => mModel.AddAux();
+        // 宿主还没接 AUX（阶段一）→ 直接不画这个按钮，而不是画一个点了没反应的。
+        mAddAux.IsVisible = mModel.SupportsAux;
 
         var close = new ChromeButton
         {
@@ -290,7 +292,7 @@ public sealed class MixerWindow : Window
     void ShowSendPopup(MixerChannelStrip strip)
     {
         mSendPopup?.Close();
-        var popup = new SendPopupWindow(strip.Channel, mModel.Outputs, mHost);
+        var popup = new SendPopupWindow(strip.Channel, mModel.Outputs, mHost, mModel.SupportsSends);
         PlacePopup(popup, strip.SendAnchor);
         popup.Show();
         mSendPopup = popup;
@@ -299,7 +301,7 @@ public sealed class MixerWindow : Window
     void ShowFxPopup(MixerChannelStrip strip)
     {
         mFxPopup?.Close();
-        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost);
+        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost, mModel.SupportsInserts);
         PlacePopup(popup, strip.FxAnchor);
         popup.Show();
         mFxPopup = popup;

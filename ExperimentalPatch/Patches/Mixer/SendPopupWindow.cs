@@ -18,14 +18,16 @@ public sealed class SendPopupWindow : Window
     readonly IMixerChannel mChannel;
     readonly IReadOnlyList<IMixerOutput> mOutputs;
     readonly IHostServices mHost;
+    readonly bool mCanAdd;
     readonly StackPanel mRows = new() { Spacing = 4 };
     readonly TextBlock mEmpty = new();
 
-    public SendPopupWindow(IMixerChannel channel, IReadOnlyList<IMixerOutput> outputs, IHostServices host)
+    public SendPopupWindow(IMixerChannel channel, IReadOnlyList<IMixerOutput> outputs, IHostServices host, bool canAdd = true)
     {
         mChannel = channel;
         mOutputs = outputs;
         mHost = host;
+        mCanAdd = canAdd;
 
         Title = L("发送", "Sends");
         Width = MixerMetrics.PopupWidth;
@@ -95,16 +97,30 @@ public sealed class SendPopupWindow : Window
             Text = L("+ 添加发送", "+ Add send"),
             Height = 22,
             Margin = new Thickness(MixerMetrics.PopupPadding, 2, MixerMetrics.PopupPadding, MixerMetrics.PopupPadding),
+            IsVisible = mCanAdd,
         };
         add.Click += AddFirstAvailable;
+
+        // 宿主还没接 send（阶段一）：不画"添加"按钮，直接说清为什么 —— 点了没反应的按钮比没有更糟。
+        var hint = new TextBlock
+        {
+            Text = L("send 尚未接入", "Sends are not wired up yet"),
+            FontSize = 10.5,
+            Foreground = Palette.Brush(Palette.TextLabel, 0.7),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, MixerMetrics.PopupPadding),
+            IsVisible = !mCanAdd,
+        };
+
+        var footer = new Panel { Children = { add, hint } };
 
         var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto") };
         Grid.SetRow(header, 0);
         Grid.SetRow(body, 1);
-        Grid.SetRow(add, 2);
+        Grid.SetRow(footer, 2);
         grid.Children.Add(header);
         grid.Children.Add(body);
-        grid.Children.Add(add);
+        grid.Children.Add(footer);
 
         return new Border
         {
