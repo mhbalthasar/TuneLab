@@ -24,7 +24,12 @@
 | `TuneLab/ExperimentalPatchBootstrap.cs` | — | `IHostServices` 实现 + 异常兜底 |
 | `TuneLab/TuneLab.csproj` + `TuneLab.sln` | — | 一个 `ProjectReference` + 一条工程项 |
 
-除以上六处，**宿主其余文件一律不改**。
+除以上六处、以及**允许新增的 `TuneLab/ExperimentalPatch*.cs` 适配器文件**（见 §5），宿主其余文件一律不改。
+
+**适配器文件**：当一个补丁需要宿主 `internal` 类型（`Track` / `Project` / `AudioEngine` …）时，
+翻译代码放一个**新增的** `TuneLab/ExperimentalPatch<功能>.cs` 里（一个功能一个文件），
+由 `ExperimentalPatchBootstrap` 转出去。**上游不可能有同名文件，所以这条路的合并冲突恒为零**——
+比把适配器硬塞进本该保持薄的缝文件要干净得多。
 
 ### 两类接缝，两种改法
 
@@ -141,6 +146,7 @@ payload 需要宿主能力时：优先在 `IHostServices` 上加一个**语义�
 | 类别 | 规则 |
 |---|---|
 | 宿主已有文件 | **只允许** §0 表格里那六处。其余一律不碰。 |
+| 宿主侧适配器 | 需要宿主 `internal` 类型时，**新增** `TuneLab/ExperimentalPatch<功能>.cs`（上游没有同名文件 → 零冲突）。别把这些代码塞进 `ExperimentalPatchBootstrap.cs`。 |
 | `TuneLab/ExperimentalPatchBootstrap.cs` | 属于「缝」，**尽量只增不改**；逻辑写到这里面就等于写回了上游文件。 |
 | `TuneLab/App.axaml.cs` 的启动段 | 已被 `app.splash` 整段搬进 `ContinueStartup`（含音频设备）。**搬移时逐字保留上游原文**（只加相位标记），上游改这段时的对齐成本才最低。 |
 | 上游 `AGENTS.md` / `docs/` | 不改（改了就是新增冲突面）。本层文档一律放 `ExperimentalPatch/` 内。 |
