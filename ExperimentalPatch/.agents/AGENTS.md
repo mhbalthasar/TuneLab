@@ -47,6 +47,7 @@
 | `Abstractions/` | 契约：`IPatch` / `IAnchorTable` / 锚点 payload / `IHostServices`。**补丁能看到宿主的全部**就是这里。 | 加锚点时改 |
 | `FunctionHooker/` | 耦合层：`PatchHost`（宿主唯一入口）、`PatchRegistry`（反射发现）、`AnchorHub`（锚点分发 + 异常隔离 + 订阅回收）。 | 极少改 |
 | `Patches/<功能>/` | 补丁实现。 | 日常改这里 |
+| `UI/` | 跨补丁共用的视觉基础设施：`Palette`（宿主主题的**镜像**，见文件头注释）。只放「多个补丁都要画同一个东西」的那一小撮，不放控件——控件归各自的功能目录。 | 宿主主题变了才改 |
 | `.agents/` | 本约定。 | 约定变了才改 |
 
 **依赖方向是单向的**：`Patches` → `Abstractions`；`FunctionHooker` → `Abstractions`。**没有任何东西依赖宿主程序集**——所以上游怎么重构，补丁都不会编译失败（只会在锚点语义变了时运行期失配，而那是可见的）。

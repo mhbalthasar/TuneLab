@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Threading;
+using TuneLab.ExperimentalPatch.UI;
 
 namespace TuneLab.ExperimentalPatch.Patches.Splash;
 
@@ -129,8 +130,8 @@ public sealed class SplashProgressBar : Control
     }
 
     // 静态缓存：颜色固定，别按帧新建画刷。
-    static readonly IBrush TrackBrush = SplashTheme.Brush(SplashTheme.Item);
-    static readonly IBrush FillBrush = SplashTheme.Brush(SplashTheme.HighLight);
+    static readonly IBrush TrackBrush = Palette.Brush(Palette.Item);
+    static readonly IBrush FillBrush = Palette.Brush(Palette.HighLight);
 
     // 一道软边高光（透明 → 白 → 透明），比硬边色块更像"光扫过"。
     static readonly IBrush ShineBrush = new LinearGradientBrush
