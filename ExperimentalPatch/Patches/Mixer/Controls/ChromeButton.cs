@@ -57,7 +57,7 @@ public sealed class ChromeButton : Control
     {
         base.OnPointerPressed(e);
 
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed || !IsEnabled)
             return;
 
         Click?.Invoke();
@@ -95,15 +95,18 @@ public sealed class ChromeButton : Control
 
         Color background = IsChecked
             ? Palette.Item
-            : (mHover ? HoverColor : Palette.Transparent);
+            : (mHover && IsEnabled ? HoverColor : Palette.Transparent);
 
         context.DrawRectangle(Palette.Brush(background), null, new Rect(0, 0, width, height), 4, 4);
 
         if (string.IsNullOrEmpty(Text))
             return;
 
+        // 禁用态（例如插件没有自己的界面时那个「界面」键）要看得出来，而不是点了没反应。
+        var textBrush = IsEnabled ? Palette.Brush(Palette.LightWhite) : Palette.Brush(Palette.TextLabel, 0.45);
+
         var text = new FormattedText(Text, System.Globalization.CultureInfo.CurrentCulture,
-            FlowDirection.LeftToRight, TextTypeface, 11, Palette.Brush(Palette.LightWhite));
+            FlowDirection.LeftToRight, TextTypeface, 11, textBrush);
         context.DrawText(text, new Point((width - text.Width) / 2, (height - text.Height) / 2));
     }
 }

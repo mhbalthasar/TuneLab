@@ -11,66 +11,81 @@ namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
 // 一条通道条 —— 混音台的主要视觉单元。
 //
-// 自上而下（与 DESIGN.md §4.2 一致）：轨号色块 / 轨名 / pan / M S / 推子 + 电平表 / dB 读数。
-// Master 走同一条渲染路径，只是省掉 pan 与 M/S —— 宿主没有「总输出静音」这个状态（ExportMaster
-// 只看 Track.IsMute/IsSolo），画一个按不响的按钮是撒谎。
+// 布局（DESIGN.md §6.1）：色条序号 / 名 / pan / Send N / FX N / M S / 推子+表 / 读数 / output。
+// **三种通道共用同一套行**，好让推子在不同条上落在同一高度（比较电平的前提）。
+//   - Track：全部；
+//   - AUX：全部（AUX 也有 pan / M / S，只是 solo 只在 AUX 之间生效，那是模型的事）；
+//   - Master：没有 pan / send / M S —— 那几行**留空**，不是画假控件。
 //
-// 【不持有状态】所有显示值都从 IMixerChannel 读；用户改动立刻写回。补丁侧不缓存增益或电平，
-// 否则编辑器那边的改动会让这里与现实脱节。
+// 【不持有状态】所有显示值都从 IMixerChannel 读；用户改动立刻写回。补丁侧不缓存增益或电平。
 internal sealed class MixerChannelStrip : UserControl
 {
     readonly IMixerChannel mChannel;
+    readonly string mLabel;
     readonly bool mIsMaster;
 
     readonly Border mHeaderBar = new();
     readonly TextBlock mIndex = new();
     readonly TextBlock mName = new();
     readonly PanKnob mPan = new();
+    readonly StripButton mSend = new();
+    readonly StripButton mFx = new();
     readonly MixerToggle mMute = new() { Text = "M", CheckedColor = Palette.MuteChecked };
     readonly MixerToggle mSolo = new() { Text = "S", CheckedColor = Palette.SoloChecked };
     readonly Fader mFader = new();
     readonly StereoMeter mMeter = new();
     readonly TextBlock mReadout = new();
+    readonly OutputSelector mOutput = new();
     readonly Border mSelectionBar = new() { Width = 3, Background = Palette.Brush(Palette.HighLight), IsVisible = false };
 
     bool mSyncing;
 
-    public MixerChannelStrip(IMixerChannel channel, int index, bool isMaster)
+    public IMixerChannel Channel => mChannel;
+    public Control SendAnchor => mSend;
+    public Control FxAnchor => mFx;
+    public Control OutputAnchor => mOutput;
+
+    public event Action<MixerChannelStrip>? SendRequested;
+    public event Action<MixerChannelStrip>? FxRequested;
+    public event Action<MixerChannelStrip>? OutputRequested;
+
+    public MixerChannelStrip(IMixerChannel channel, string label)
     {
         mChannel = channel;
-        mIsMaster = isMaster;
+        mLabel = label;
+        mIsMaster = channel.Kind == MixerChannelKind.Master;
 
-        Width = isMaster ? MixerMetrics.MasterWidth : MixerMetrics.StripWidth;
+        Width = mIsMaster ? MixerMetrics.MasterWidth : MixerMetrics.StripWidth;
         Background = Palette.Brush(Palette.Dark);
         BorderBrush = Palette.Brush(Palette.Line, 0.35);
         BorderThickness = new Thickness(0, 0, 1, 0);
 
-        Content = BuildContent(index);
+        Content = BuildContent();
         HookEvents();
         Refresh();
     }
 
-    Control BuildContent(int index)
+    Control BuildContent()
     {
         var rows = new Grid
         {
-            RowDefinitions = mIsMaster
-                ? new RowDefinitions("Auto,*,Auto")                      // 头 / 推子 / 读数
-                : new RowDefinitions("Auto,Auto,Auto,Auto,*,Auto"),      // 头 / 名 / pan / M S / 推子 / 读数
+            // 固定行合计 192；* 给推子。三种通道行数一致 → 推子对齐。
+            RowDefinitions = new RowDefinitions(
+                $"{MixerMetrics.IndexHeight},{MixerMetrics.NameHeight},{MixerMetrics.PanHeight}," +
+                $"{MixerMetrics.CountButtonHeight},{MixerMetrics.CountButtonHeight},{MixerMetrics.ToggleHeight}," +
+                $"*,{MixerMetrics.ReadoutHeight},{MixerMetrics.OutputHeight}"),
         };
+
         int row = 0;
-
-        rows.Children.Add(Place(BuildHeader(index), row++));
-
-        if (!mIsMaster)
-        {
-            rows.Children.Add(Place(BuildName(), row++));
-            rows.Children.Add(Place(BuildPan(), row++));
-            rows.Children.Add(Place(BuildToggles(), row++));
-        }
-
+        rows.Children.Add(Place(BuildHeader(), row++));
+        rows.Children.Add(Place(BuildName(), row++));
+        rows.Children.Add(Place(BuildPan(), row++));
+        rows.Children.Add(Place(BuildSendButton(), row++));
+        rows.Children.Add(Place(BuildFxButton(), row++));
+        rows.Children.Add(Place(BuildToggles(), row++));
         rows.Children.Add(Place(BuildFader(), row++));
-        rows.Children.Add(Place(BuildReadout(), row));
+        rows.Children.Add(Place(BuildReadout(), row++));
+        rows.Children.Add(Place(BuildOutput(), row));
 
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
         Grid.SetColumn(mSelectionBar, 0);
@@ -86,28 +101,14 @@ internal sealed class MixerChannelStrip : UserControl
         return control;
     }
 
-    Control BuildHeader(int index)
+    Control BuildHeader()
     {
-        if (mIsMaster)
-        {
-            mIndex.Text = "MASTER";
-            mIndex.FontSize = 11;
-            mIndex.FontWeight = FontWeight.SemiBold;
-            mIndex.Foreground = Palette.Brush(Palette.TextLight);
-            mIndex.HorizontalAlignment = HorizontalAlignment.Center;
-            mIndex.VerticalAlignment = VerticalAlignment.Center;
-            return new Border { Height = MixerMetrics.IndexHeight, Child = mIndex };
-        }
-
-        // 轨号压在轨道色条上（黑字压亮色），与轨道头的序号 chip 同一读法：
-        // 调音台第 3 条 = 轨道头第 3 条，颜色也是同一个。
-        mIndex.Text = (index + 1).ToString();
-        mIndex.FontSize = 11;
-        mIndex.Foreground = Palette.Brush(Palette.Black);
+        mIndex.Text = mIsMaster ? "MASTER" : mLabel;
+        mIndex.FontSize = mIsMaster ? 11 : 11;
+        mIndex.FontWeight = mIsMaster ? FontWeight.SemiBold : FontWeight.Normal;
+        mIndex.Foreground = Palette.Brush(mIsMaster ? Palette.TextLight : Palette.Black);
         mIndex.HorizontalAlignment = HorizontalAlignment.Center;
         mIndex.VerticalAlignment = VerticalAlignment.Center;
-
-        mHeaderBar.Background = Palette.Brush(Palette.DefaultTrackColor);
 
         mHeaderBar.Height = MixerMetrics.IndexHeight;
         mHeaderBar.Child = mIndex;
@@ -116,7 +117,9 @@ internal sealed class MixerChannelStrip : UserControl
 
     Control BuildName()
     {
-        mName.Height = MixerMetrics.NameHeight;
+        if (mIsMaster)
+            return new Control();
+
         mName.FontSize = 11;
         mName.Foreground = Palette.Brush(Palette.TextNormal);
         mName.HorizontalAlignment = HorizontalAlignment.Center;
@@ -128,6 +131,9 @@ internal sealed class MixerChannelStrip : UserControl
 
     Control BuildPan()
     {
+        if (mIsMaster)
+            return new Control();
+
         mPan.HorizontalAlignment = HorizontalAlignment.Center;
         mPan.VerticalAlignment = VerticalAlignment.Center;
         mPan.Width = 42;
@@ -135,8 +141,32 @@ internal sealed class MixerChannelStrip : UserControl
         return mPan;
     }
 
+    Control BuildSendButton()
+    {
+        if (mIsMaster)
+            return new Control();
+
+        return ConfigureCountButton(mSend, () => SendRequested?.Invoke(this));
+    }
+
+    Control BuildFxButton()
+    {
+        return ConfigureCountButton(mFx, () => FxRequested?.Invoke(this));
+    }
+
+    Control ConfigureCountButton(StripButton button, Action clicked)
+    {
+        button.Height = MixerMetrics.CountButtonHeight;
+        button.Margin = new Thickness(MixerMetrics.Pad - 2, 1, MixerMetrics.Pad - 2, 1);
+        button.Click += clicked;
+        return button;
+    }
+
     Control BuildToggles()
     {
+        if (mIsMaster)
+            return new Control();
+
         mMute.Width = 26;
         mMute.Height = 18;
         mSolo.Width = 26;
@@ -178,7 +208,6 @@ internal sealed class MixerChannelStrip : UserControl
 
     Control BuildReadout()
     {
-        mReadout.Height = MixerMetrics.ReadoutHeight;
         mReadout.FontSize = 11;
         mReadout.FontFamily = new FontFamily("Consolas, Microsoft YaHei UI");
         mReadout.Foreground = Palette.Brush(Palette.TextLight);
@@ -187,9 +216,18 @@ internal sealed class MixerChannelStrip : UserControl
         return mReadout;
     }
 
+    Control BuildOutput()
+    {
+        mOutput.Height = MixerMetrics.OutputHeight;
+        mOutput.Margin = new Thickness(MixerMetrics.Pad - 3, 2, MixerMetrics.Pad - 3, 4);
+        mOutput.Click += () => OutputRequested?.Invoke(this);
+        return mOutput;
+    }
+
     void HookEvents()
     {
         mChannel.StateChanged += Refresh;
+        mChannel.RoutingChanged += Refresh;
 
         mFader.ValueEdited += value =>
         {
@@ -236,19 +274,38 @@ internal sealed class MixerChannelStrip : UserControl
         mSyncing = true;
         try
         {
+            var kind = mChannel.Kind;
+            mHeaderBar.Background = Palette.Brush(kind switch
+            {
+                MixerChannelKind.Master => Palette.Interface,
+                MixerChannelKind.Aux => Palette.AuxBar,
+                _ => Palette.TrackColor(mChannel.ColorHex),
+            });
+
             if (!mIsMaster)
             {
                 mName.Text = mChannel.Name;
-                mHeaderBar.Background = Palette.Brush(Palette.TrackColor(mChannel.ColorHex));
                 mPan.Value = mChannel.Pan;
                 mMute.IsChecked = mChannel.IsMute;
                 mSolo.IsChecked = mChannel.IsSolo;
-                mSelectionBar.IsVisible = mChannel.IsSelected;
-                Background = Palette.Brush(mChannel.IsSelected ? Palette.Interface : Palette.Dark);
+
+                int sends = mChannel.Sends.Count;
+                mSend.Text = $"Send {sends}";
+                mSend.IsActive = sends > 0;
             }
+
+            int inserts = mChannel.Inserts.Count;
+            mFx.Text = $"FX {inserts}";
+            mFx.IsActive = inserts > 0;
 
             mFader.Value = mChannel.GainDb;
             mReadout.Text = Fader.FormatDb(mChannel.GainDb);
+
+            mOutput.Text = mChannel.Output.ShortName;
+            mOutput.IsDirect = mChannel.Output.Kind == MixerOutputKind.Device;
+
+            mSelectionBar.IsVisible = mChannel.IsSelected;
+            Background = Palette.Brush(mChannel.IsSelected ? Palette.Interface : Palette.Dark);
         }
         finally
         {
@@ -260,5 +317,6 @@ internal sealed class MixerChannelStrip : UserControl
     {
         base.OnDetachedFromVisualTree(e);
         mChannel.StateChanged -= Refresh;
+        mChannel.RoutingChanged -= Refresh;
     }
 }

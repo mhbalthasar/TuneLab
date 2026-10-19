@@ -1,4 +1,4 @@
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Media;
 
 namespace TuneLab.ExperimentalPatch.UI;
@@ -12,7 +12,10 @@ namespace TuneLab.ExperimentalPatch.UI;
 //
 // 若将来觉得这份镜像碍事，正解是在 TuneLab.GUI 上开一个**公开的调色板**（一小撮公开字段），
 // 而不是给补丁层开 InternalsVisibleTo —— 前者是收窄的契约，后者是敞开的门。
-internal static class Palette
+//
+// 这里用 public 而不是 internal：补丁外的工具（headless 外观稿 harness、将来的截图工具）要用
+// 同一份颜色出图。它不在冻结面上（只有 TuneLab.SDK / TuneLab.Foundation 是），公开没有代价。
+public static class Palette
 {
     public static readonly Color Transparent = new(0, 0, 0, 0);
     public static readonly Color White = new(255, 255, 255, 255);
@@ -46,6 +49,9 @@ internal static class Palette
     // 轨道头 M/S 开关的勾选色：这两个值在 TrackHead.cs 里是直接写死的字面量，不是 Style 字段。
     public static readonly Color MuteChecked = new(255, 0, 186, 173);
     public static readonly Color SoloChecked = new(255, 135, 84, 255);
+
+    // AUX 条的固定色（不参与 TRACK_COLORS：AUX 不是轨道，不该跟轨道抢颜色）。
+    public static readonly Color AuxBar = new(255, 124, 143, 166);
 
     // 轨道配色（Style.TRACK_COLORS）：轨道色为空时按序号取，与轨道头的规则一致。
     public static readonly string[] TrackColors =

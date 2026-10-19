@@ -13,11 +13,12 @@ using ShapePath = Avalonia.Controls.Shapes.Path;
 
 namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
-// 混音台窗口（独立工具窗口，见 DESIGN.md §4）。
+// 混音台窗口（独立工具窗口，见 DESIGN.md §6）。
 //
 // 【只做视图】本窗不持有任何混音状态：所有值来自 IMixerModel，用户改动立刻写回。
 // 通道条由 ChannelsChanged 触发整表重建 —— 轨道数在人类尺度上很小，重建比增量 diff 不易错。
 //
+// 浮窗（send / FX）由本窗创建与定位：它们需要知道"锚在哪条通道的哪个按钮上"。
 // 关闭 = 隐藏（宿主负责），所以订阅不挂在 Closed 上，而是由宿主在真正丢弃时调 Detach()。
 public sealed class MixerWindow : Window
 {
@@ -29,10 +30,13 @@ public sealed class MixerWindow : Window
     readonly TextBlock mEmptyHint;
     readonly Border mMasterSlot = new();
     readonly ChromeButton mTopmost = new() { Text = "置顶", Width = 44, Height = 22 };
+    readonly ChromeButton mAddAux = new() { Text = "+ AUX", Width = 52, Height = 22 };
 
     readonly List<MixerChannelStrip> mStripViews = new();
     IMixerChannel? mMasterChannel;
     MixerChannelStrip? mMasterView;
+    SendPopupWindow? mSendPopup;
+    FxPopupWindow? mFxPopup;
 
     bool mResizing;
     double mResizeStartWidth;
@@ -86,6 +90,7 @@ public sealed class MixerWindow : Window
     {
         mModel.ChannelsChanged -= Rebuild;
         mModel.MetersUpdated -= PumpMeters;
+        ClosePopups();
     }
 
     Control BuildContent()
@@ -140,6 +145,8 @@ public sealed class MixerWindow : Window
             mTopmost.IsChecked = Topmost;
         };
 
+        mAddAux.Click += () => mModel.AddAux();
+
         var close = new ChromeButton
         {
             Text = "✕",
@@ -157,6 +164,7 @@ public sealed class MixerWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0),
         };
+        buttons.Children.Add(mAddAux);
         buttons.Children.Add(mTopmost);
         buttons.Children.Add(close);
 
@@ -243,9 +251,18 @@ public sealed class MixerWindow : Window
         mStrips.Children.Clear();
         mStripViews.Clear();
 
-        for (int index = 0; index < mModel.Channels.Count; index++)
+        int trackIndex = 0;
+        int auxIndex = 0;
+
+        foreach (var channel in mModel.Channels)
         {
-            var strip = new MixerChannelStrip(mModel.Channels[index], index, false);
+            // 序号在各自域内连续：轨道 1..n，AUX 1..m（与编辑器轨道列表的序号一致）。
+            string label = channel.Kind == MixerChannelKind.Aux
+                ? (++auxIndex).ToString()
+                : (++trackIndex).ToString();
+
+            var strip = new MixerChannelStrip(channel, label);
+            HookStrip(strip);
             mStripViews.Add(strip);
             mStrips.Children.Add(strip);
         }
@@ -254,11 +271,125 @@ public sealed class MixerWindow : Window
         if (!ReferenceEquals(mMasterChannel, mModel.Master))
         {
             mMasterChannel = mModel.Master;
-            mMasterView = new MixerChannelStrip(mMasterChannel, -1, true);
+            mMasterView = new MixerChannelStrip(mMasterChannel, "MASTER");
+            HookStrip(mMasterView);
             mMasterSlot.Child = mMasterView;
         }
 
         mEmptyHint.IsVisible = mModel.Channels.Count == 0;
+        ClosePopups();
+    }
+
+    void HookStrip(MixerChannelStrip strip)
+    {
+        strip.SendRequested += ShowSendPopup;
+        strip.FxRequested += ShowFxPopup;
+        strip.OutputRequested += ShowOutputMenu;
+    }
+
+    void ShowSendPopup(MixerChannelStrip strip)
+    {
+        mSendPopup?.Close();
+        var popup = new SendPopupWindow(strip.Channel, mModel.Outputs, mHost);
+        PlacePopup(popup, strip.SendAnchor);
+        popup.Show();
+        mSendPopup = popup;
+    }
+
+    void ShowFxPopup(MixerChannelStrip strip)
+    {
+        mFxPopup?.Close();
+        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost);
+        PlacePopup(popup, strip.FxAnchor);
+        popup.Show();
+        mFxPopup = popup;
+    }
+
+    // output 菜单：一级固定四类（Aux / Master / Device / Cable），当前项打勾。
+    void ShowOutputMenu(MixerChannelStrip strip)
+    {
+        var channel = strip.Channel;
+        var flyout = new MenuFlyout();
+
+        foreach (var (kind, header) in new (MixerOutputKind, string)[]
+                 {
+                     (MixerOutputKind.Aux, "Aux"),
+                     (MixerOutputKind.Master, "Master"),
+                     (MixerOutputKind.Device, L("设备", "Device")),
+                     (MixerOutputKind.Cable, "Cable"),
+                 })
+        {
+            var parent = new MenuItem { Header = header };
+            bool any = false;
+
+            foreach (var output in mModel.Outputs)
+            {
+                if (output.Kind != kind)
+                    continue;
+
+                any = true;
+                var item = new MenuItem
+                {
+                    Header = output.Name,
+                    IsEnabled = CanRoute(channel, output),
+                    ToggleType = MenuItemToggleType.Radio,
+                    IsChecked = channel.Output.Id == output.Id,
+                };
+                item.Click += (_, _) =>
+                {
+                    channel.Output = output;
+                    ClosePopups();
+                };
+                parent.Items.Add(item);
+            }
+
+            if (!any)
+                parent.Items.Add(new MenuItem { Header = L("（无）", "(none)"), IsEnabled = false });
+
+            parent.IsEnabled = any;
+            flyout.Items.Add(parent);
+        }
+
+        flyout.ShowAt(strip.OutputAnchor);
+    }
+
+    // 不能输出到自己；Master 只能去设备 / Cable；不可用的目的地（Cable 未实现）一律禁用。
+    static bool CanRoute(IMixerChannel channel, IMixerOutput output)
+    {
+        if (!output.IsAvailable)
+            return false;
+
+        if (channel.Kind == MixerChannelKind.Master)
+            return output.Kind is MixerOutputKind.Device or MixerOutputKind.Cable;
+
+        if (output.Kind == MixerOutputKind.Aux && output.Id == channel.Id)
+            return false;
+
+        return true;
+    }
+
+    void PlacePopup(Window popup, Control anchor)
+    {
+        var point = anchor.PointToScreen(new Point(0, anchor.Bounds.Height + 4));
+
+        // 别把浮窗推出屏幕右边。
+        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen != null)
+        {
+            int right = point.X + (int)popup.Width;
+            if (right > screen.Bounds.Right)
+                point = new PixelPoint(Math.Max(0, screen.Bounds.Right - (int)popup.Width - 8), point.Y);
+        }
+
+        popup.Position = point;
+    }
+
+    void ClosePopups()
+    {
+        mSendPopup?.Close();
+        mSendPopup = null;
+        mFxPopup?.Close();
+        mFxPopup = null;
     }
 
     void PumpMeters()
@@ -267,6 +398,12 @@ public sealed class MixerWindow : Window
             strip.PumpMeter();
 
         mMasterView?.PumpMeter();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        base.OnClosed(e);
+        ClosePopups();
     }
 
     string L(string zh, string en)
