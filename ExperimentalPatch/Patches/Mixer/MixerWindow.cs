@@ -416,6 +416,11 @@ public sealed class MixerWindow : Window
 
             var strip = new MixerChannelStrip(channel, label);
             HookStrip(strip);
+
+            // AUX 条右键 → 删除（一步可撤销；见适配器 RemoveAux 的注释）。
+            if (channel.Kind == MixerChannelKind.Aux)
+                strip.ContextMenu = BuildAuxMenu(channel);
+
             mStripViews.Add(strip);
             mStrips.Children.Add(strip);
         }
@@ -438,6 +443,16 @@ public sealed class MixerWindow : Window
         strip.SendRequested += ShowSendPopup;
         strip.FxRequested += ShowFxPopup;
         strip.OutputRequested += ShowOutputMenu;
+    }
+
+    // AUX 条的右键菜单。目前只有"删除"（重命名 / 换色留到需要时再加）。
+    ContextMenu BuildAuxMenu(IMixerChannel channel)
+    {
+        var menu = new ContextMenu();
+        var remove = new MenuItem { Header = L("删除此 AUX", "Delete this AUX") };
+        remove.Click += (_, _) => mModel.RemoveAux(channel);
+        menu.Items.Add(remove);
+        return menu;
     }
 
     void ShowSendPopup(MixerChannelStrip strip)

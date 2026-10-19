@@ -58,6 +58,8 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     }
 
     // 删除 AUX：所有指向它的 output / send 改指 Master（DESIGN.md §4.1）——静默丢路由比报错更糟。
+    // 整段套一个 merge 作用域：**删除 + 改指 = 一步 undo**。补丁层没有对话框服务，所以不做确认框，
+    // 用"可撤销"来保证安全（Ctrl+Z 会把 AUX 与全部改指一起还原）。
     public void RemoveAux(IMixerChannel aux)
     {
         if (aux is not MixerAuxChannel channel)
@@ -66,23 +68,33 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         var bus = channel.Bus;
         int repointed = 0;
 
-        foreach (var other in mChannels)
+        mProject.BeginMergeNotify();
+        try
         {
-            if (other is not MixerChannelBase source)
-                continue;
-
-            if (source.RouteId == bus.Id)
+            foreach (var other in mChannels)
             {
-                source.SetOutputRoute(MixerRoute.Master);
-                repointed++;
+                if (other is not MixerChannelBase source)
+                    continue;
+
+                if (source.RouteId == bus.Id)
+                {
+                    source.SetOutputRouteRaw(MixerRoute.Master);
+                    repointed++;
+                }
+
+                repointed += source.RepointSends(bus.Id, MixerRoute.Master);
             }
 
-            repointed += source.RepointSends(bus.Id, MixerRoute.Master);
+            mProject.RemoveAux(bus);
+        }
+        finally
+        {
+            mProject.EndMergeNotify();
+            mProject.Commit();
         }
 
-        mProject.RemoveAux(bus);
-        mProject.Commit();   // 删 AUX（含改指）自成一个撤销单元
         BuildOutputs();
+        RaiseRoutingChanged();
 
         if (repointed > 0)
             HostLog.Warning($"mixer: removed AUX '{bus.Name.Value}', {repointed} route(s) now go to Master");
@@ -397,7 +409,11 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 
     internal void SetOutputRoute(MixerRoute route) => Edit.Write(OutputProperty, route);
 
+    // 不带提交的版本：批量改指时用，整段由调用方套 merge 作用域（否则每条路由各留一步 undo）。
+    internal void SetOutputRouteRaw(MixerRoute route) => OutputProperty.SetInfo(route);
+
     // 把指向 auxId 的 send 改指到 replacement；返回改了几条。
+    // 不在这里通知/重建：调用方（RemoveAux）整段做完再统一做一次。
     internal int RepointSends(string auxId, MixerRoute replacement)
     {
         int count = 0;
@@ -408,12 +424,6 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 
             send.Target.SetInfo(replacement);
             count++;
-        }
-
-        if (count > 0)
-        {
-            Owner.RaiseRoutingChanged();
-            RoutingChanged?.Invoke();
         }
 
         return count;

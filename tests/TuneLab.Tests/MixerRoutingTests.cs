@@ -157,6 +157,32 @@ public class MixerRoutingTests
     }
 
     [Fact]
+    public void RemovingAux_IsOneUndoStep()
+    {
+        var (document, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            model.AddAux();
+            var aux = model.Channels.First(c => c.Kind == MixerChannelKind.Aux);
+            var track = model.Channels.First(c => c.Kind == MixerChannelKind.Track);
+            track.Output = Output(model, MixerOutputKind.Aux, aux.Id);
+
+            model.RemoveAux(aux);
+
+            Assert.Empty(project.Auxes);
+            Assert.Equal(MixerOutputKind.Master,
+                model.Channels.First(c => c.Kind == MixerChannelKind.Track).Output.Kind);
+
+            // 一步 undo 要把"删 AUX + 改指"一起还原 —— 所以界面上不需要确认框。
+            document.Undo();
+
+            Assert.Single(project.Auxes);
+            Assert.Equal(aux.Id, project.Tracks[0].Output.Value.Id);
+        }
+    }
+
+    [Fact]
     public void AuxGain_IsUndoable()
     {
         var (document, project, model) = Create(Track("t1"));
