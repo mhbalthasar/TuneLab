@@ -461,7 +461,7 @@ ProjectInfo(native) += auxes : [ { id, name, gainDb, output, sends, inserts } ]
 | M2 | 双向写回（推子 / pan / M/S）+ 一次拖动一步 undo（**代码已就位**：控件 `EditStarted/Ended` + 适配器 merge 作用域；端到端要等 M5 的菜单入口） | 编辑器与调音台互相同步 |
 | M3 | **图引擎（无 AUX）**：节点 / 边 / 快照 / 拓扑序；退化时行为不变（**已完成**） | 同一工程分别用旧 `MixData` 与新图渲染，缓冲区**逐样本 bit 相同**（§7.2）；`TuneLab.Tests` 全绿 |
 | M4 | AUX + output + send：模型 / 图 / 两个 solo 域 / undo / 持久化 | 建两条 AUX、做 send，电平与听感符合预期；环路被拒；存读一致；AUX solo 不影响轨道 |
-| M5 | 混音器打磨：`+ AUX` / 删除 AUX（改指 Master）、output 菜单、空态、窗口几何记忆、「实验功能」菜单入口 | 菜单能开关窗口；加一条 AUX 立刻出现；删 AUX 后路由被改指并提示 |
+| M5 | 混音器打磨：`+ AUX` / 删除 AUX（改指 Master）、output 菜单、空态、窗口几何记忆、「实验功能」菜单入口（**菜单入口已完成**；`+AUX` 与几何记忆待 M4 后补） | 菜单能开关窗口；加一条 AUX 立刻出现；删 AUX 后路由被改指并提示 |
 
 ### 阶段二：插入效果（后做）
 

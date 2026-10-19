@@ -97,7 +97,7 @@
 一行一个入口。**入口**列是这个文件里的稳定 key（菜单项取显示名字面量、按钮/开关取变量名；同名的按出现
 次序加 `#2`），**不带行号**——行号天天变，那样这张表会因为无关改动天天红。
 
-**170 个入口**：`action` 27 · `command` 15 · `script` 73 · `pending` 0 · `dialog` 35 · `internal` 19 · `by-design` 1 · `todo` 0
+**171 个入口**：`action` 27 · `command` 15 · `script` 73 · `pending` 0 · `dialog` 35 · `internal` 19 · `by-design` 2 · `todo` 0
 
 #### TuneLab/App.axaml.cs
 
@@ -178,6 +178,7 @@
 | Check for Updates... | menu | `action:app.checkUpdates` |  |
 | About TuneLab | menu | `action:app.about` |  |
 | mRecentFile.FileName | menu | `command:project open` | 「打开哪个工程」要一个路径参数，那是命令的形状（最近文件这一族本身是动态成员，但每一项都是「打开这个路径」） |
+| captured.Label | menu | `by-design` | 「实验功能」菜单：条目由补丁层（`ExperimentalCommand`）在启动时登记，**故意不进动作面 / 命令面**——实验特性不承诺外部可达。将来若要可达，正确做法是给补丁层开一个动作注册锚点，而不是把每条实验命令硬编进宿主。 |
 
 #### TuneLab/UI/MainWindow/Editor/ScriptToolMenu.cs
 

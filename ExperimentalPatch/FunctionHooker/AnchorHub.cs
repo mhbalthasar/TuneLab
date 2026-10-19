@@ -19,6 +19,15 @@ internal sealed class AnchorHub(IHostServices host) : IAnchorTable
         return new Subscription(() => mStartupScreens.Remove(factory));
     }
 
+    // 命令贡献：「实验功能」菜单的条目。宿主构建菜单时取一次快照。
+    public IDisposable AddCommand(ExperimentalCommand command)
+    {
+        mCommands.Add(command);
+        return new Subscription(() => mCommands.Remove(command));
+    }
+
+    internal IReadOnlyList<ExperimentalCommand> GetCommands() => mCommands.ToArray();
+
     // 取第一个能给出闪屏的提供者。提供者抛错只记日志、继续问下一个——一个坏补丁不该让所有人没闪屏。
     internal IStartupScreen? CreateStartupScreen()
     {
@@ -74,4 +83,5 @@ internal sealed class AnchorHub(IHostServices host) : IAnchorTable
     readonly List<Action<AppReadyAnchor>> mAppReady = [];
     readonly List<Action<AppShutdownAnchor>> mAppShutdown = [];
     readonly List<Func<IStartupScreen>> mStartupScreens = [];
+    readonly List<ExperimentalCommand> mCommands = [];
 }

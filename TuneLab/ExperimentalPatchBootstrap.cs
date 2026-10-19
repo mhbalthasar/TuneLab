@@ -44,6 +44,20 @@ internal static class ExperimentalPatchBootstrap
         }
     }
 
+    // 「实验功能」菜单的命令（补丁贡献）。没有补丁 / 没有命令 = 空表，宿主不画那个菜单。
+    public static IReadOnlyList<ExperimentalCommand> GetCommands()
+    {
+        try
+        {
+            return PatchHost.GetCommands();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error("Experimental patch commands failed: " + ex);
+            return [];
+        }
+    }
+
     // 退出收尾调用（App 的 desktop.Exit），须早于宿主引擎销毁。
     public static void Stop()
     {

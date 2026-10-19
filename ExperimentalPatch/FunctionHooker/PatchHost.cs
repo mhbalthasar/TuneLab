@@ -2,8 +2,10 @@ using TuneLab.ExperimentalPatch.Abstractions;
 
 namespace TuneLab.ExperimentalPatch.FunctionHooker;
 
-// 宿主与本层之间的【唯一】接口。宿主只调这四个静态方法，其余全部封在这里：
+// 宿主与本层之间的【唯一】接口。宿主只调这几个静态方法，其余全部封在这里：
 //   Boot(host, args) ─ 发现补丁 → 装配 → 触发 app.startup
+//   CreateStartupScreen() ─ 索取补丁提供的闪屏（没有 → null）
+//   GetCommands()    ─ 取「实验功能」菜单的命令（没有 → 空表）
 //   RaiseReady()     ─ 触发 app.ready
 //   Shutdown()       ─ 触发 app.shutdown → 卸载全部补丁
 //   (诊断属性见下)
@@ -87,6 +89,24 @@ public static class PatchHost
         {
             hub.Host.LogError("failed to create startup screen", ex);
             return null;
+        }
+    }
+
+    // 宿主：构建「实验功能」菜单时取一次命令快照。没有补丁 / 没有命令 → 空表（宿主不画这个菜单）。
+    public static IReadOnlyList<ExperimentalCommand> GetCommands()
+    {
+        var hub = mHub;
+        if (hub == null)
+            return [];
+
+        try
+        {
+            return hub.GetCommands();
+        }
+        catch (Exception ex)
+        {
+            hub.Host.LogError("failed to collect experimental commands", ex);
+            return [];
         }
     }
 

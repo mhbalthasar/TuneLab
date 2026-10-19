@@ -29,4 +29,9 @@ public interface IAnchorTable
     // 【为什么是工厂而不是实例】闪屏是个 Avalonia 窗口，只能在 Avalonia 就绪之后构造；而
     // app.startup 早于它。故注册的是工厂，由宿主挑正确的时机调用。
     IDisposable ProvideStartupScreen(Func<IStartupScreen> factory);
+
+    // ── 命令贡献 ──
+    // 登记一条「实验功能」菜单命令。宿主在**构建菜单时**一次性取走（启动早期），
+    // 之后再登记不会出现在已建好的菜单里。返回的 IDisposable 可撤销登记。
+    IDisposable AddCommand(ExperimentalCommand command);
 }

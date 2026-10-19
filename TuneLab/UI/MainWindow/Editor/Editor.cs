@@ -1808,7 +1808,45 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             menu.Items.Add(menuBarItem);
         }
 
+        // [EP-MIXER-8] 「实验功能」菜单：条目全部来自补丁层（ExperimentalCommand）。
+        // 没有补丁提供命令时**整块跳过** —— 菜单栏与上游逐项一致（「无补丁 = 逐行等价」）。
+        // 标题在这里按界面语言给：补丁层不许往上游翻译表里加条目，所以不走 SetTrName。
+        {
+            var commands = ExperimentalPatchBootstrap.GetCommands();
+            if (commands.Count > 0)
+            {
+                string title = I18N.TranslationManager.CurrentLanguage.Value.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                    ? "实验功能"
+                    : "Experimental";
+
+                var menuBarItem = new MenuItem { Foreground = Style.TEXT_LIGHT.ToBrush(), Focusable = false }
+                    .SetName(title);
+
+                foreach (var command in commands)
+                {
+                    var captured = command;
+                    var menuItem = new MenuItem().SetName(captured.Label).SetAction(() => InvokeExperimentalCommand(captured));
+                    menuBarItem.Items.Add(menuItem);
+                }
+
+                menu.Items.Add(menuBarItem);
+            }
+        }
+
         return menu;
+    }
+
+    // 补丁命令的调用点：补丁抛错只记日志，不影响宿主（与锚点分发的纪律一致）。
+    static void InvokeExperimentalCommand(TuneLab.ExperimentalPatch.Abstractions.ExperimentalCommand command)
+    {
+        try
+        {
+            command.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"experimental command '{command.Id}' failed: " + ex);
+        }
     }
 
     MenuItem mUndoMenuItem;

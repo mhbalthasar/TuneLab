@@ -40,7 +40,7 @@ TuneLab（宿主）
 | `EP-MIXER-5` | `Data/Project.cs` | AUX 有序表 + 增删命令 | 一个 `DataObjectList` + 两个命令 | 加 AUX 后工程存不住 / undo 不对 | AUX 的 id 必须稳定（引用它的是路由） |
 | `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `Extensions/Formats/TLP/TuneLabProjectCbor.cs` | 序列化路由 / 插入，版本 +1 | reader/writer 各一段 + 版本常量 | 老工程打不开 / 新工程丢了路由 / 版本号对不上 | **只动 native DTO**，别动 SDK 的 `TrackInfo`（冻结面） |
 | `EP-MIXER-7` | `TuneLab.csproj` | 加 `MixerEngine`（以及将来 `InsertHost`）的 `ProjectReference` | **已落地**：两条引用；另在 `ExperimentalPatch.csproj` 里 `Compile Remove="MixerEngine/**"` | 编译找不到命名空间 / **CS0579 特性重复** | 排除项不能丢（嵌套工程的 obj 会被默认 `**/*.cs` 吃进来）；上游若重排 ItemGroup，把这两条加回去 |
-| `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（从补丁收集命令） | `CreateMenu` 里一段 | 菜单消失 / 点了没反应 | 菜单项本身来自补丁；宿主只负责"渲染一个从补丁收集来的菜单" |
+| `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（从补丁收集命令） | **已落地**：`CreateMenu()` 末尾一段（`ExperimentalPatchBootstrap.GetCommands()`，空表时整块跳过）；标题按 `I18N.TranslationManager.CurrentLanguage` 选词（**不走 `SetTrName`**，免得动上游翻译表）；命令调用点 `InvokeExperimentalCommand` 兜异常 | 菜单消失 / 点了没反应 / **`ActionCoverageTests` 红** | 这个入口必须在 `docs/action-coverage.md` 的 Editor.cs 段落里有一行（裁决 `by-design`）；上游合并后那一行若丢了，封条会直接报错——按提示补回即可 |
 | `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerModel.cs`（新） | `CreateMixerModel()` 转发 + `IMixerModel` 适配器 + 快照编译器 | **已落地**：`CreateMixerModel()`（按工程实例缓存、`Stop()` 里 Dispose）；`ExperimentalPatchMixerModel.cs` 有 `MixerModelAdapter` / `MixerTrackChannel` / `MixerMasterChannel` / `MixerOutput` / `MixerInsertFormat`；`ExperimentalPatchMixerAudio.cs` 有 `MixerGraphCompiler` 等 | 调音台打开是空的 / 读到旧数据 / 拖动不进 undo | 读写一律落到 `Track` 的 `DataProperty`；一次拖动用 `BeginMergeNotify`+`DiscardTo`+`Commit`（与轨道头同一套），单次写入写完要 `Commit()` |
 
 ## 3. 重接流程（merge / rebase 之后照这个顺序）
