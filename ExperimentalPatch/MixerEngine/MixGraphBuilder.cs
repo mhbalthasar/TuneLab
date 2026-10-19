@@ -32,7 +32,7 @@ public sealed class MixGraphBuilder
         }
     }
 
-    internal readonly record struct EdgeDraft(NodeDraft Target, float Gain, int DelaySamples);
+    internal readonly record struct EdgeDraft(NodeDraft Target, float Gain, int DelaySamples, IMixEdgeGain? LiveGain);
 
     readonly List<NodeDraft> mNodes = [];
 
@@ -51,7 +51,8 @@ public sealed class MixGraphBuilder
     }
 
     // gain 是线性增益；delaySamples 是这条边要补的延迟（PDC，M6 起才会非零）。
-    public void Connect(NodeDraft from, NodeDraft to, float gain = 1f, int delaySamples = 0)
+    // liveGain 非 null 时以它为准（send 的推子），从而拖推子不必重建图。
+    public void Connect(NodeDraft from, NodeDraft to, float gain = 1f, int delaySamples = 0, IMixEdgeGain? liveGain = null)
     {
         ArgumentNullException.ThrowIfNull(from);
         ArgumentNullException.ThrowIfNull(to);
@@ -62,7 +63,7 @@ public sealed class MixGraphBuilder
         if (delaySamples < 0)
             throw new ArgumentOutOfRangeException(nameof(delaySamples));
 
-        from.Edges.Add(new EdgeDraft(to, gain, delaySamples));
+        from.Edges.Add(new EdgeDraft(to, gain, delaySamples, liveGain));
     }
 
     public MixSnapshot Build()
@@ -84,7 +85,8 @@ public sealed class MixGraphBuilder
             if (node.Kind == MixNodeKind.Master)
                 continue;
 
-            if (node.Edges.Count == 0)
+            // 设备 sink 没人路由过去是合法的（就是静音）；其余节点孤立 = 建图方的 bug。
+            if (node.Edges.Count == 0 && node.Kind != MixNodeKind.Device)
                 throw new InvalidOperationException($"node '{node.Id}' has no output");
 
             if (node.Kind == MixNodeKind.Track && node.Source == null)
@@ -132,7 +134,7 @@ public sealed class MixGraphBuilder
         {
             var edges = new List<MixEdge>(draft.Edges.Count);
             foreach (var edge in draft.Edges)
-                edges.Add(new MixEdge(topoIndex[edge.Target], edge.Gain, edge.DelaySamples));
+                edges.Add(new MixEdge(topoIndex[edge.Target], edge.Gain, edge.DelaySamples, edge.LiveGain));
 
             nodes.Add(new MixNode(draft.Id, draft.Kind, draft.State, draft.Source, edges));
         }

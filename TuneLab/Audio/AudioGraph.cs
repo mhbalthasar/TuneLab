@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using TuneLab.Data;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Foundation;
 
@@ -45,6 +46,25 @@ internal class AudioGraph()
         lock (mTrackLockObject)
         {
             mTracks.Remove(track);
+            RebuildSnapshot();
+        }
+    }
+
+    // [EP-MIXER-5] AUX 总线：与轨并列的结构成员。
+    public void AddAux(AuxBus aux)
+    {
+        lock (mTrackLockObject)
+        {
+            mAuxes.Add(aux);
+            RebuildSnapshot();
+        }
+    }
+
+    public void RemoveAux(AuxBus aux)
+    {
+        lock (mTrackLockObject)
+        {
+            mAuxes.Remove(aux);
             RebuildSnapshot();
         }
     }
@@ -159,12 +179,20 @@ internal class AudioGraph()
         }
     }
 
-    // [EP-MIXER-1] 结构变化（加删轨）才重建快照；推子/声像/静音是活值，每块现读，不重建。
+    // [EP-MIXER-1] 结构变化（加删轨 / 加删 AUX / 改路由）才重建快照；推子/声像/静音是活值，每块现读。
+    internal void RebuildMixerGraph()
+    {
+        lock (mTrackLockObject)
+        {
+            RebuildSnapshot();
+        }
+    }
+
     void RebuildSnapshot()
     {
         try
         {
-            mMixer.SetSnapshot(mCompiler.Compile(this, mTracks));
+            mMixer.SetSnapshot(mCompiler.Compile(this, mTracks, mAuxes));
         }
         catch (Exception ex)
         {
@@ -193,6 +221,7 @@ internal class AudioGraph()
 
     int mSampleRate = 44100;
     List<IAudioTrack> mTracks = [];
+    readonly List<AuxBus> mAuxes = [];
 
     readonly object mTrackLockObject = new();
 

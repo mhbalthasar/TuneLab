@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using TuneLab.Audio;
+using TuneLab.Data;
+using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Foundation;
 using Xunit;
 
@@ -67,6 +69,10 @@ public class MixerAudioSeamTests
         public double Pan { get; }
         public double EndTime => 1000;
         public IEnumerable<IAudioSource> AudioSources { get; }
+
+        // 路由：默认直接去 Master、没有 send。
+        public MixerRoute Output { get; init; } = MixerRoute.Master;
+        public IReadOnlyList<Send> Sends { get; init; } = [];
     }
 
     static void AssertBitEqual(float[] expected, float[] actual)
@@ -167,5 +173,73 @@ public class MixerAudioSeamTests
         graph.MixData(0, 32, true, buffer, 0);
 
         Assert.All(buffer, sample => Assert.Equal(0f, sample));
+    }
+
+    // ── 路由（M4）──
+
+    [Fact]
+    public void TrackRoutedToAux_GoesThroughTheAuxFader()
+    {
+        const int frames = 256;
+
+        var graph = new AudioGraph { SampleRate = SampleRate };
+        var project = new Project();
+        var aux = new AuxBus("aux-1", "AUX 1", project);
+        aux.Gain.SetInfo(-6);
+        graph.AddAux(aux);
+
+        var track = new FakeTrack(1.0, 0, false, false, new FakeSource(0, frames, 7))
+        {
+            Output = new MixerRoute(MixerOutputKind.Aux, "aux-1", "AUX 1"),
+        };
+        graph.AddTrack(track);
+
+        var actual = new float[frames * 2];
+        graph.MixData(0, frames, true, actual, 0);
+
+        // 期望：轨道信号 × AUX 推子（−6 dB）。
+        var expected = new float[frames * 2];
+        graph.AddData(track, 0, frames, true, expected, 0);
+
+        float gain = (float)MusicTheory.dB2Level(-6);
+        for (int i = 0; i < expected.Length; i++)
+            expected[i] *= gain;
+
+        AssertBitEqual(expected, actual);
+    }
+
+    // AUX 的 solo 只压其他 AUX，不影响轨道（DESIGN.md §3.3 的两个 solo 域）。
+    [Fact]
+    public void AuxSolo_SilencesOtherAuxesButNotTracks()
+    {
+        const int frames = 128;
+
+        var graph = new AudioGraph { SampleRate = SampleRate };
+        var project = new Project();
+
+        var aux1 = new AuxBus("aux-1", "AUX 1", project);
+        var aux2 = new AuxBus("aux-2", "AUX 2", project);
+        aux2.IsSolo.SetInfo(true);
+
+        graph.AddAux(aux1);
+        graph.AddAux(aux2);
+
+        var toAux = new FakeTrack(1, 0, false, false, new FakeSource(0, frames, 11))
+        {
+            Output = new MixerRoute(MixerOutputKind.Aux, "aux-1", "AUX 1"),
+        };
+        var toMaster = new FakeTrack(1, 0, false, false, new FakeSource(0, frames, 12));
+
+        graph.AddTrack(toAux);
+        graph.AddTrack(toMaster);
+
+        var actual = new float[frames * 2];
+        graph.MixData(0, frames, true, actual, 0);
+
+        // 期望：只有去 Master 的那条轨（aux-1 被 aux-2 的 solo 压掉；轨道本身不受影响）。
+        var expected = new float[frames * 2];
+        graph.AddData(toMaster, 0, frames, true, expected, 0);
+
+        AssertBitEqual(expected, actual);
     }
 }

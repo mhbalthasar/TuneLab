@@ -55,10 +55,10 @@ public sealed class Mixer
     {
         var nodes = runtime.Snapshot.Nodes;
 
-        // 1) 清空所有非 Master 节点的输入缓冲（Master 直接用调用方的输出缓冲）。
+        // 1) 清空所有非 sink 节点的输入缓冲（Master / Device 直接用调用方的输出缓冲）。
         for (int i = 0; i < nodes.Count; i++)
         {
-            if (nodes[i].Kind != MixNodeKind.Master)
+            if (!IsSink(nodes[i]))
                 Array.Clear(runtime.Buffers[i], 0, count * 2);
         }
 
@@ -66,9 +66,9 @@ public sealed class Mixer
         for (int i = 0; i < nodes.Count; i++)
         {
             var node = nodes[i];
-            bool isMaster = node.Kind == MixNodeKind.Master;
-            var target = isMaster ? output : runtime.Buffers[i];
-            int targetOffset = isMaster ? outputOffset : 0;
+            bool isSink = IsSink(node);
+            var target = isSink ? output : runtime.Buffers[i];
+            int targetOffset = isSink ? outputOffset : 0;
 
             bool hasSignal = true;
 
@@ -88,11 +88,15 @@ public sealed class Mixer
                     node.Source.AddData(position, count, target, targetOffset, left, right);
                 }
             }
-            else if (isMaster)
+            else if (node.Kind == MixNodeKind.Master)
             {
                 // 预览音在 Master 增益之前混进来 —— 与旧路径（MixData → AddData(预览) → MasterGain）同序。
                 masterInput?.AddData(position, count, output, outputOffset, 1f, 1f);
                 ApplyGain(node.State, target, targetOffset, count);
+            }
+            else if (node.Kind == MixNodeKind.Device)
+            {
+                // 直接进设备：**不过 Master 推子**（DESIGN.md §4.4）。这里什么都不做。
             }
             else
             {
@@ -110,21 +114,24 @@ public sealed class Mixer
             for (int e = 0; e < edges.Count; e++)
             {
                 var edge = edges[e];
-                bool toMaster = nodes[edge.TargetIndex].Kind == MixNodeKind.Master;
-                var destination = toMaster ? output : runtime.Buffers[edge.TargetIndex];
-                int destinationOffset = toMaster ? outputOffset : 0;
+                bool toSink = IsSink(nodes[edge.TargetIndex]);
+                var destination = toSink ? output : runtime.Buffers[edge.TargetIndex];
+                int destinationOffset = toSink ? outputOffset : 0;
+                float gain = edge.CurrentGain;
 
                 if (edge.DelaySamples > 0)
                 {
-                    runtime.DelayLines[i][e]!.Process(target, targetOffset, destination, destinationOffset, count, edge.Gain);
+                    runtime.DelayLines[i][e]!.Process(target, targetOffset, destination, destinationOffset, count, gain);
                 }
                 else
                 {
-                    Accumulate(target, targetOffset, destination, destinationOffset, count, edge.Gain);
+                    Accumulate(target, targetOffset, destination, destinationOffset, count, gain);
                 }
             }
         }
     }
+
+    static bool IsSink(MixNode node) => node.Kind is MixNodeKind.Master or MixNodeKind.Device;
 
     static void ApplyGain(IMixChannelState? state, float[] buffer, int offset, int count)
     {

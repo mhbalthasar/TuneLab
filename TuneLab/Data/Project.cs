@@ -17,6 +17,10 @@ internal class Project : DataObject, IProject
     public ITempoManager TempoManager => mTempoManager;
     public ITimeSignatureManager TimeSignatureManager => mTimeSignatureManager;
     public IReadOnlyDataObjectList<ITrack> Tracks => mTracks;
+
+    // AUX 总线（DESIGN.md §4.1）。**暂不落盘**：见 §9 与 Patches/Mixer/DESIGN.md 的说明——
+    // 打开另一个工程时这里会被清空（它们属于上一个工程），UI 上有明确提示。
+    public IReadOnlyDataObjectList<AuxBus> Auxes => mAuxes;
     public string ExportPath { get; set; } = string.Empty;
     public string ExportFileName { get; set; } = string.Empty;
     public string ExportFormat { get; set; } = "wav";
@@ -32,9 +36,12 @@ internal class Project : DataObject, IProject
         mTimeSignatureManager = new(this);
         mTempoManager = new(this);
         mTracks = new(this);
+        mAuxes = new(this);
 
         mTracks.ItemAdded.Subscribe(OnTrackAdded);
         mTracks.ItemRemoved.Subscribe(OnTrackRemoved);
+        mAuxes.ItemAdded.Subscribe(OnAuxAdded);
+        mAuxes.ItemRemoved.Subscribe(OnAuxRemoved);
 
         SetInfo(info);
     }
@@ -67,7 +74,25 @@ internal class Project : DataObject, IProject
         mTempoManager.SetInfo(info.Tempos);
         mTimeSignatureManager.SetInfo(info.TimeSignatures);
         mTracks.SetInfo(info.Tracks.Convert(CreateTrack).ToArray());
+
+        // AUX 暂不随工程保存：装载新工程时必须清掉（它们属于上一个工程，留着就是错的数据）。
+        if (mAuxes.Count > 0)
+            mAuxes.SetInfo([]);
     }
+
+    // AUX 的增删。id 只在本进程内唯一（暂不落盘，所以不需要跨会话稳定）。
+    public AuxBus AddAux(string name)
+    {
+        var aux = new AuxBus("aux-" + ++mAuxSeq, name, this);
+        mAuxes.Add(aux);
+        return aux;
+    }
+
+    public bool RemoveAux(AuxBus aux) => mAuxes.Remove(aux);
+
+    void OnAuxAdded(AuxBus aux) => AudioEngine.AddAux(aux);
+
+    void OnAuxRemoved(AuxBus aux) => AudioEngine.RemoveAux(aux);
 
     public void AddTrack(TrackInfo info)
     {
@@ -127,4 +152,6 @@ internal class Project : DataObject, IProject
     TempoManager mTempoManager;
     TimeSignatureManager mTimeSignatureManager;
     readonly DataObjectList<ITrack> mTracks;
+    readonly DataObjectList<AuxBus> mAuxes;
+    int mAuxSeq;
 }

@@ -20,18 +20,24 @@ public sealed class MixEdge
 {
     public int TargetIndex { get; }
 
-    // 线性增益（dB → 线性由宿主换算）。
+    // 线性增益（dB → 线性由宿主换算）。LiveGain 非 null 时以它为准（send 的推子）。
     public float Gain { get; }
+
+    // 活增益（可选）。见 IMixEdgeGain 的注释。
+    public IMixEdgeGain? LiveGain { get; }
 
     // 延迟补偿：这条边要补的样本数（M6 接入插入后才会 > 0）。
     public int DelaySamples { get; }
 
-    internal MixEdge(int targetIndex, float gain, int delaySamples)
+    internal MixEdge(int targetIndex, float gain, int delaySamples, IMixEdgeGain? liveGain)
     {
         TargetIndex = targetIndex;
         Gain = gain;
         DelaySamples = delaySamples;
+        LiveGain = liveGain;
     }
+
+    internal float CurrentGain => LiveGain?.Gain ?? Gain;
 }
 
 public sealed class MixNode

@@ -23,6 +23,9 @@ internal class Track : DataObject, ITrack
     public DataProperty<double> Gain { get; }
     public DataProperty<double> Pan { get; }
     public DataProperty<string> Color { get; }
+    // 路由：output 单选出入口 + 并联 send（DESIGN.md §4.2 / §4.3）。
+    public DataProperty<MixerRoute> Output { get; }
+    public DataObjectList<Send> Sends { get; }
     public bool ExportEnabled { get; set; } = false;
     public int ExportChannels { get; set; } = 1;
     public IReadOnlyDataObjectLinkedList<IPart> Parts => mParts;
@@ -42,6 +45,8 @@ internal class Track : DataObject, ITrack
     IDataProperty<double> ITrack.Gain => Gain;
     IDataProperty<double> ITrack.Pan => Pan;
     IDataProperty<string> ITrack.Color => Color;
+    IDataProperty<MixerRoute> ITrack.Output => Output;
+    IReadOnlyDataObjectList<Send> ITrack.Sends => Sends;
 
     public Track(IProject project, TrackInfo info)
     {
@@ -53,6 +58,10 @@ internal class Track : DataObject, ITrack
         Gain = new DataStruct<double>(this);
         Pan = new DataStruct<double>(this);
         Color = new DataString(this);
+        Output = new DataStruct<MixerRoute>(this);
+        // 构造期尚未接上 document：这条命令被丢弃、只落值（见 DataProperty.SetInfo）。
+        Output.SetInfo(MixerRoute.Master);
+        Sends = new DataObjectList<Send>(this);
         mParts = new();
         mParts.Attach(this);
 

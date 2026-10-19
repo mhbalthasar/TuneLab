@@ -153,6 +153,25 @@ public sealed class MixerWindow : Window
             Margin = new Thickness(12, 0, 0, 0),
         };
 
+        // 诚实标注：路由（AUX / output / send）目前只活在内存里，存盘不带走。
+        // 不写这一句，用户会以为工程里已经有了——那是最糟的一种"看起来成功"。
+        var persistenceHint = new TextBlock
+        {
+            Text = L("路由暂不随工程保存", "Routing is not saved with the project yet"),
+            FontSize = 10,
+            Foreground = Palette.Brush(Palette.TextLabel, 0.6),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+        };
+
+        var titleRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        titleRow.Children.Add(title);
+        titleRow.Children.Add(persistenceHint);
+
         mTopmost.Click += () =>
         {
             Topmost = !Topmost;
@@ -189,9 +208,9 @@ public sealed class MixerWindow : Window
         buttons.Children.Add(close);
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        Grid.SetColumn(title, 0);
+        Grid.SetColumn(titleRow, 0);
         Grid.SetColumn(buttons, 1);
-        row.Children.Add(title);
+        row.Children.Add(titleRow);
         row.Children.Add(buttons);
 
         var header = new Border

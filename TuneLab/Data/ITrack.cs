@@ -21,6 +21,8 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     IDataProperty<double> Gain { get; }
     new IDataProperty<double> Pan { get; }
     IDataProperty<string> Color { get; }
+    new IDataProperty<MixerRoute> Output { get; }
+    new IReadOnlyDataObjectList<Send> Sends { get; }
     bool ExportEnabled { get; set; }
     int ExportChannels { get; set; }
     IReadOnlyDataObjectLinkedList<IPart> Parts { get; }
@@ -42,4 +44,7 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     double IAudioTrack.Pan => Pan.Value;
     double IAudioTrack.EndTime => Parts.MaxBy(part => part.EndTime())?.EndTime() ?? 0;
     IEnumerable<IAudioSource> IAudioTrack.AudioSources => Parts;
+
+    MixerRoute IAudioTrack.Output => Output.Value;
+    IReadOnlyList<Send> IAudioTrack.Sends => Sends;
 }

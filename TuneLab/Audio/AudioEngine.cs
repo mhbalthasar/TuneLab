@@ -130,6 +130,24 @@ internal static class AudioEngine
         AudioGraph.RemoveTrack(track);
     }
 
+    // [EP-MIXER-5] AUX 总线的增删（与轨同一套：结构变化 → 重建混音图快照）。
+    public static void AddAux(TuneLab.Data.AuxBus aux)
+    {
+        AudioGraph.AddAux(aux);
+    }
+
+    public static void RemoveAux(TuneLab.Data.AuxBus aux)
+    {
+        AudioGraph.RemoveAux(aux);
+    }
+
+    // [EP-MIXER-5] 路由（output / send）变了：边变了，重建快照。
+    // 推子 / 声像 / 静音是活值，不走这里（每块现读，不需要重建）。
+    public static void RebuildMixerGraph()
+    {
+        AudioGraph.RebuildMixerGraph();
+    }
+
     public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo)
     {
         ExportTrack(filePath, track, isStereo, SampleRate.Value, AudioEncodeSettings.Wav(16));
