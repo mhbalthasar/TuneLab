@@ -1070,6 +1070,10 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             var project = CreateProject(file.Project);
             project.SetExportConfig(file.Export);
             mDocument.SetProject(project, path);
+
+            // [EP-MIXER-11] 路由（AUX / output / send）不在 .tlpx 里，从同目录 sidecar 恢复（DESIGN.md §9）。
+            MixerPersistence.Load(project, path);
+
             Playhead.Pos = Math.Max(0, file.Editor.PlayheadPos);
         }
         catch (Exception ex)
@@ -1245,6 +1249,11 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             ClearAutoSaveFile();
 
             mDocument.SetSavePath(path);
+
+            // [EP-MIXER-11] 路由写同目录 sidecar（DESIGN.md §9）：原版保存会按 DTO 重写 .tlpx，
+            // 只有 sidecar 能活过"原版打开→编辑→保存"这一趟。
+            MixerPersistence.Save(mDocument.Project, path);
+
             return null;
         }
         catch (Exception ex)

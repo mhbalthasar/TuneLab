@@ -81,9 +81,15 @@ internal class Project : DataObject, IProject
     }
 
     // AUX 的增删。id 只在本进程内唯一（暂不落盘，所以不需要跨会话稳定）。
-    public AuxBus AddAux(string name)
+    public AuxBus AddAux(string name) => AddAuxWithId("aux-" + ++mAuxSeq, name);
+
+    // 落盘恢复用：按保存下来的 id 重建 —— 路由引用的是 id，换号就等于把路由全弄丢。
+    public AuxBus AddAuxWithId(string id, string name)
     {
-        var aux = new AuxBus("aux-" + ++mAuxSeq, name, this);
+        if (id.StartsWith("aux-", StringComparison.Ordinal) && int.TryParse(id[4..], out int number) && number > mAuxSeq)
+            mAuxSeq = number;   // 之后 AddAux 生成的号不会与恢复出来的撞车
+
+        var aux = new AuxBus(id, name, this);
         mAuxes.Add(aux);
         return aux;
     }
