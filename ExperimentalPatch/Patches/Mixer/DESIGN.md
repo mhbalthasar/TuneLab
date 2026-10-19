@@ -434,29 +434,73 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 | 6 | `EP-MIXER-3` | `Audio/AudioEngine.cs` | 播放回调：Master 增益移进 Master 节点、设备 sink、Master 电平查询 | **中** |
 | 7 | `EP-MIXER-4` | `Data/Track.cs` / `ITrack.cs` | `Output` / `Sends` / `Inserts` | 中 |
 | 8 | `EP-MIXER-5` | `Data/Project.cs` | AUX 有序表 + 增删命令 | 中 |
-| 9 | `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `TuneLabProjectCbor.cs` | 序列化路由 / 插入；**版本 +1** | 中 |
+| 9 | `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `TuneLabProjectCbor.cs` | 序列化路由 / 插入：顶层键 `epMixer`（**版本保持 1**）+ 同目录 sidecar，见 §9 | 中 |
 | 10 | `EP-MIXER-7` | `TuneLab.csproj` | 两条 `ProjectReference`（`ExperimentalPatch` 已有，加 `MixerEngine` + `InsertHost`） | 低 |
 | 11 | `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（v1 已规划） | 低 |
 | 12 | `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | 零 / 低 |
 
 `EP-MIXER-*` 的逐条说明、断点症状与重接步骤见 `.agents/mixer-reconnect.md`。
 
-## 9. 工程格式（tlpx）
+## 9. 工程格式（tlpx）—— 必须与原版共存
 
-- 版本 +1。**老版本打开新工程会直接报 "Unsupported Version"**（CBOR reader 已有这个分支）——
-  这是我们要的行为：静默丢掉路由会让工程听起来变了却不报警。
-- 新字段全部进 **app 私有的 `NativeTrackInfo`** 与 AUX 的 native DTO，**不动 SDK 的 `TrackInfo`**：
-  冻结的插件 ABI 一行都不改；通用格式（MIDI 等）导出时自然丢弃路由，这是正确的。
-- 结构草案：
+**目标（已定）**：补丁保存的工程要能被**原版 TuneLab 正常打开**；更理想的是"原版打开 → 编辑 → 保存 →
+回到补丁编辑器，VST 状态还在"。
 
+### 9.1 三条硬约束（已被测试钉住）
+
+| 事实 | 出处 | 结论 |
+|---|---|---|
+| 原版遇到 `version > CURRENT_VERSION(1)` 直接抛 "Unsupported Version" | `TuneLabProjectCbor.cs:67` | **版本号永远保持 1**，绝不为补丁升版本 |
+| 原版读取器遇到不认识的顶层键走 `default: SkipValue()` | 同上 `:86-88` | 可以加自己的顶层键，原版照样能打开 |
+| 原版**保存**时从 DTO 重建整个文件 | `WriteProject` / `WriteTracks` | 我们加的键**会被丢掉**（`UpstreamRoundTrip_DropsUnknownKeys` 钉住了这条） |
+
+回归测试：`tests/TuneLab.Tests/ProjectFormatCompatibilityTests.cs` 四条（未知键被跳过 / 版本 2 被拒 /
+我们写出的版本是 1 / 原版往返丢键）。**动格式代码必须让这四条保持绿。**
+
+### 9.2 一份数据，两处落盘
+
+- **文件内**：顶层键 `epMixer`（原版跳过它）。其中 `branch` 是**我们自己的 schema 号**（现在 1），
+  与宿主 `version` 解耦：宿主版本永远不动，我们靠 `branch` 演进。
+  → 工程自包含；只拷 `.tlpx` 也能带着路由与插入。
+- **同目录 sidecar**：`<工程文件名>.epmixer.json`。原版不认识它、也不会动它。
+  → 原版往返（打开→保存）之后，我们的数据仍在。
+
+加载顺序：**文件内 `epMixer` → sidecar → 空**。两者都在时以文件内为准（它是随工程一起被编辑的那份）。
+
+### 9.3 往返之后怎么对上轨道
+
+原版不保留我们加的任何 id（它只认识自己的字段），所以回来只能按**名字 + 序号**重新对：
+
+1. 轨道数一致 → 按序号对；
+2. 不一致 → 先按 (序号, 名字) 对，再按名字对；
+3. 仍对不上的 → **丢该轨的路由**，记一条日志（宁可少一条路由，也不要把 A 的 send 安到 B 上）。
+
+代价写在明处：**改名或重排轨道之后，那一条轨的路由可能丢**。AUX 本身是 `epMixer` 里的原生数据，
+不依赖轨道匹配，所以 AUX 与它自己的 send 不受影响。
+
+### 9.4 结构
+
+```jsonc
+"epMixer": {
+  "branch": 1,
+  "auxes": [ { "id": "aux-1", "name": "AUX 1", "gain": -2, "pan": 0, "mute": false, "solo": false,
+               "output": { "kind": "master", "id": "master" },
+               "sends":  [ { "kind": "master", "id": "master", "gain": -3 } ],
+               "inserts":[ { "format": "vst3", "pluginId": "...", "bypass": false, "state": "<base64>" } ] } ],
+  "tracks": [ { "index": 0, "name": "主唱",
+                "output": { "kind": "aux", "id": "aux-1" },
+                "sends":  [ { "kind": "aux", "id": "aux-1", "gain": -6 } ],
+                "inserts":[ ... ] } ]
+}
 ```
-TrackInfo(native) += output : { kind: "aux"|"master"|"device"|"cable", id: string }
-                     sends  : [ { kind, id, gainDb } ]
-                     inserts: [ { format, pluginId, bypass, state: bytes } ]
-ProjectInfo(native) += auxes : [ { id, name, gainDb, output, sends, inserts } ]
-```
 
-- AUX 用**稳定 id**（不是序号）引用：换序 / 删中间一条时路由不会错位。
+（磁盘上是 CBOR map，这里只是画结构。）
+
+### 9.5 纪律
+
+- **不动 SDK 的 `TrackInfo`**（冻结面）：路由与插入只走 `epMixer` 与 sidecar，通用格式（MIDI 等）导出时自然丢弃。
+- sidecar 只在"文件内没有 `epMixer`"时被采用 —— 说明这个工程最后一次是被原版（或别的工具）保存的。
+- sidecar 过期（用户回滚了工程文件）无法完全避免；靠 9.3 的名字 + 序号匹配把影响限制在单轨，并记日志。
 - `pluginId`：VST3 用 `classId` + 插件名兜底；VST2 用 `uniqueId` + 路径兜底；JSFX 用工程内相对路径。
 
 ## 10. 里程碑
