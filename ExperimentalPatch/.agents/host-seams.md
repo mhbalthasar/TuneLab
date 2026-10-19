@@ -24,7 +24,7 @@
 | # | 文件 | 位置（锚点/语句） | 现在写的是什么 | 说明 |
 |---|---|---|---|---|
 | 1 | `TuneLab/Program.cs` | `InitCoreServices()` 之后 | `ExperimentalPatchBootstrap.Start(args);` | 装配补丁 + `app.startup`。Avalonia 未起，**别在这儿碰 UI**。 |
-| 2 | `TuneLab/App.axaml.cs` | `LegacyCompatLoader.Wire();` 之后 | `mStartupScreen = ExperimentalPatchBootstrap.CreateStartupScreen();` + `Show()` + 分派 `ContinueStartup` | 闪屏索取点。**结构性接缝**，见 `startup-timeline.md`。 |
+| 2 | `TuneLab/App.axaml.cs` | `desktop.Exit += ...` 之后（`OnFrameworkInitializationCompleted` 开头） | `mStartupScreen = ExperimentalPatchBootstrap.CreateStartupScreen();` + `SetPhase` + `Show()` + 把余下启动整段交给 `ContinueStartup` | 闪屏索取点。**结构性接缝**，见 `startup-timeline.md`。 |
 | 3 | `TuneLab/App.axaml.cs` | `HandleStartupArgs(args[1..]);` 之后 | `ExperimentalPatchBootstrap.Ready();` | `app.ready`。 |
 | 4 | `TuneLab/App.axaml.cs` | `desktop.Exit` 首行 | `ExperimentalPatchBootstrap.Stop();` | `app.shutdown` + 卸载。须早于引擎销毁。 |
 | 5 | `TuneLab/ExperimentalPatchBootstrap.cs` | 整个文件 | 四个转发方法 + `IHostServices` 实现 | 「缝」本身，**尽量只增不改**。 |

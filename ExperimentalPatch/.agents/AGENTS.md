@@ -18,7 +18,7 @@
 | 宿主文件 | 位置 | 干什么 |
 |---|---|---|
 | `TuneLab/Program.cs` | `InitCoreServices()` 之后 | `ExperimentalPatchBootstrap.Start(args)` → 装配补丁 + 触发 `app.startup` |
-| `TuneLab/App.axaml.cs` | `LegacyCompatLoader.Wire()` 之后 | `ExperimentalPatchBootstrap.CreateStartupScreen()` → 取闪屏并据此分派启动慢段 |
+| `TuneLab/App.axaml.cs` | `OnFrameworkInitializationCompleted` 开头 | `ExperimentalPatchBootstrap.CreateStartupScreen()` → 取闪屏并据此分派整段启动 |
 | `TuneLab/App.axaml.cs` | `HandleStartupArgs(args[1..])` 之后 | `ExperimentalPatchBootstrap.Ready()` → 触发 `app.ready` |
 | `TuneLab/App.axaml.cs` | `desktop.Exit` 首行 | `ExperimentalPatchBootstrap.Stop()` → 触发 `app.shutdown` + 卸载补丁 |
 | `TuneLab/ExperimentalPatchBootstrap.cs` | — | `IHostServices` 实现 + 异常兜底 |
@@ -77,7 +77,7 @@
 | `app.startup` | 通知 | 配置/翻译/日志就绪后，Avalonia 起来**之前** | `AppStartupAnchor`（含命令行参数） | 进程级准备：读自己的配置、装全局钩子。**别碰 UI**。 |
 | `app.ready` | 通知 | 主窗口已建、启动参数已分流（工程已打开） | `AppReadyAnchor` | 需要窗口/编辑器的注入。 |
 | `app.shutdown` | 通知 | 退出时，宿主引擎销毁**之前** | `AppShutdownAnchor` | 收尾。宿主服务此时仍可用；要快，别阻塞退出。 |
-| `app.splash` | 贡献 | 启动慢段开始前（`LegacyCompatLoader.Wire()` 之后） | `IStartupScreen` | 提供启动闪屏。没人提供 = 宿主走无闪屏的原样路径。 |
+| `app.splash` | 贡献 | `OnFrameworkInitializationCompleted` **开头**（Avalonia 已起，启动工作一行都还没干） | `IStartupScreen` | 提供启动闪屏。没人提供 = 宿主走无闪屏的原样路径。 |
 
 通知型锚点触发顺序固定为 `app.startup` → `app.ready` → `app.shutdown`，各**恰好一次**；`app.splash` 是索取，不参与这个序列。
 
@@ -142,7 +142,7 @@ payload 需要宿主能力时：优先在 `IHostServices` 上加一个**语义�
 |---|---|
 | 宿主已有文件 | **只允许** §0 表格里那六处。其余一律不碰。 |
 | `TuneLab/ExperimentalPatchBootstrap.cs` | 属于「缝」，**尽量只增不改**；逻辑写到这里面就等于写回了上游文件。 |
-| `TuneLab/App.axaml.cs` 的启动慢段 | 已被 `app.splash` 搬进 `ContinueStartup`。**搬移时逐字保留上游原文**（只加相位标记），上游改这段时的对齐成本才最低。 |
+| `TuneLab/App.axaml.cs` 的启动段 | 已被 `app.splash` 整段搬进 `ContinueStartup`（含音频设备）。**搬移时逐字保留上游原文**（只加相位标记），上游改这段时的对齐成本才最低。 |
 | 上游 `AGENTS.md` / `docs/` | 不改（改了就是新增冲突面）。本层文档一律放 `ExperimentalPatch/` 内。 |
 | 命令 / 动作 / 设置 | 需要补丁能新增这些时，**先加锚点**再在补丁里注册，不要直接把补丁代码写进宿主的注册表。 |
 | 上游 `TuneLab.sln` | 只多了 `ExperimentalPatch` 一条工程项；上游改 sln 时这一条极易手工保留。 |

@@ -59,34 +59,16 @@ public partial class App : Application
                     AudioEngine.Destroy();
                 };
 
-                // init audio engine
-                AudioUtils.Init(new NAudioCodec());
-                AudioEngine.SampleRate.Value = Settings.SampleRate;
-                AudioEngine.BufferSize.Value = Settings.BufferSize;
-                if (!string.IsNullOrEmpty(Settings.AudioDriver)) AudioEngine.CurrentDriver.Value = Settings.AudioDriver;
-                if (!string.IsNullOrEmpty(Settings.AudioDevice)) AudioEngine.CurrentDevice.Value = Settings.AudioDevice;
-                AudioEngine.Init();
-                AudioEngine.LoadKeySamples(Settings.PianoKeySamplesPath);
-                AudioEngine.MasterGain = Settings.MasterGain;
-                Settings.PianoKeySamplesPath.Modified.Subscribe(() => AudioEngine.LoadKeySamples(Settings.PianoKeySamplesPath));
-                Settings.MasterGain.Modified.Subscribe(() => { AudioEngine.MasterGain = Settings.MasterGain; });
-                Settings.BufferSize.Modified.Subscribe(() => { AudioEngine.BufferSize.Value = Settings.BufferSize; });
-                Settings.SampleRate.Modified.Subscribe(() => { AudioEngine.SampleRate.Value = Settings.SampleRate; });
-                Settings.AudioDriver.Modified.Subscribe(() => { AudioEngine.CurrentDriver.Value = Settings.AudioDriver; });
-                Settings.AudioDevice.Modified.Subscribe(() => { AudioEngine.CurrentDevice.Value = Settings.AudioDevice; });
-
-                LegacyCompatLoader.Wire();
-
                 // ── 启动闪屏（补丁贡献；无补丁 = null）──
-                // 本方法跑在消息循环之前，此刻 show 出来的窗口还不会绘制。所以有闪屏时，把余下的启动慢段
-                // （扩展加载 → 音源引擎 → 建主窗口）交给消息循环去跑，闪屏才有机会先画出来再继续；
-                // 没有闪屏时原样同步跑完——补丁层缺席时宿主行为逐行不变。
+                // 越早越好：本方法跑在消息循环之前，此刻 show 出来的窗口还不会绘制，所以要把【整段】启动
+                // 工作（音频设备 → 扩展加载 → 音源引擎 → 建主窗口）交给消息循环去跑，闪屏才有机会先画
+                // 出来再继续。没有闪屏时原样同步跑完——补丁层缺席时宿主行为逐行不变。
                 //
                 // 闪屏自己 show 自己的窗口，宿主不碰 desktop.MainWindow：桌面生命周期在 MainWindow 为
                 // null、零窗口时并不会退出（实测见 ExperimentalPatch/.agents/startup-timeline.md），
                 // 故补丁契约里可以不出现 Avalonia 类型。唯一的硬约束是【关闪屏必须在主窗口显示之后】。
                 mStartupScreen = ExperimentalPatchBootstrap.CreateStartupScreen();
-                mStartupScreen?.SetPhase(StartupPhase.LoadingExtensions);
+                mStartupScreen?.SetPhase(StartupPhase.Preparing);
                 mStartupScreen?.Show();
 
                 if (mStartupScreen == null)
@@ -105,7 +87,8 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
     }
 
-    // 启动慢段：扩展加载 → 音源引擎 → 建主窗口 → 命令桥/启动参数/app.ready。
+    // 启动慢段：音频设备 → 扩展加载 → 音源引擎 → 建主窗口 → 命令桥/启动参数/app.ready。
+    // 整段都是【原文搬移】：从 OnFrameworkInitializationCompleted 里逐字搬下来，顺序不变，只插相位标记。
     //
     // 无闪屏时【全程同步】：本方法里唯一的 await 是 YieldToRenderIfSplashAsync，它在无闪屏时直接返回
     // （await 一个已完成的 ValueTask 不会让出），故不排队、不切线程，与上游逐行等价。
@@ -116,6 +99,29 @@ public partial class App : Application
         {
             var started = Stopwatch.StartNew();
             bool splashing = mStartupScreen != null;
+
+            // 相位 0：音频设备（原文自 OnFrameworkInitializationCompleted 逐字搬来，顺序不变）。
+            // 搬进这里只为让闪屏盖住它——冷启动这段要 ~3s，留在闪屏之前就是 3s 空屏。
+            mStartupScreen?.SetPhase(StartupPhase.PreparingAudio);
+            await YieldToRenderIfSplashAsync();
+
+            // init audio engine
+            AudioUtils.Init(new NAudioCodec());
+            AudioEngine.SampleRate.Value = Settings.SampleRate;
+            AudioEngine.BufferSize.Value = Settings.BufferSize;
+            if (!string.IsNullOrEmpty(Settings.AudioDriver)) AudioEngine.CurrentDriver.Value = Settings.AudioDriver;
+            if (!string.IsNullOrEmpty(Settings.AudioDevice)) AudioEngine.CurrentDevice.Value = Settings.AudioDevice;
+            AudioEngine.Init();
+            AudioEngine.LoadKeySamples(Settings.PianoKeySamplesPath);
+            AudioEngine.MasterGain = Settings.MasterGain;
+            Settings.PianoKeySamplesPath.Modified.Subscribe(() => AudioEngine.LoadKeySamples(Settings.PianoKeySamplesPath));
+            Settings.MasterGain.Modified.Subscribe(() => { AudioEngine.MasterGain = Settings.MasterGain; });
+            Settings.BufferSize.Modified.Subscribe(() => { AudioEngine.BufferSize.Value = Settings.BufferSize; });
+            Settings.SampleRate.Modified.Subscribe(() => { AudioEngine.SampleRate.Value = Settings.SampleRate; });
+            Settings.AudioDriver.Modified.Subscribe(() => { AudioEngine.CurrentDriver.Value = Settings.AudioDriver; });
+            Settings.AudioDevice.Modified.Subscribe(() => { AudioEngine.CurrentDevice.Value = Settings.AudioDevice; });
+
+            LegacyCompatLoader.Wire();
 
             // 相位 1：加载扩展
             mStartupScreen?.SetPhase(StartupPhase.LoadingExtensions);

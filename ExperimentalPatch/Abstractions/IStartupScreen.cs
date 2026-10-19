@@ -25,8 +25,11 @@ public interface IStartupScreen
 
 public enum StartupPhase
 {
-    // 还没进具体阶段（兜底）。
+    // 刚显示，还没进具体阶段（兜底）。
     Preparing,
+
+    // 正在初始化音频设备（AudioUtils / AudioEngine）。
+    PreparingAudio,
 
     // 正在加载扩展包。
     LoadingExtensions,

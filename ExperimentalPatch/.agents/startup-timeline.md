@@ -13,14 +13,14 @@ Program.Main
              ├─ App.OnFrameworkInitializationCompleted()   ← 同步；【消息循环还没开始】
              │   ├─ desktop.Startup += AnimationManager.Init
              │   ├─ desktop.Exit   += 收尾（Stop / 拆引擎）
-             │   ├─ AudioUtils.Init / AudioEngine.Init / 设置订阅
-             │   ├─ LegacyCompatLoader.Wire
-             │   ├─ ExtensionManager.LoadExtensions()      ← 慢
-             │   ├─ SoundSourceEngines.InitAll()           ← 慢
-             │   ├─ new MainWindow(); desktop.MainWindow = ...
-             │   ├─ CommandBridge.Init / HandleStartupArgs / Ready()  ← 锚点 app.ready
-             │   └─ Task.Run(命名管道监听)
-             └─ desktop.Start()  → RaiseStartup → MainWindow.Show() → 消息循环（Dispatcher）
+             │   ├─ 取闪屏（锚点 app.splash）→ SetPhase(Preparing) → Show()   ← 越早越好，就在这儿 show
+             │   └─ 余下的启动工作整段交给消息循环：ContinueStartup(desktop)
+             │       ├─ 相位 0  音频设备：AudioUtils.Init / AudioEngine.Init / 设置订阅 / LegacyCompatLoader.Wire
+             │       ├─ 相位 1  扩展加载：ExtensionManager.LoadExtensions()             ← 慢
+             │       ├─ 相位 2  音源引擎：SoundSourceEngines.InitAll()                  ← 慢
+             │       ├─ 相位 3  建主窗口：new MainWindow(); desktop.MainWindow = ...; Show() → 关闪屏
+             │       └─ 尾巴：CommandBridge.Init / HandleStartupArgs / Ready()          ← 锚点 app.ready
+             └─ desktop.Start()  → RaiseStartup → 消息循环（Dispatcher）
                  └─ desktop.Exit（退出时）                 ← 锚点 app.shutdown
 ```
 
@@ -29,14 +29,15 @@ Program.Main
 | # | 约束 | 为什么 |
 |---|---|---|
 | 1 | `SoundSourceEngines.InitAll()` 必须早于 `new MainWindow()` | `MainWindow` 构造时新建默认工程，其 part 立即 Activate 并建合成管线；引擎没 Init 会回落到空会话且无回建路径（**起动即无声**）。详见 `SoundSourceEngines.InitAll` 内的注释。 |
-| 2 | 音频设备初始化（`AudioUtils.Init`/`AudioEngine.Init`）留在闪屏**之前** | 它插在锚点/设置订阅之间的顺序是上游敏感的；闪屏只覆盖"扩展加载 + 引擎 Init"，不去动它。 |
+| 2 | 音频设备初始化搬进了**相位 0**（不再留在闪屏之前） | 冷启动时它要 ~3 s；留在闪屏之前 = 用户双击后先盯着空屏 ~3 s 才有反馈。搬下来后闪屏在 `OnFrameworkInitializationCompleted` 开头就出现。搬法是原文逐字下移、顺序不变（只插相位标记）。 |
 | 3 | **关闪屏必须在主窗口显示之后** | `ShutdownMode.OnLastWindowClose`：窗口数落到 0 就退出进程。闪屏若先关、主窗口还没 show，程序会当场退出。 |
 | 4 | `OnFrameworkInitializationCompleted` 里做的活**阻塞 UI**，且此时 show 出来的窗口**不会绘制** | 它运行在消息循环**之前**。所以"在闪屏里报告进度"这种需求，必须把重活让给循环去跑（见 §3）。 |
 | 5 | `app.ready` 必须在 `HandleStartupArgs` 之后 | 锚点语义就是"主窗口已建、启动参数已分流（工程已打开）"，提前到 `app.startup` 会让需要编辑器的补丁拿到半成品。 |
 
 ## 3. 让闪屏真的能画出来：让出一次消息循环
 
-在约束 4 下，"先 show 闪屏、再干重活"是不会出画面的。做法是把慢段切成相位，每个相位前**让出一次**：
+在约束 4 下，"先 show 闪屏、再干重活"是不会出画面的。所以闪屏在 `OnFrameworkInitializationCompleted`
+**开头**就 show，随后把**整段**启动工作切成相位、搬进 `ContinueStartup`，每个相位前**让出一次**：
 
 ```csharp
 async ValueTask YieldToRenderIfSplashAsync()
@@ -54,9 +55,13 @@ async ValueTask YieldToRenderIfSplashAsync()
 
 | 相位 | 标记 | 覆盖的上游原文 |
 |---|---|---|
+| `PreparingAudio` | `SetPhase` + yield | `AudioUtils.Init(...)` / `AudioEngine.*` / 设置订阅 / `LegacyCompatLoader.Wire();` |
 | `LoadingExtensions` | `SetPhase` + yield | `ExtensionManager.LoadExtensions();` |
 | `InitializingEngines` | `SetPhase` + yield | `SoundSourceEngines.InitAll();` |
 | `OpeningEditor` | `SetPhase` + yield | `new MainWindow(); desktop.MainWindow = ...;` |
+
+阶段 → 进度条的目标值映射在**补丁侧**（`SplashWindow.PhaseProgress`），宿主只说"到哪个阶段了"；
+改阶段划分时两处（上面这张表 + 那个映射）要一起改，且进度必须单调不减。
 
 **搬移时逐字保留上游原文**（只插相位标记），上游改这段时的对齐成本才最低。
 

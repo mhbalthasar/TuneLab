@@ -34,7 +34,7 @@ public sealed class SplashWindow : Window, IStartupScreen
     readonly IHostServices mHost;
     readonly TextBlock mStatus;
     readonly TextBlock mVersion;
-    readonly ProgressBar mBar;
+    readonly SplashProgressBar mBar;
     readonly StackPanel mBrand;
     readonly StackPanel mFailureList;
     readonly ScrollViewer mFailurePanel;
@@ -73,16 +73,8 @@ public sealed class SplashWindow : Window, IStartupScreen
             Text = string.IsNullOrWhiteSpace(host.AppVersion) ? string.Empty : "v" + host.AppVersion,
         };
 
-        mBar = new ProgressBar
-        {
-            Minimum = 0,
-            Maximum = 1,
-            Height = 4,
-            IsIndeterminate = true,
-            Foreground = SplashTheme.Brush(SplashTheme.HighLight),
-            Background = SplashTheme.Brush(SplashTheme.Item),
-            Margin = new Thickness(0, 12, 0, 0),
-        };
+        // 进度条：条随进度变长，条内有一道持续左→右滚动的光；走满整槽 = 加载完成。
+        mBar = new SplashProgressBar { Margin = new Thickness(0, 12, 0, 0) };
 
         mBrand = new StackPanel
         {
@@ -146,7 +138,25 @@ public sealed class SplashWindow : Window, IStartupScreen
         };
     }
 
-    public void SetPhase(StartupPhase phase) => mStatus.Text = PhaseText(phase);
+    public void SetPhase(StartupPhase phase)
+    {
+        mStatus.Text = PhaseText(phase);
+        // 粗粒度进度：只给每个阶段【起点】一个目标值，条平滑长过去；阶段内部靠条里的滚动高光
+        // 表示"还在动"。数值必须单调不减——条只往前长，不后退。
+        mBar.Progress = PhaseProgress(phase);
+    }
+
+    // 阶段起点 → 进度目标。比例按各阶段真实耗时的大致量级给（音频设备最久、建窗口最短），
+    // 见 .agents/startup-timeline.md 的实测时间线。改阶段划分时这里要一起改。
+    static double PhaseProgress(StartupPhase phase) => phase switch
+    {
+        StartupPhase.Preparing => 0.06,
+        StartupPhase.PreparingAudio => 0.25,
+        StartupPhase.LoadingExtensions => 0.62,
+        StartupPhase.InitializingEngines => 0.90,
+        StartupPhase.OpeningEditor => 1.00,
+        _ => 0.06,
+    };
 
     public Task ShowFailuresAsync(IReadOnlyList<string> failures)
     {
@@ -226,6 +236,7 @@ public sealed class SplashWindow : Window, IStartupScreen
     // 但也不该由宿主写死——宿主只说"到哪个阶段了"，措辞是呈现层的事。
     string PhaseText(StartupPhase phase) => phase switch
     {
+        StartupPhase.PreparingAudio => L("正在初始化音频设备…", "Initializing audio devices…"),
         StartupPhase.LoadingExtensions => L("正在加载扩展…", "Loading extensions…"),
         StartupPhase.InitializingEngines => L("正在初始化音源引擎…", "Initializing sound engines…"),
         StartupPhase.OpeningEditor => L("正在打开编辑器…", "Opening the editor…"),
