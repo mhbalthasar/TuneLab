@@ -524,7 +524,7 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 | M1 | 契约 + `app.mixer` 锚点 + 适配器（只读）（**已完成**：契约、`IMixerModel` 适配器、`CreateMixerModel`、读/写/undo 单测） | harness 打印所有通道的 gain/pan/mute/solo/选中/output/send 数/插入数 |
 | M2 | 双向写回（推子 / pan / M/S）+ 一次拖动一步 undo（**代码已就位**：控件 `EditStarted/Ended` + 适配器 merge 作用域；端到端要等 M5 的菜单入口） | 编辑器与调音台互相同步 |
 | M3 | **图引擎（无 AUX）**：节点 / 边 / 快照 / 拓扑序；退化时行为不变（**已完成**） | 同一工程分别用旧 `MixData` 与新图渲染，缓冲区**逐样本 bit 相同**（§7.2）；`TuneLab.Tests` 全绿 |
-| M4 | AUX + output + send：模型 / 图 / 两个 solo 域 / undo（**已完成**）；落盘暂缓（§9.0） | 建两条 AUX、做 send，电平与听感符合预期；环路被拒；AUX solo 不影响轨道 |
+| M4 | AUX + output + send：模型 / 图 / 两个 solo 域 / undo / **AUX+Master 电平表**（**已完成**）；落盘暂缓（§9.0） | 建两条 AUX、做 send，电平与听感符合预期；环路被拒；AUX solo 不影响轨道；播放时 AUX/Master 表跟着跳 |
 | M5 | 混音器打磨：`+ AUX` / 删除 AUX（改指 Master）、output 菜单、空态、窗口几何记忆（**已完成**）、「实验功能」菜单入口（**已完成**）；`+AUX` 待 M4 | 菜单能开关窗口；加一条 AUX 立刻出现；删 AUX 后路由被改指并提示 |
 
 ### 阶段二：插入效果（后做）

@@ -571,8 +571,15 @@ internal sealed class MixerAuxChannel : MixerChannelBase
     public override IDataProperty<MixerRoute> OutputProperty => Bus.Output;
     public override DataObjectList<Send> SendList => Bus.Sends;
 
-    // AUX 电平要一个新的宿主查询（按节点取峰值），和 Master 表一起在后续补上。
-    public override (double LeftDb, double RightDb)? Peak => null;
+    // AUX 电平：走混音图的节点峰值（推子之后，DESIGN.md §3.4）。停止播放时返回 null → 表归零。
+    public override (double LeftDb, double RightDb)? Peak
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeChannelAmplitude(Id, out var amplitude);
+            return amplitude == null ? null : (amplitude.Item1, amplitude.Item2);
+        }
+    }
 
     protected override void Unsubscribe()
     {
@@ -639,8 +646,15 @@ internal sealed class MixerMasterChannel : IMixerChannel
     public IReadOnlyList<IMixerSend> Sends => [];
     public IReadOnlyList<IMixerInsert> Inserts => [];
 
-    // Master 电平查询是后续的宿主改动；在那之前表是黑的，不编数据。
-    public (double LeftDb, double RightDb)? Peak => null;
+    // Master 电平：同一个节点查询（"master" 节点，推子之后）。
+    public (double LeftDb, double RightDb)? Peak
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeChannelAmplitude("master", out var amplitude);
+            return amplitude == null ? null : (amplitude.Item1, amplitude.Item2);
+        }
+    }
 
     public event Action? StateChanged;
     public event Action? RoutingChanged;

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace TuneLab.ExperimentalPatch.MixerEngine;
 
@@ -50,6 +51,24 @@ public sealed class Mixer
             count -= n;
         }
     }
+
+    // 取某个节点的峰值电平（dB）。AUX / Master 的表用它。
+    // 停止播放时引擎不渲染，这里读到的会是最后一帧 —— 调用方（宿主）负责判定"现在没在播"。
+    public bool TryGetPeakDb(string nodeId, out double leftDb, out double rightDb)
+    {
+        leftDb = double.NegativeInfinity;
+        rightDb = double.NegativeInfinity;
+
+        var runtime = mRuntime;
+        if (runtime == null || !runtime.Index.TryGetValue(nodeId, out int index))
+            return false;
+
+        leftDb = ToDb(runtime.PeakLeft[index]);
+        rightDb = ToDb(runtime.PeakRight[index]);
+        return true;
+    }
+
+    static double ToDb(float amplitude) => amplitude <= 0 ? double.NegativeInfinity : 20 * Math.Log10(amplitude);
 
     void RenderChunk(Runtime runtime, int position, int count, float[] output, int outputOffset, IMixSource? masterInput)
     {
@@ -107,6 +126,9 @@ public sealed class Mixer
                     ApplyGain(state, target, targetOffset, count);
             }
 
+            if (node.Kind is MixNodeKind.Aux or MixNodeKind.Master)
+                MeasurePeak(target, targetOffset, count, runtime, i);
+
             if (!hasSignal)
                 continue;
 
@@ -132,6 +154,29 @@ public sealed class Mixer
     }
 
     static bool IsSink(MixNode node) => node.Kind is MixNodeKind.Master or MixNodeKind.Device;
+
+    // 电平抽头：AUX / Master 的推子之后取峰值（DESIGN.md §3.4）。
+    // 只对这两类节点算 —— 轨的表仍走宿主的 InvokeRealtimeAmplitude（与轨道头同一个源）。
+    static void MeasurePeak(float[] buffer, int offset, int count, Runtime runtime, int nodeIndex)
+    {
+        float left = 0;
+        float right = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            float l = Math.Abs(buffer[offset + i * 2]);
+            float r = Math.Abs(buffer[offset + i * 2 + 1]);
+
+            if (l > left)
+                left = l;
+
+            if (r > right)
+                right = r;
+        }
+
+        runtime.PeakLeft[nodeIndex] = left;
+        runtime.PeakRight[nodeIndex] = right;
+    }
 
     static void ApplyGain(IMixChannelState? state, float[] buffer, int offset, int count)
     {
@@ -173,17 +218,24 @@ public sealed class Mixer
         public readonly MixSnapshot Snapshot;
         public readonly float[][] Buffers;
         public readonly DelayLine?[][] DelayLines;
+        public readonly float[] PeakLeft;
+        public readonly float[] PeakRight;
+        public readonly Dictionary<string, int> Index;
 
         public Runtime(MixSnapshot snapshot, int maxBlockSize)
         {
             Snapshot = snapshot;
             Buffers = new float[snapshot.Nodes.Count][];
             DelayLines = new DelayLine?[snapshot.Nodes.Count][];
+            PeakLeft = new float[snapshot.Nodes.Count];
+            PeakRight = new float[snapshot.Nodes.Count];
+            Index = new Dictionary<string, int>(snapshot.Nodes.Count);
 
             for (int i = 0; i < snapshot.Nodes.Count; i++)
             {
                 Buffers[i] = new float[maxBlockSize * 2];
                 DelayLines[i] = new DelayLine?[snapshot.Nodes[i].Outputs.Count];
+                Index[snapshot.Nodes[i].Id] = i;
 
                 for (int e = 0; e < snapshot.Nodes[i].Outputs.Count; e++)
                 {

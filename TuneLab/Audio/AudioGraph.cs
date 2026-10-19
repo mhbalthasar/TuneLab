@@ -207,6 +207,10 @@ internal class AudioGraph()
     public void MixIdle(int count, float[] buffer, int offset, IMixSource masterInput)
         => ApplyPreviewAndMasterGain(count, buffer, offset, masterInput);
 
+    // [EP-MIXER-5] 节点电平（AUX / Master 的表用）。
+    public bool TryGetChannelPeak(string channelId, out double leftDb, out double rightDb)
+        => mMixer.TryGetPeakDb(channelId, out leftDb, out rightDb);
+
     void ApplyPreviewAndMasterGain(int count, float[] buffer, int offset, IMixSource masterInput)
     {
         masterInput.AddData(0, count, buffer, offset, 1f, 1f);

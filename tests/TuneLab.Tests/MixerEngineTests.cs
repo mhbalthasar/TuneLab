@@ -290,6 +290,43 @@ public class MixerEngineTests
         Assert.True(MixGraphBuilder.WouldCreateCycle([], "aux-1", "aux-1"));
     }
 
+    // ── 电平抽头（AUX / Master 的表）──
+
+    [Fact]
+    public void Peak_IsMeasuredPerNodeAfterTheFader()
+    {
+        const int frames = 64;
+
+        var samples = new float[frames * 2];
+        for (int i = 0; i < samples.Length; i++)
+            samples[i] = 0.5f;
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState());
+        var aux = builder.AddNode("aux-1", MixNodeKind.Aux, new TestState { Volume = 0.5 });
+        var track = builder.AddNode("track-0", MixNodeKind.Track, new TestState(), new ArraySource(samples));
+
+        builder.Connect(track, aux, 1f);
+        builder.Connect(aux, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[frames * 2];
+        mixer.Render(0, frames, buffer, 0);
+
+        // 轨道 0.5 → AUX 推子 0.5 → 0.25（−12.04 dB）；Master 推子 unity。
+        Assert.True(mixer.TryGetPeakDb("aux-1", out double left, out double right));
+        Assert.Equal(20 * Math.Log10(0.25), left, 4);
+        Assert.Equal(left, right, 4);
+
+        Assert.True(mixer.TryGetPeakDb("master", out double masterLeft, out _));
+        Assert.Equal(left, masterLeft, 4);
+
+        // 未知节点 → false（不是"0 dB"）。
+        Assert.False(mixer.TryGetPeakDb("nope", out _, out _));
+    }
+
     // ── PDC 的延迟线（M6 接入插入时才会被图用到） ──
 
     [Fact]

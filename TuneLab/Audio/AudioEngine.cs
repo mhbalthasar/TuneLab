@@ -257,6 +257,21 @@ internal static class AudioEngine
                 );
     }
 
+    // [EP-MIXER-3] AUX / Master 的电平（按混音图节点取峰值，推子之后 —— DESIGN.md §3.4）。
+    // 只在播放时有效：停止时表归零（§4.5），所以这里不返回"最后一帧"。
+    public static void InvokeRealtimeChannelAmplitude(string channelId, out Tuple<double, double>? amplitude)
+    {
+        amplitude = null;
+
+        if (!IsPlaying)
+            return;
+
+        if (!AudioGraph.TryGetChannelPeak(channelId, out double left, out double right))
+            return;
+
+        amplitude = new Tuple<double, double>(left, right);
+    }
+
     public static void LoadKeySamples(string path)
     {
         mKeySamplesPath = path;
