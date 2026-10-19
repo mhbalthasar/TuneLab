@@ -13,6 +13,10 @@ public interface IHostServices
     // 不要自己拼 %APPDATA%（该目录受 TUNELAB_DATA_DIR 重定向，沙盒/截图工具要靠它）。
     string DataFolder { get; }
 
+    // 界面语言（如 "zh-CN" / "en-US"）。补丁要出面向用户的文案时按它选，别用 CurrentUICulture
+    // ——宿主换语言走的是自己的设置，不动进程文化。
+    string UiLanguage { get; }
+
     // 经宿主日志系统落盘（带补丁前缀归属），走的是与插件同一套 FileLogger。
     void Log(string message);
     void LogWarning(string message);

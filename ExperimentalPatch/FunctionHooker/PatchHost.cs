@@ -71,6 +71,25 @@ public static class PatchHost
         hub.RaiseAppReady(new AppReadyAnchor(hub.Host));
     }
 
+    // 宿主：启动时索取闪屏。没有补丁提供、或提供者全部失败 → null，宿主走无闪屏的原样路径。
+    // 这也是「补丁层不存在时宿主行为逐行不变」的保证所在。
+    public static IStartupScreen? CreateStartupScreen()
+    {
+        var hub = mHub;
+        if (hub == null)
+            return null;
+
+        try
+        {
+            return hub.CreateStartupScreen();
+        }
+        catch (Exception ex)
+        {
+            hub.Host.LogError("failed to create startup screen", ex);
+            return null;
+        }
+    }
+
     // 宿主：退出收尾调用（须早于宿主引擎销毁，补丁才能安全访问宿主服务）。
     public static void Shutdown()
     {

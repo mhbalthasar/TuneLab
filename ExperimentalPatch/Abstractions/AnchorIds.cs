@@ -7,4 +7,5 @@ public static class AnchorIds
     public const string AppStartup = "app.startup";
     public const string AppReady = "app.ready";
     public const string AppShutdown = "app.shutdown";
+    public const string AppSplash = "app.splash";
 }

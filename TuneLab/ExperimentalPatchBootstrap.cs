@@ -26,6 +26,20 @@ internal static class ExperimentalPatchBootstrap
         Guard(PatchHost.RaiseReady, "signal ready");
     }
 
+    // 启动时索取补丁提供的闪屏；无补丁/提供者失败 = null（宿主走无闪屏的原样路径）。
+    public static TuneLab.ExperimentalPatch.Abstractions.IStartupScreen? CreateStartupScreen()
+    {
+        try
+        {
+            return PatchHost.CreateStartupScreen();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error("Experimental patch startup screen failed: " + ex);
+            return null;
+        }
+    }
+
     // 退出收尾调用（App 的 desktop.Exit），须早于宿主引擎销毁。
     public static void Stop()
     {
@@ -51,6 +65,8 @@ internal static class ExperimentalPatchBootstrap
         public string AppVersion => AppInfo.VersionString;
 
         public string DataFolder => PathManager.TuneLabFolder;
+
+        public string UiLanguage => I18N.TranslationManager.CurrentLanguage.Value;
 
         public void Log(string message) => HostLog.Info(Prefix + message);
 

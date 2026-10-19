@@ -12,6 +12,32 @@ internal sealed class AnchorHub(IHostServices host) : IAnchorTable
     public IDisposable OnAppReady(Action<AppReadyAnchor> handler) => Subscribe(mAppReady, handler);
     public IDisposable OnAppShutdown(Action<AppShutdownAnchor> handler) => Subscribe(mAppShutdown, handler);
 
+    // 贡献型锚点：登记一个闪屏工厂，宿主启动时取第一个能给出闪屏的。
+    public IDisposable ProvideStartupScreen(Func<IStartupScreen> factory)
+    {
+        mStartupScreens.Add(factory);
+        return new Subscription(() => mStartupScreens.Remove(factory));
+    }
+
+    // 取第一个能给出闪屏的提供者。提供者抛错只记日志、继续问下一个——一个坏补丁不该让所有人没闪屏。
+    internal IStartupScreen? CreateStartupScreen()
+    {
+        foreach (var factory in mStartupScreens.ToArray())
+        {
+            try
+            {
+                if (factory() is { } screen)
+                    return screen;
+            }
+            catch (Exception ex)
+            {
+                Host.LogError("startup screen provider threw", ex);
+            }
+        }
+
+        return null;
+    }
+
     internal void RaiseAppStartup(AppStartupAnchor anchor) => Raise(mAppStartup, anchor, AnchorIds.AppStartup);
     internal void RaiseAppReady(AppReadyAnchor anchor) => Raise(mAppReady, anchor, AnchorIds.AppReady);
     internal void RaiseAppShutdown(AppShutdownAnchor anchor) => Raise(mAppShutdown, anchor, AnchorIds.AppShutdown);
@@ -47,4 +73,5 @@ internal sealed class AnchorHub(IHostServices host) : IAnchorTable
     readonly List<Action<AppStartupAnchor>> mAppStartup = [];
     readonly List<Action<AppReadyAnchor>> mAppReady = [];
     readonly List<Action<AppShutdownAnchor>> mAppShutdown = [];
+    readonly List<Func<IStartupScreen>> mStartupScreens = [];
 }

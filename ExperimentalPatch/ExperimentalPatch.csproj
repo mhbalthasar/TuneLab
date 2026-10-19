@@ -19,7 +19,11 @@
     <Version>2.1.1</Version>
   </PropertyGroup>
 
-  <!-- 刻意不引用 TuneLab / TuneLab.GUI / Avalonia：补丁只经锚点契约与宿主交互。
-       将来某个锚点确需 UI 类型时，再逐个加引用（见 .agents/AGENTS.md「加锚点」）。 -->
+  <!-- Avalonia 是第三方渲染库（版本随宿主），补丁做窗口只依赖它 + 自带的主题色镜像（Patches/Splash/SplashTheme.cs），
+       不引用 TuneLab.GUI / TuneLab 宿主程序集——那两处才是会随上游重构漂移的面。
+       调色板镜像的取舍与替代方案见 SplashTheme.cs 顶部注释。 -->
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.15" />
+  </ItemGroup>
 
 </Project>

@@ -21,4 +21,12 @@ public interface IAnchorTable
 
     // 宿主退出（引擎销毁之前）。
     IDisposable OnAppShutdown(Action<AppShutdownAnchor> handler);
+
+    // ── 贡献型锚点 ──
+    // 与上面三个「宿主通知补丁」不同，这是「宿主向补丁索取」：注册一个启动闪屏工厂，宿主启动时
+    // 取第一个返回非 null 的（按补丁装配顺序）。返回的 IDisposable 可撤销注册。
+    //
+    // 【为什么是工厂而不是实例】闪屏是个 Avalonia 窗口，只能在 Avalonia 就绪之后构造；而
+    // app.startup 早于它。故注册的是工厂，由宿主挑正确的时机调用。
+    IDisposable ProvideStartupScreen(Func<IStartupScreen> factory);
 }
