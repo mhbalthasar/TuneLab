@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.Extensions.Formats.TLP;
 using TuneLab.Foundation;
 using TuneLab.SDK;
 using Xunit;
@@ -172,5 +173,71 @@ public class MixerPersistenceTests
         {
             Cleanup(path);
         }
+    }
+
+    // 文件内 epMixer：写进 .tlpx、读得回来，而且不影响工程本身。
+    [Fact]
+    public void NativeFile_RoundTripsTheEpMixerPayload()
+    {
+        var info = new ProjectInfo();
+        info.Tracks.Add(new TrackInfo { Name = "t1" });
+
+        var file = new NativeProjectFile { Project = info, EpMixer = "{\"branch\":1,\"auxes\":[]}" };
+
+        using var stream = new MemoryStream();
+        new TuneLabProjectCbor().SerializeNative(stream, file);
+        var bytes = stream.ToArray();
+
+        using var read = new MemoryStream(bytes);
+        var back = new TuneLabProjectCbor().DeserializeNative(read);
+
+        Assert.Equal("{\"branch\":1,\"auxes\":[]}", back.EpMixer);
+        Assert.Equal("t1", back.Project.Tracks[0].Name);
+    }
+
+    // 装载顺序：文件内 → sidecar（DESIGN.md §9.2）。
+    [Fact]
+    public void Load_PrefersTheInFilePayloadOverTheSidecar()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var sidecarSource = NewProject("主唱");
+            sidecarSource.AddAux("AUX-from-sidecar");
+            MixerPersistence.Save(sidecarSource, path);
+
+            var inFileSource = NewProject("主唱");
+            inFileSource.AddAux("AUX-from-file");
+            string inFile = MixerPersistence.Serialize(inFileSource);
+
+            var target = NewProject("主唱");
+            MixerPersistence.Load(target, path, inFile);
+
+            Assert.Single(target.Auxes);
+            Assert.Equal("AUX-from-file", target.Auxes[0].Name.Value);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
+    // 门面：工程被替换后，补丁手里的同一个模型要跟着换，并通知界面重建。
+    [Fact]
+    public void Facade_FollowsProjectReplacement()
+    {
+        var document = new ProjectDocument();
+        document.SetProject(new Project(new ProjectInfo { Tracks = { new NativeTrackInfo { Name = "A" } } }));
+
+        using var facade = new MixerModelFacade(document);
+        Assert.Equal("A", facade.Channels[0].Name);
+
+        int changed = 0;
+        facade.ChannelsChanged += () => changed++;
+
+        document.SetProject(new Project(new ProjectInfo { Tracks = { new NativeTrackInfo { Name = "B" } } }));
+
+        Assert.True(changed > 0);
+        Assert.Equal("B", facade.Channels[0].Name);
     }
 }

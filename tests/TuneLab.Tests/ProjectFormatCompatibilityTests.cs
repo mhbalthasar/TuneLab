@@ -50,7 +50,7 @@ public class ProjectFormatCompatibilityTests
         writer.WriteTextString("version");
         writer.WriteInt32(1);      // 必须保持 1
 
-        writer.WriteTextString("epMixer");   // 补丁层将来要写的键
+        writer.WriteTextString("someFutureKey");   // 一个我们不认识的顶层键（原版/本版都该跳过）
         writer.WriteStartMap(null);
         writer.WriteTextString("branch");
         writer.WriteInt32(1);

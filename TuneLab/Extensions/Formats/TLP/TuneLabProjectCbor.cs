@@ -83,6 +83,15 @@ internal class TuneLabProjectCbor : IImportFormat, IExportFormat, INativeProject
                 case "exportConfig":
                     ReadExportConfig(reader, export);
                     break;
+                case "epMixer":
+                    // [EP-MIXER-11] 补丁层的混音路由。原版走 default: SkipValue（见下），
+                    // 我们在这里取出来自己用（DESIGN.md §9）。
+                    // 只认文本串：将来若改成结构化 map，旧读取器应当跳过而不是炸。
+                    if (reader.PeekState() == CborReaderState.TextString)
+                        file.EpMixer = reader.ReadTextString();
+                    else
+                        reader.SkipValue();
+                    break;
                 default:
                     reader.SkipValue();
                     break;
@@ -852,6 +861,15 @@ internal class TuneLabProjectCbor : IImportFormat, IExportFormat, INativeProject
 
         writer.WriteTextString("exportConfig");
         WriteExportConfig(writer, file.Export);
+
+        // [EP-MIXER-11] 混音路由（AUX / output / send）。原版读到这个不认识的键会 SkipValue，
+        // 所以带它的工程原版照样能打开；但原版**保存**时按 DTO 重写，会把这个键丢掉——
+        // 那正是同目录 sidecar 存在的理由（DESIGN.md §9）。
+        if (!string.IsNullOrEmpty(file.EpMixer))
+        {
+            writer.WriteTextString("epMixer");
+            writer.WriteTextString(file.EpMixer);
+        }
 
         writer.WriteEndMap();
     }

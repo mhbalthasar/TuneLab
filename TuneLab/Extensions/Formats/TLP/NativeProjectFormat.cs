@@ -29,6 +29,11 @@ internal sealed class NativeProjectFile
     public ProjectInfo Project { get; set; } = new();
     public EditorInfo Editor { get; set; } = new();
     public ExportConfigInfo Export { get; set; } = new();
+
+    // [EP-MIXER-11] 补丁层的混音路由载荷（紧凑 JSON）。
+    // 放在这里而不是 SDK 的 ProjectInfo 里：它不进冻结的插件 ABI；而且原版读取器对不认识的
+    // 顶层键走 SkipValue，所以原版照样能打开带这个键的工程（DESIGN.md §9）。
+    public string? EpMixer { get; set; }
 }
 
 // native 工程格式的宿主内部契约：在通用 musical(ProjectInfo) 之外，额外进出宿主私有的 editor/export 元数据（打包进 NativeProjectFile）。

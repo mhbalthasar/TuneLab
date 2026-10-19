@@ -63,26 +63,26 @@ internal static class ExperimentalPatchBootstrap
     {
         mMixerModel?.Dispose();
         mMixerModel = null;
-        mMixerModelProject = null;
+        mMixerModelDocument = null;
 
         Guard(PatchHost.Shutdown, "shutdown");
     }
 
-    // 混音台的模型（补丁经 IHostServices 取）。一个工程一个实例：
-    // Project 实例在"打开工程"时被复用（内容替换），所以这里按实例判等即可。
+    // 混音台的模型（补丁经 IHostServices 取）。返回的是**门面**：工程被替换时它自己换适配器
+    // 并通知界面，所以补丁拿一次就够了（窗口不会指着旧工程）。
     public static IMixerModel? CreateMixerModel()
     {
         try
         {
-            var project = CurrentProject();
-            if (project == null)
+            var document = CurrentEditor()?.Document;
+            if (document?.Project == null)
                 return null;
 
-            if (mMixerModel == null || !ReferenceEquals(mMixerModelProject, project))
+            if (mMixerModel == null || !ReferenceEquals(mMixerModelDocument, document))
             {
                 mMixerModel?.Dispose();
-                mMixerModel = new MixerModelAdapter(project);
-                mMixerModelProject = project;
+                mMixerModel = new MixerModelFacade(document);
+                mMixerModelDocument = document;
             }
 
             return mMixerModel;
@@ -94,14 +94,14 @@ internal static class ExperimentalPatchBootstrap
         }
     }
 
-    static Project? CurrentProject()
+    static Editor? CurrentEditor()
     {
         var desktop = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        return (desktop?.MainWindow as MainWindow)?.Editor.Project;
+        return (desktop?.MainWindow as MainWindow)?.Editor;
     }
 
-    static MixerModelAdapter? mMixerModel;
-    static Project? mMixerModelProject;
+    static MixerModelFacade? mMixerModel;
+    static ProjectDocument? mMixerModelDocument;
 
     // 补丁层【永不允许】把异常抛回宿主：出问题就是「这次补丁不生效」，主程序照常跑。
     static void Guard(Action action, string what)

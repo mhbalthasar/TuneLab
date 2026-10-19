@@ -235,6 +235,83 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     int mMetersPending;
 }
 
+// 一个"跟着工程走"的门面：工程被替换（打开另一个工程）时，换掉里面的适配器并通知界面。
+//
+// 为什么需要它：补丁只拿一次 IMixerModel 并长期持有（窗口、浮窗都挂在上面）。如果直接给出
+// 绑定某个 Project 实例的适配器，用户换了工程之后窗口就指着旧工程了。
+// 门面自己订阅 ProjectDocument 的 ProjectHolder，所以补丁侧什么都不用做（DESIGN.md §5.5）。
+internal sealed class MixerModelFacade : IMixerModel, IDisposable
+{
+    public MixerModelFacade(ProjectDocument document)
+    {
+        mDocument = document;
+        mInner = new MixerModelAdapter(document.Project!);
+
+        Hook();
+        mDocument.ProjectHolder.Modified.Subscribe(OnProjectReplaced);
+    }
+
+    public IReadOnlyList<IMixerChannel> Channels => mInner.Channels;
+    public IMixerChannel Master => mInner.Master;
+    public IReadOnlyList<IMixerOutput> Outputs => mInner.Outputs;
+    public IReadOnlyList<IMixerInsertFormat> InsertFormats => mInner.InsertFormats;
+
+    public bool SupportsAux => mInner.SupportsAux;
+    public bool SupportsSends => mInner.SupportsSends;
+    public bool SupportsInserts => mInner.SupportsInserts;
+
+    public event Action? ChannelsChanged;
+    public event Action? RoutingChanged;
+    public event Action? MetersUpdated;
+
+    public void AddAux() => mInner.AddAux();
+    public void RemoveAux(IMixerChannel aux) => mInner.RemoveAux(aux);
+
+    public void Dispose()
+    {
+        mDocument.ProjectHolder.Modified.Unsubscribe(OnProjectReplaced);
+        Unhook();
+        mInner.Dispose();
+    }
+
+    void OnProjectReplaced()
+    {
+        var project = mDocument.Project;
+        if (project == null)
+            return;
+
+        Unhook();
+        mInner.Dispose();
+
+        mInner = new MixerModelAdapter(project);
+        Hook();
+
+        // 整表重建：界面按 ChannelsChanged 重新取通道（窗口已经支持这条路径）。
+        ChannelsChanged?.Invoke();
+    }
+
+    void Hook()
+    {
+        mInner.ChannelsChanged += OnChannelsChanged;
+        mInner.RoutingChanged += OnRoutingChanged;
+        mInner.MetersUpdated += OnMetersUpdated;
+    }
+
+    void Unhook()
+    {
+        mInner.ChannelsChanged -= OnChannelsChanged;
+        mInner.RoutingChanged -= OnRoutingChanged;
+        mInner.MetersUpdated -= OnMetersUpdated;
+    }
+
+    void OnChannelsChanged() => ChannelsChanged?.Invoke();
+    void OnRoutingChanged() => RoutingChanged?.Invoke();
+    void OnMetersUpdated() => MetersUpdated?.Invoke();
+
+    readonly ProjectDocument mDocument;
+    MixerModelAdapter mInner;
+}
+
 // 一次交互式编辑 = 一步 undo（宿主的 merge 作用域，与轨道头滑杆同一套）。
 internal sealed class EditSession
 {

@@ -937,6 +937,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             Project = mDocument.Project.GetInfo(),
             Editor = new EditorInfo { PlayheadPos = Playhead.Pos },
             Export = mDocument.Project.GetExportConfig(),
+            EpMixer = MixerPersistence.Serialize(mDocument.Project),   // [EP-MIXER-11]
         };
 
         // 数据属性只在主线程读：文件名、原工程路径、轮换上限都先取出来再进后台。
@@ -1071,8 +1072,8 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             project.SetExportConfig(file.Export);
             mDocument.SetProject(project, path);
 
-            // [EP-MIXER-11] 路由（AUX / output / send）不在 .tlpx 里，从同目录 sidecar 恢复（DESIGN.md §9）。
-            MixerPersistence.Load(project, path);
+            // [EP-MIXER-11] 路由优先从 .tlpx 里的 epMixer 取；没有（例如原版刚保存过）才回落到 sidecar。
+            MixerPersistence.Load(project, path, file.EpMixer);
 
             Playhead.Pos = Math.Max(0, file.Editor.PlayheadPos);
         }
@@ -1204,6 +1205,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             Project = mDocument.Project.GetInfo(),
             Editor = new EditorInfo { PlayheadPos = Playhead.Pos },
             Export = mDocument.Project.GetExportConfig(),
+            EpMixer = MixerPersistence.Serialize(mDocument.Project),   // [EP-MIXER-11]
         };
         if (!FormatsManager.SerializeNative(projectFile, extension, out var stream, out var error))
         {
@@ -1232,6 +1234,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             Project = mDocument.Project.GetInfo(),
             Editor = new EditorInfo { PlayheadPos = Playhead.Pos },
             Export = mDocument.Project.GetExportConfig(),
+            EpMixer = MixerPersistence.Serialize(mDocument.Project),   // [EP-MIXER-11]
         };
         if (!FormatsManager.SerializeNative(file, ConstantDefine.DefaultProjectExtension, out var stream, out var error))
         {

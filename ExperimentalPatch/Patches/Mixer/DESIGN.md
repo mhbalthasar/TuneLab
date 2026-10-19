@@ -391,6 +391,17 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
   merge 作用域里 → **一步 undo 就能全还原**。可撤销比一个确认框更实在，也不用为它新开一处宿主接缝。
 - v1 只放调音台，不在编辑器轨道列表里重复开一个入口（两处 UI 容易两套状态）。
 
+### 6.7 窗口生命周期
+
+三条硬规则（都在 `MixerPatch` 里，`MixerPreview` harness 有 headless 冒烟检查）：
+
+1. **只能有一扇**：再点菜单只把现有那扇带到前面（隐藏过的重新 `Show`，可见的 `Activate`），绝不新建。
+   窗口被真正关掉（不是隐藏）时补丁会清掉引用，下次点才重建。
+2. **归属主窗口**（owned window）：主窗口在前台时它不会被盖住；打开时贴在主窗口右侧，
+   放不下就贴屏幕右缘并夹进工作区。
+3. **随主窗口关闭**：主窗口一关，补丁立刻 `Detach` + `Close` 它 —— 否则"最后一个窗口"还在，
+   `ShutdownMode.OnLastWindowClose` 不触发，进程不退出、音频继续跑。
+
 ## 7. 引擎放哪、怎么接（已定）
 
 **决定**：引擎代码**放在 `ExperimentalPatch/` 下**，但是一个**独立工程**（`MixerEngine`），
@@ -472,15 +483,19 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 **目标（已定）**：补丁保存的工程要能被**原版 TuneLab 正常打开**；更理想的是"原版打开 → 编辑 → 保存 →
 回到补丁编辑器，VST 状态还在"。
 
-### 9.0 当前状态：**sidecar 已落盘**（2026-10-20）
+### 9.0 当前状态：**两处都已落盘**（2026-10-20）
 
-- 已实现：`<工程文件>.epmixer.json` 的读写（`TuneLab/ExperimentalPatchMixerPersistence.cs`），
-  在 `Editor.TryLoadProject`（打开）与 `Editor.SaveToFile`（保存）两处接驳。
-  记住：AUX 列表（id/名字/推子/pan/M/S/output/sends）、每轨的 output 与 sends。
-- **还没做**：写进 `.tlpx` 的 `epMixer` 键（§9.2 的"文件内"那半）。所以**只拷 `.tlpx` 不会带走路由**，
-  要连 sidecar 一起拷。这是当前唯一的取舍，做 in-file 时按 §9.2 补上即可。
-- 装载失败（sidecar 损坏 / 版本更新）只记日志、工程照常打开——路由丢了也比打不开工程好。
-- 已知限制：**混音台窗口开着的时候换工程**，窗口仍指向旧工程（点一次菜单会重建）。
+- **文件内**：`.tlpx` 顶层键 `epMixer`（紧凑 JSON 文本），宿主 `version` 仍为 1。
+  → 工程自包含：只拷 `.tlpx` 也能带走路由。
+- **同目录 sidecar**：`<工程文件>.epmixer.json`（缩进 JSON，可读可手改）。
+  → 原版往返（打开 → 编辑 → 保存）之后，我们的数据仍在。
+- **装载顺序**：文件内 `epMixer` → sidecar → 空。
+- 实现：`TuneLab/ExperimentalPatchMixerPersistence.cs`（`Serialize` / `Apply` / `Save` / `Load`）；
+  接驳点：`Editor` 的三处保存都写载荷、打开时按顺序装载，CBOR 读写各加一段
+  （`NativeProjectFormat.cs` 的 `EpMixer` 字段 + `TuneLabProjectCbor.cs` 的读写分支）。
+- 失败一律只记日志：载荷/sidecar 损坏不会挡住打开工程。
+- **换工程**：补丁拿到的是 `MixerModelFacade`，它订阅 `ProjectDocument.ProjectHolder`，
+  工程被替换时自己换适配器并发 `ChannelsChanged` —— 窗口因此跟着换，不用重开。
 
 ### 9.1 三条硬约束（已被测试钉住）
 

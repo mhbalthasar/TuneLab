@@ -10,6 +10,11 @@ namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 //
 // 为什么是补丁而不是宿主硬编码一项：宿主只知道"这里有个可点的条目"，条目要干什么全归补丁。
 // 这样以后每个实验功能都复用同一个菜单接缝，不用各改一处宿主（DESIGN.md §5.4 / Q5）。
+//
+// 【窗口生命周期】三条硬规则：
+//   ① **只能有一扇**：再点菜单只会把现有那扇带到前面，绝不新建；
+//   ② 它是主窗口的**归属窗口**（owned）：主窗口在前台时它不会被盖住；
+//   ③ 主窗口一关，它立刻跟着关 —— 否则"最后一个窗口"还在，进程不退出、音频继续跑。
 [Patch(Order = 50)]
 public sealed class MixerPatch : IPatch
 {
@@ -29,15 +34,18 @@ public sealed class MixerPatch : IPatch
 
     public void Detach()
     {
-        if (mOwner != null)
-            mOwner.Closed -= OnOwnerClosed;
+        UnsubscribeOwner();
 
-        mWindow?.Detach();
-        mWindow?.Close();
+        var window = mWindow;
         mWindow = null;
         mModel = null;
         mHost = null;
-        mOwner = null;
+
+        if (window == null)
+            return;
+
+        window.Detach();
+        window.Close();
     }
 
     static string Label(IHostServices host)
@@ -49,6 +57,14 @@ public sealed class MixerPatch : IPatch
         if (host == null)
             return;
 
+        // ① 已经有一扇：只把它带到前面。模型是门面（MixerModelFacade），换工程时它自己会跟上，
+        //    所以这里不需要因为"模型变了"而重建窗口。
+        if (mWindow != null)
+        {
+            BringToFront(mWindow);
+            return;
+        }
+
         var model = host.CreateMixerModel();
         if (model == null)
         {
@@ -56,35 +72,29 @@ public sealed class MixerPatch : IPatch
             return;
         }
 
-        // 同一个模型 = 同一个工程：窗口只隐藏不销毁，再点就是恢复（保留几何与浮窗状态）。
-        if (mWindow != null && ReferenceEquals(mModel, model))
-        {
-            if (mWindow.IsVisible)
-            {
-                mWindow.Activate();
-                return;
-            }
-
-            ShowWindow(mWindow);
-            return;
-        }
-
-        // 模型换了（换工程 / 宿主重建适配器）：旧窗连同它的浮窗一起丢掉，避免读到旧数据。
-        mWindow?.Detach();
-        mWindow?.Close();
+        var window = new MixerWindow(model, host);
+        window.Closed += OnWindowClosed;   // 被真正关掉（不是隐藏）时清掉引用
 
         mModel = model;
-        mWindow = new MixerWindow(model, host);
-        ShowWindow(mWindow);
+        mWindow = window;
+        ShowWindow(window);
     }
 
-    // 让混音台成为主窗口的**归属窗口**（owned window）：
-    //   · 主窗口在前台时它不会被盖住（调音台要一直看得见，与主窗口并排）；
-    //   · 主窗口关闭时它跟着关 —— 否则最后一个窗口还在，进程不会退出（播放会继续跑）。
+    void BringToFront(Window window)
+    {
+        // 隐藏过的（点了 ✕）重新显示；已经可见的只要激活。
+        if (!window.IsVisible)
+            window.Show();
+
+        window.Activate();
+    }
+
+    // 让混音台成为主窗口的归属窗口（owned window）：
+    //   · 主窗口在前台时它不会被盖住（调音台要一直看得见）；
+    //   · 主窗口关闭时它跟着关 —— 进程因此能正常退出（ShutdownMode.OnLastWindowClose）。
     void ShowWindow(Window window)
     {
-        var desktop = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        var owner = desktop?.MainWindow;
+        var owner = MainWindow();
 
         if (owner == null || ReferenceEquals(owner, window))
         {
@@ -94,9 +104,7 @@ public sealed class MixerPatch : IPatch
 
         if (!ReferenceEquals(mOwner, owner))
         {
-            if (mOwner != null)
-                mOwner.Closed -= OnOwnerClosed;
-
+            UnsubscribeOwner();
             mOwner = owner;
             mOwner.Closed += OnOwnerClosed;
         }
@@ -105,8 +113,11 @@ public sealed class MixerPatch : IPatch
         PlaceBeside(window, owner);
     }
 
+    static Window? MainWindow()
+        => (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+
     // 贴在主窗口右侧；放不下（主窗口最大化时必然放不下）就贴右边缘，并被夹进工作区。
-    // 有归属关系在，即使重叠也始终浮在主窗口之上，所以"并排"与"最大化时浮在上面"都成立。
+    // 有归属关系在，即使重叠也始终浮在主窗口之上。
     static void PlaceBeside(Window window, Window owner)
     {
         var screen = owner.Screens.ScreenFromWindow(owner) ?? owner.Screens.Primary;
@@ -129,11 +140,44 @@ public sealed class MixerPatch : IPatch
         window.Position = new PixelPoint(x, y);
     }
 
+    void OnWindowClosed(object? sender, EventArgs e)
+    {
+        if (sender is Window window)
+            window.Closed -= OnWindowClosed;
+
+        mWindow = null;
+        mModel = null;
+    }
+
     void OnOwnerClosed(object? sender, EventArgs e)
     {
-        // 主窗口关了就把混音台一起关掉：进程能正常退出，音频也不会继续跑。
-        mWindow?.Detach();
-        mWindow?.Close();
+        UnsubscribeOwner();
+
+        var window = mWindow;
         mWindow = null;
+        mModel = null;
+
+        if (window == null)
+            return;
+
+        try
+        {
+            window.Detach();
+            window.Close();
+        }
+        catch (Exception ex)
+        {
+            // 退出路径上不许抛：最坏情况是这扇窗没关掉，也比带走进程好。
+            mHost?.LogError("mixer: failed to close the mixer window with the main window", ex);
+        }
+    }
+
+    void UnsubscribeOwner()
+    {
+        if (mOwner == null)
+            return;
+
+        mOwner.Closed -= OnOwnerClosed;
+        mOwner = null;
     }
 }

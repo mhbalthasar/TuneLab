@@ -27,6 +27,9 @@ internal static class MixerPersistence
 
     public static string SidecarPath(string projectPath) => projectPath + ".epmixer.json";
 
+    // .tlpx 里的 epMixer 用紧凑 JSON（要塞进一个 CBOR 文本串）。
+    public static string Serialize(Project project) => JsonSerializer.Serialize(BuildPayload(project), CompactJson);
+
     public static void Save(Project project, string projectPath)
     {
         if (string.IsNullOrEmpty(projectPath))
@@ -34,37 +37,7 @@ internal static class MixerPersistence
 
         try
         {
-            var payload = new Payload { Branch = Branch };
-
-            foreach (var aux in project.Auxes)
-            {
-                payload.Auxes.Add(new AuxDto
-                {
-                    Id = aux.Id,
-                    Name = aux.Name.Value,
-                    Gain = aux.Gain.Value,
-                    Pan = aux.Pan.Value,
-                    Mute = aux.IsMute.Value,
-                    Solo = aux.IsSolo.Value,
-                    Output = ToDto(aux.Output.Value),
-                    Sends = ToDtos(aux.Sends),
-                });
-            }
-
-            for (int i = 0; i < project.Tracks.Count; i++)
-            {
-                var track = project.Tracks[i];
-                payload.Tracks.Add(new TrackDto
-                {
-                    Index = i,
-                    Name = track.Name.Value,
-                    Output = ToDto(track.Output.Value),
-                    Sends = ToDtos(track.Sends),
-                });
-            }
-
-            File.WriteAllText(SidecarPath(projectPath),
-                JsonSerializer.Serialize(payload, JsonOptions));
+            File.WriteAllText(SidecarPath(projectPath), JsonSerializer.Serialize(BuildPayload(project), JsonOptions));
         }
         catch (Exception ex)
         {
@@ -72,8 +45,50 @@ internal static class MixerPersistence
         }
     }
 
-    public static void Load(Project project, string projectPath)
+    static Payload BuildPayload(Project project)
     {
+        var payload = new Payload { Branch = Branch };
+
+        foreach (var aux in project.Auxes)
+        {
+            payload.Auxes.Add(new AuxDto
+            {
+                Id = aux.Id,
+                Name = aux.Name.Value,
+                Gain = aux.Gain.Value,
+                Pan = aux.Pan.Value,
+                Mute = aux.IsMute.Value,
+                Solo = aux.IsSolo.Value,
+                Output = ToDto(aux.Output.Value),
+                Sends = ToDtos(aux.Sends),
+            });
+        }
+
+        for (int i = 0; i < project.Tracks.Count; i++)
+        {
+            var track = project.Tracks[i];
+            payload.Tracks.Add(new TrackDto
+            {
+                Index = i,
+                Name = track.Name.Value,
+                Output = ToDto(track.Output.Value),
+                Sends = ToDtos(track.Sends),
+            });
+        }
+
+        return payload;
+    }
+
+    // 装载顺序：**文件内 epMixer → sidecar → 空**（DESIGN.md §9.2）。
+    // inFileJson 是 .tlpx 顶层键 epMixer 的内容；原版读取器会跳过它，所以我们自己取出来用。
+    public static void Load(Project project, string projectPath, string? inFileJson = null)
+    {
+        if (!string.IsNullOrEmpty(inFileJson))
+        {
+            Apply(project, inFileJson);
+            return;
+        }
+
         if (string.IsNullOrEmpty(projectPath))
             return;
 
@@ -81,10 +96,10 @@ internal static class MixerPersistence
         if (!File.Exists(path))
             return;
 
-        Payload? payload;
+        string json;
         try
         {
-            payload = JsonSerializer.Deserialize<Payload>(File.ReadAllText(path), JsonOptions);
+            json = File.ReadAllText(path);
         }
         catch (Exception ex)
         {
@@ -92,21 +107,37 @@ internal static class MixerPersistence
             return;
         }
 
-        if (payload == null || payload.Branch > Branch)
-        {
-            HostLog.Warning("mixer: routing sidecar has a newer branch; ignored");
-            return;
-        }
+        Apply(project, json);
+    }
 
-        // 整段套一个 merge 作用域：装载出来的路由算"一步"，不会散成几十条 undo。
-        project.BeginMergeNotify();
+    // 把一份 JSON 载荷套到工程上。整段一个 merge 作用域：装载出来的路由算"一步"，不会散成几十条 undo。
+    public static void Apply(Project project, string json)
+    {
+        Payload? payload;
         try
         {
-            Apply(project, payload);
+            payload = JsonSerializer.Deserialize<Payload>(json, JsonOptions);
         }
         catch (Exception ex)
         {
-            HostLog.Error("mixer: failed to apply routing sidecar: " + ex);
+            HostLog.Error("mixer: routing payload is not valid JSON: " + ex);
+            return;
+        }
+
+        if (payload == null || payload.Branch > Branch)
+        {
+            HostLog.Warning("mixer: routing payload has a newer branch; ignored");
+            return;
+        }
+
+        project.BeginMergeNotify();
+        try
+        {
+            ApplyPayload(project, payload);
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error("mixer: failed to apply routing payload: " + ex);
         }
         finally
         {
@@ -115,7 +146,7 @@ internal static class MixerPersistence
         }
     }
 
-    static void Apply(Project project, Payload payload)
+    static void ApplyPayload(Project project, Payload payload)
     {
         // AUX：按保存的 id 重建（路由引用的是 id，重建时不能换号）。
         var auxes = new Dictionary<string, AuxBus>();
@@ -240,6 +271,13 @@ internal static class MixerPersistence
     static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
+    };
+
+    // 塞进 .tlpx 的那份不缩进：工程文件里多几千字节空白没有意义。
+    static readonly JsonSerializerOptions CompactJson = new()
+    {
+        WriteIndented = false,
         PropertyNameCaseInsensitive = true,
     };
 
