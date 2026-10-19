@@ -50,6 +50,7 @@ public partial class App : Application
                 TuneLab.GUI.Controllers.ButtonActions.Invoke = PluginButtonInvoker.Invoke;
                 desktop.Exit += (s, e) =>
                 {
+                    ExperimentalPatchBootstrap.Stop();   // 锚点 app.shutdown：须早于引擎销毁，补丁才拿得到宿主服务
                     HostLifetime.Shutdown();   // 先取消插件侧长任务（按钮、进度弹窗），再拆引擎
                     ExtensionManager.LaunchPendingUninstalls();
                     ExtensionManager.Destroy();
@@ -104,6 +105,10 @@ public partial class App : Application
                 var args = Environment.GetCommandLineArgs();
                 Log.Info("Command line args: " + string.Join(" ", args, 1, Math.Max(0, args.Length - 1)));
                 HandleStartupArgs(args[1..]);
+
+                // 锚点 app.ready：主窗口已建、启动参数已分流（工程已打开）。
+                // 需要窗口/编辑器才能做的注入放这一档，别提前到 app.startup。
+                ExperimentalPatchBootstrap.Ready();
 
                 // 获取主线程SynchronizationContext
                 var context = SynchronizationContext.Current ?? throw new InvalidOperationException("SynchronizationContext.Current is null");

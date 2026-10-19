@@ -1,0 +1,64 @@
+using System;
+using System.Collections.Generic;
+using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.ExperimentalPatch.FunctionHooker;
+using TuneLab.Foundation;
+using HostLog = TuneLab.Foundation.Log;
+
+namespace TuneLab;
+
+// ExperimentalPatch 的【宿主侧接线】。宿主对本层的全部认知 = 下面三个方法 + 一份 IHostServices；
+// 补丁的发现、装配、异常隔离、卸载一律在 ExperimentalPatch/FunctionHooker 里，此处刻意保持薄。
+//
+// 改动纪律（详见 ExperimentalPatch/.agents/AGENTS.md）：本文件属于「宿主与补丁的接缝」，
+// 尽量只增不改；逻辑一律写到 ExperimentalPatch/ 里去。
+internal static class ExperimentalPatchBootstrap
+{
+    // 进程级准备就绪、Avalonia 起来之前调用（Program.Main）。commandLineArgs 不含可执行文件自身。
+    public static void Start(IReadOnlyList<string> commandLineArgs)
+    {
+        Guard(() => PatchHost.Boot(new HostServices(), commandLineArgs), "start");
+    }
+
+    // 主窗口就绪后调用（App.OnFrameworkInitializationCompleted）。
+    public static void Ready()
+    {
+        Guard(PatchHost.RaiseReady, "signal ready");
+    }
+
+    // 退出收尾调用（App 的 desktop.Exit），须早于宿主引擎销毁。
+    public static void Stop()
+    {
+        Guard(PatchHost.Shutdown, "shutdown");
+    }
+
+    // 补丁层【永不允许】把异常抛回宿主：出问题就是「这次补丁不生效」，主程序照常跑。
+    static void Guard(Action action, string what)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error(string.Format("Experimental patch layer failed to {0}: {1}", what, ex));
+        }
+    }
+
+    // IHostServices 的宿主实现：把补丁的日志并进宿主日志流（带 [Patch] 前缀便于归因）。
+    sealed class HostServices : IHostServices
+    {
+        public string AppVersion => AppInfo.VersionString;
+
+        public string DataFolder => PathManager.TuneLabFolder;
+
+        public void Log(string message) => HostLog.Info(Prefix + message);
+
+        public void LogWarning(string message) => HostLog.Warning(Prefix + message);
+
+        public void LogError(string message, Exception? exception = null)
+            => HostLog.Error(Prefix + message + (exception == null ? string.Empty : Environment.NewLine + exception));
+
+        const string Prefix = "[ExperimentalPatch] ";
+    }
+}

@@ -27,6 +27,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TuneLab.Setup.Stub", "TuneL
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TuneLab.Cli", "TuneLab.Cli\TuneLab.Cli.csproj", "{4E729D7F-E690-4E80-9D67-9B4C5D75C962}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExperimentalPatch", "ExperimentalPatch\ExperimentalPatch.csproj", "{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -169,6 +171,18 @@ Global
 		{4E729D7F-E690-4E80-9D67-9B4C5D75C962}.Release|x64.Build.0 = Release|Any CPU
 		{4E729D7F-E690-4E80-9D67-9B4C5D75C962}.Release|x86.ActiveCfg = Release|Any CPU
 		{4E729D7F-E690-4E80-9D67-9B4C5D75C962}.Release|x86.Build.0 = Release|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Debug|x64.Build.0 = Debug|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Debug|x86.Build.0 = Debug|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Release|x64.ActiveCfg = Release|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Release|x64.Build.0 = Release|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Release|x86.ActiveCfg = Release|Any CPU
+		{3F9A6C21-8E4D-4B57-A0C3-9D1E5F7A2B84}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

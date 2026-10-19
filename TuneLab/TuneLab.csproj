@@ -88,6 +88,9 @@
 	  <ProjectReference Include="..\TuneLab.I18N\TuneLab.I18N.csproj" />
 	  <ProjectReference Include="..\TuneLab.GUI\TuneLab.GUI.csproj" />
 	  <ProjectReference Include="..\TuneLab.SDK\TuneLab.SDK.csproj" />
+	  <!-- 实验性补丁层（独立于上游功能）：宿主只依赖其 Abstractions 契约与 FunctionHooker 入口，
+	       补丁实现全在对面的 Patches/ 里。约定见 ExperimentalPatch/.agents/AGENTS.md。 -->
+	  <ProjectReference Include="..\ExperimentalPatch\ExperimentalPatch.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

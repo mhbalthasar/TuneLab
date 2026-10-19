@@ -78,6 +78,11 @@ class Program
         // 初始化各配置/翻译/插件上下文（截图工具 tools/ScreenshotBot 复用同一入口，保证与真实启动同路径）。
         InitCoreServices();
 
+        // 实验性补丁层：配置/翻译/日志就绪之后、Avalonia 起来之前装配补丁（锚点 app.startup）。
+        // 这是宿主对本层的全部启动认知；发现/隔离/卸载都在 ExperimentalPatch/FunctionHooker 里，
+        // 失败只记日志、绝不连累启动。约定见 ExperimentalPatch/.agents/AGENTS.md。
+        ExperimentalPatchBootstrap.Start(args);
+
         // event loop
         BuildAvaloniaApp()
         .StartWithClassicDesktopLifetime(args);

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       ExperimentalPatch —— 实验性补丁层（宿主 TuneLab.csproj 直接 ProjectReference）。
+       补丁不依赖宿主任何内部类型：只能看到 Abstractions 里的锚点契约；
+       宿主想看的能力经 IHostServices / 各锚点 payload 显式开出去。
+       加补丁 = 在 Patches/ 下加一个带 [Patch] 的 IPatch 实现，不改任何注册表。
+       约定见 .agents/AGENTS.md。
+       ════════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>TuneLab.ExperimentalPatch</AssemblyName>
+    <RootNamespace>TuneLab.ExperimentalPatch</RootNamespace>
+    <!-- 实验层不参与上游打包/版本号体系，跟随宿主版本即可。 -->
+    <Version>2.1.1</Version>
+  </PropertyGroup>
+
+  <!-- 刻意不引用 TuneLab / TuneLab.GUI / Avalonia：补丁只经锚点契约与宿主交互。
+       将来某个锚点确需 UI 类型时，再逐个加引用（见 .agents/AGENTS.md「加锚点」）。 -->
+
+</Project>
