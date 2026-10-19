@@ -91,6 +91,9 @@
 	  <!-- 实验性补丁层（独立于上游功能）：宿主只依赖其 Abstractions 契约与 FunctionHooker 入口，
 	       补丁实现全在对面的 Patches/ 里。约定见 ExperimentalPatch/.agents/AGENTS.md。 -->
 	  <ProjectReference Include="..\ExperimentalPatch\ExperimentalPatch.csproj" />
+	  <!-- [EP-MIXER-7] 混音引擎：纯 DSP，住在 ExperimentalPatch/ 下但是独立工程（宿主反过来引用它）。
+	       方向仍是宿主 → 补丁侧；引擎不引用宿主。见 ExperimentalPatch/.agents/mixer-reconnect.md -->
+	  <ProjectReference Include="..\ExperimentalPatch\MixerEngine\MixerEngine.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

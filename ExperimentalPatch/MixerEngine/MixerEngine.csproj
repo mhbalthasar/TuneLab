@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       MixerEngine —— 混音图（节点 / 边 / 拓扑序 / 延迟补偿 / 环路检测）。
+
+       硬规矩（见 ExperimentalPatch/.agents/AGENTS.md §1 与 Patches/Mixer/DESIGN.md §7）：
+         · 纯 DSP：**不引用宿主、不引用 Avalonia**，只认自己的三个接口
+           （IMixSource / IMixChannelState / IMixInsert）。
+         · 因此可以脱离音频设备独立单测 —— 这是这个工程存在的最大理由。
+         · 宿主（TuneLab）反过来引用本工程，并在 AudioGraph 的接驳点把模型编译成 MixSnapshot。
+       ════════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>TuneLab.ExperimentalPatch.MixerEngine</AssemblyName>
+    <RootNamespace>TuneLab.ExperimentalPatch.MixerEngine</RootNamespace>
+    <Version>2.1.1</Version>
+  </PropertyGroup>
+
+</Project>

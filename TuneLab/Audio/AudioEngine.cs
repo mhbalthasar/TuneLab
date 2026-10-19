@@ -465,6 +465,8 @@ internal static class AudioEngine
 
         public void Read(float[] buffer, int offset, int count)
         {
+            // [EP-MIXER-3] Master 增益与预览音都交给混音图：图的 Master 节点负责乘增益，
+            // 预览音作为 Master 的额外输入在增益**之前**混入（与旧路径 MixData → 预览 → MasterGain 同序）。
             if (IsPlaying)
             {
                 lock (mSeekLockObject)
@@ -473,22 +475,15 @@ internal static class AudioEngine
                     int endPosition = position + count;
                     try
                     {
-                        mAudioGraph.MixData(position, endPosition, true, buffer, offset);
+                        mAudioGraph.MixData(position, endPosition, true, buffer, offset, PreviewSource);
                     }
                     catch { }
                     mGraphPosition = endPosition;
                 }
             }
-            mAudioPlayer.AddData(count, buffer, offset);
-            if (MasterGain == 0)
-                return;
-
-            float masterVolume = (float)MusicTheory.dB2Level(MasterGain);
-            int startIndex = offset;
-            int endIndex = offset + count * 2;
-            for (int i = startIndex; i < endIndex; i++)
+            else
             {
-                buffer[i] *= masterVolume;
+                mAudioGraph.MixIdle(count, buffer, offset, PreviewSource);
             }
         }
 
@@ -504,6 +499,10 @@ internal static class AudioEngine
         readonly AudioGraph mAudioGraph = new();
         int mGraphPosition = 0;
         readonly object mSeekLockObject = new();
+
+        // 预览音作为"直接混进 Master 输入"的音源。懒建（一次），之后每块复用同一个对象。
+        PreviewMixSource? mPreviewSource;
+        PreviewMixSource PreviewSource => mPreviewSource ??= new PreviewMixSource(mAudioPlayer);
     }
 
     static IAudioPlaybackHandler? mAudioPlaybackHandler;

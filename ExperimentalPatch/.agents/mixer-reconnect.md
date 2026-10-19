@@ -3,8 +3,9 @@
 > 读者：**将来做上游同步的 AI agent（或人）**。本文假设你手上是一个刚 merge / rebase 完 upstream 的分支，
 > 可能编译不过、也可能编译过但混音不对，而你对混音器引擎一无所知。
 >
-> 状态：**M3 / M4 落地前，本文是计划**；每落地一个接驳点，就把"实际代码形状"补进 §2 的表里
-> （这是硬要求，不是可选项——否则下一次重接就退化成重新理解整个引擎）。
+> 状态：**M3 已落地**（图引擎 + 接驳点 1 / 3 / 7 / 9；验证：混音相关 19 条测试全绿，
+> 其中"退化图与旧 `MixData` 逐样本 bit 相同"是硬验收）。每落地一个接驳点，就把"实际代码形状"
+> 补进 §2 的表里（这是硬要求——否则下一次重接就退化成重新理解整个引擎）。
 
 ## 0. 先读这三行
 
@@ -32,15 +33,15 @@ TuneLab（宿主）
 
 | 标记 | 文件 | 改什么 | 形状 | 上游改坏时的症状 | 重接要点 |
 |---|---|---|---|---|---|
-| `EP-MIXER-1` | `Audio/AudioGraph.cs` | `MixData` 改为"渲染图快照"；去掉回调里的 `lock` | 整段替换 `MixData` 主体；`AddData` / `Tracks` / `EndTime` 保持不变 | 编译过但无声 / 只出一部分声；或 `MixData` 签名对不上 | 先确认 `AddData` 仍是"逐轨求和"的原语（stem 导出与电平依赖它）；新 `MixData` 只负责"按快照渲染 + 混音" |
+| `EP-MIXER-1` | `Audio/AudioGraph.cs` | `MixData` 走图；`AddData` 拆成"算增益 + 按增益求和" | **已落地**：`AddData(...)` 原签名转调新重载 `AddData(..., float leftVolume, float rightVolume)`（逐段循环原样搬进去）；`MixData` 开头 `if (isStereo && mMixer.HasSnapshot) { mCompiler.RefreshSolo(); mMixer.Render(...); return; }`，旧循环整段留作 `MixDataLegacy`；新增 `MixIdle` / `ApplyPreviewAndMasterGain` / `RebuildSnapshot`（`AddTrack`/`RemoveTrack` 里调）；字段 `Mixer mMixer` + `MixerGraphCompiler mCompiler` | 无声 / 只出一部分声 / 音量差一倍 | 先确认 `AddData` 的逐段循环没被改动（bit 相同依赖它）；`MixData` 里**只有一处**决定走图还是走旧路 |
 | `EP-MIXER-2` | `Audio/AudioEngine.cs` | `ExportMaster` / `ExportTrack` 走图 | 两个方法体各一段 | 导出无声、导出比播放小/大、Master 插入不进文件 | `ExportMaster` = 渲染图到文件 sink；`ExportTrack` = 只渲染该轨节点（pre-routing） |
-| `EP-MIXER-3` | `Audio/AudioEngine.cs` | 播放回调：Master 增益移进 Master 节点、设备 sink、Master 电平查询 | `AudioSampleProvider.Read` 一段 + 新增一个查询方法 | 播放音量不对（乘了两次 / 没乘）、Master 表不动 | Master 增益**只能在一个地方乘**（Master 节点）。回调里不许再乘 |
+| `EP-MIXER-3` | `Audio/AudioEngine.cs` | 播放回调把预览音与 Master 增益交给图 | **已落地**：`AudioSampleProvider.Read` 删掉 `mAudioPlayer.AddData(...)` 与手乘 `MasterGain`；改为 `MixData(..., PreviewSource)`，未播放时 `MixIdle(...)`；新增懒建字段 `PreviewSource` | 预览音消失 / 音量被乘两次 / 未播放时预览音不受 Master 影响 | Master 增益**只能在一个地方乘**（图里的 Master 节点，或 `MixIdle`）。回调里不许再乘 |
 | `EP-MIXER-4` | `Data/Track.cs` / `ITrack.cs` | `Output` / `Sends` / `Inserts` 三个 `DataProperty` | 属性 + 默认值 | 路由不生效 / 不进 undo / 不序列化 | 三个都必须是 `DataProperty`（否则 undo 与 tlpx 都不会有） |
 | `EP-MIXER-5` | `Data/Project.cs` | AUX 有序表 + 增删命令 | 一个 `DataObjectList` + 两个命令 | 加 AUX 后工程存不住 / undo 不对 | AUX 的 id 必须稳定（引用它的是路由） |
 | `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `Extensions/Formats/TLP/TuneLabProjectCbor.cs` | 序列化路由 / 插入，版本 +1 | reader/writer 各一段 + 版本常量 | 老工程打不开 / 新工程丢了路由 / 版本号对不上 | **只动 native DTO**，别动 SDK 的 `TrackInfo`（冻结面） |
-| `EP-MIXER-7` | `TuneLab.csproj` | 加 `MixerEngine` / `InsertHost` 两条 `ProjectReference` | 两行 | 编译找不到命名空间 | 上游若重排了 csproj 的 ItemGroup，把这两条加回去即可 |
+| `EP-MIXER-7` | `TuneLab.csproj` | 加 `MixerEngine`（以及将来 `InsertHost`）的 `ProjectReference` | **已落地**：两条引用；另在 `ExperimentalPatch.csproj` 里 `Compile Remove="MixerEngine/**"` | 编译找不到命名空间 / **CS0579 特性重复** | 排除项不能丢（嵌套工程的 obj 会被默认 `**/*.cs` 吃进来）；上游若重排 ItemGroup，把这两条加回去 |
 | `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（从补丁收集命令） | `CreateMenu` 里一段 | 菜单消失 / 点了没反应 | 菜单项本身来自补丁；宿主只负责"渲染一个从补丁收集来的菜单" |
-| `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | 转发一行 + 新文件 | 调音台打开是空的 / 读到旧数据 | 编译器负责 `Project` → `MixSnapshot`；别把逻辑写进 `ExperimentalPatchBootstrap.cs` |
+| `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | **部分落地**：新文件里已有 `MixerGraphCompiler` / `TrackChannelState` / `TrackMixSource` / `MasterChannelState` / `PreviewMixSource`；`CreateMixerModel` 与 `IMixerModel` 适配器还没做（M1 剩余） | 调音台打开是空的 / 读到旧数据 | 编译器只负责"宿主模型 → MixSnapshot"；别把逻辑写进 `ExperimentalPatchBootstrap.cs` |
 
 ## 3. 重接流程（merge / rebase 之后照这个顺序）
 
