@@ -35,6 +35,11 @@
     <None Remove="InsertHost/**" />
     <EmbeddedResource Remove="MixerEngine/**" />
     <EmbeddedResource Remove="InsertHost/**" />
+    <!-- VstBridge/ 是独立的 x86 桥进程（不进本工程），但它的协议文件要被
+         InsertHost 与 VstBridge 各自编译 —— 别让本工程的默认通配把 **/*.cs 吞进来。 -->
+    <Compile Remove="VstBridge/**" />
+    <None Remove="VstBridge/**" />
+    <EmbeddedResource Remove="VstBridge/**" />
   </ItemGroup>
 
 </Project>

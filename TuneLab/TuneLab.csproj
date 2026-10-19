@@ -94,6 +94,10 @@
 	  <!-- [EP-MIXER-7] 混音引擎：纯 DSP，住在 ExperimentalPatch/ 下但是独立工程（宿主反过来引用它）。
 	       方向仍是宿主 → 补丁侧；引擎不引用宿主。见 ExperimentalPatch/.agents/mixer-reconnect.md -->
 	  <ProjectReference Include="..\ExperimentalPatch\MixerEngine\MixerEngine.csproj" />
+  <!-- [EP-MIXER-7b] 插入效果宿主（VST3 进程内 + VST2 x86 桥 + 共享内存音频环）。
+       MixerEngine 是"图"，InsertHost 是"图上的效果器从哪来"。分两个工程是为了让
+       引擎保持零第三方依赖（可独立单测），而这一层可以带原生库与 vendor 代码。 -->
+  <ProjectReference Include="..\ExperimentalPatch\InsertHost\InsertHost.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

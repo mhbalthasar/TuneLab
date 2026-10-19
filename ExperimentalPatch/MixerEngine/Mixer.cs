@@ -140,6 +140,13 @@ public sealed class Mixer
             if (!hasSignal)
                 continue;
 
+            // 插入链：在推子之后、分发之前就地处理（DESIGN.md §3.2）。
+            // 旁通的插入自己也说"我没干活"（IsBypassed），所以这里不挑，
+            // 让实现方以最快的方式直通——空转一圈也比在引擎里判类型便宜。
+            var inserts = node.Inserts;
+            for (int k = 0; k < inserts.Count; k++)
+                inserts[k].Process(target, targetOffset, count);
+
             var edges = node.Outputs;
             for (int e = 0; e < edges.Count; e++)
             {

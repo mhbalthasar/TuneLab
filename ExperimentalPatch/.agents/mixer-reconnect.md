@@ -3,26 +3,30 @@
 > 读者：**将来做上游同步的 AI agent（或人）**。本文假设你手上是一个刚 merge / rebase 完 upstream 的分支，
 > 可能编译不过、也可能编译过但混音不对，而你对混音器引擎一无所知。
 >
-> 状态：**M3 已落地**（图引擎 + 接驳点 1 / 3 / 7 / 9；验证：混音相关 19 条测试全绿，
-> 其中"退化图与旧 `MixData` 逐样本 bit 相同"是硬验收）。每落地一个接驳点，就把"实际代码形状"
-> 补进 §2 的表里（这是硬要求——否则下一次重接就退化成重新理解整个引擎）。
+> 状态：**阶段一（混音器）已完成；阶段二（插入效果）进行中**——已落地插入链骨架
+> （`MixerEngine/IMixInsert` + 图内跑链 + PDC）、VST3 进程内后端（OwnAudioVST3 托管层降级 vendor 到 net8）、
+> 32 位 VST2 的 x86 桥进程（`VstBridge/`，含 JobObject 生命周期与共享内存音频环）、
+> 插件扫描路径设置（`EP-MIXER-12`）。每落地一个接驳点，就把"实际代码形状"补进 §2 的表里
+> （这是硬要求——否则下一次重接就退化成重新理解整个引擎）。
 
 ## 0. 先读这三行
 
 - 引擎（纯 DSP）在 `ExperimentalPatch/MixerEngine/`，插入宿主在 `ExperimentalPatch/InsertHost/`。
   **这两个目录与上游无关，永远不会冲突**——出问题时不要先去那里改。
-- 冲突只可能发生在宿主里的 9 个接驳点（§2 的表），每个点都带 `[EP-MIXER-n]` 注释。
-- 判断"接驳是否完好"：`dotnet build` 通过只是第一关，**必须**跑完 §4 的三级验证。
+- 冲突只可能发生在宿主里的接驳点（§2 的表），每个点都带 `[EP-MIXER-n]` 注释。- 判断"接驳是否完好"：`dotnet build` 通过只是第一关，**必须**跑完 §4 的三级验证。
 
 ## 1. 依赖方向（违反这条，后面的设计都不成立）
 
 ```
 TuneLab（宿主）
   ├──> ExperimentalPatch            （UI 补丁：调音台窗口、浮窗、菜单）
-  ├──> ExperimentalPatch/MixerEngine（纯 DSP：图、节点、PDC、环路）
-  └──> ExperimentalPatch/InsertHost （VST2 / VST3 / JSFX 适配）
+  ├──> ExperimentalPatch/MixerEngine（纯 DSP：图、节点、PDC、环路、IMixInsert 契约）
+  ├──> ExperimentalPatch/InsertHost （VST3 进程内后端 + VstBridgeClient）
+  │      └─ 共享源码（各自编译一份）：VstBridge/BridgeProtocol.cs + BridgeSharedMemory.cs
+  └──> ExperimentalPatch/VstBridge  （x86 独立进程，宿主按需启动，桥只被宿主引用）
+         └─ 由宿主以 --job <句柄> --pipe <名字> 启动；JobObject 令其与宿主同生共死
 
-补丁侧三个工程都不引用 TuneLab。
+补丁侧四个工程都不引用 TuneLab。
 ```
 
 - 引擎**不知道** `Track` / `Project` / Avalonia 存在：宿主把模型编译成 `MixSnapshot` 再交给它。
@@ -43,7 +47,9 @@ TuneLab（宿主）
 | `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（从补丁收集命令） | **已落地**：`CreateMenu()` 末尾一段（`ExperimentalPatchBootstrap.GetCommands()`，空表时整块跳过）；标题按 `I18N.TranslationManager.CurrentLanguage` 选词（**不走 `SetTrName`**，免得动上游翻译表）；命令调用点 `InvokeExperimentalCommand` 兜异常 | 菜单消失 / 点了没反应 / **`ActionCoverageTests` 红** | 这个入口必须在 `docs/action-coverage.md` 的 Editor.cs 段落里有一行（裁决 `by-design`）；上游合并后那一行若丢了，封条会直接报错——按提示补回即可 |
 | `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerModel.cs`（新） | `CreateMixerModel()` 转发 + `IMixerModel` 适配器 + 快照编译器 | **已落地**：`CreateMixerModel()`（按工程实例缓存、`Stop()` 里 Dispose）；`ExperimentalPatchMixerModel.cs` 有 `MixerModelAdapter` / `MixerTrackChannel` / `MixerAuxChannel` / `MixerMasterChannel` / `MixerSendAdapter` / `MixerOutput` / `MixerInsertFormat`；`ExperimentalPatchMixerAudio.cs` 有 `MixerGraphCompiler` 等 | 调音台打开是空的 / 读到旧数据 / 拖动不进 undo | 读写一律落到 `Track` / `AuxBus` 的 `DataProperty`；一次拖动用 `BeginMergeNotify`+`DiscardTo`+`Commit`，单次写入写完要 `Commit()` |
 | `EP-MIXER-10` | `Audio/NAudio/NAudioCodec.cs` | 导出编码的**兜底夹紧** | **已落地**：`To16BitsBytes` / `To24BitsBytes` 改成"先 `Clamp(-1,1)` 再换算"（16-bit 用 32767 做满量程）；两个方法改成 internal 以便单测 | 导出有"刺啦"声 / 满量程正峰变成负峰 | 原来的 `(short)(x * 32768)` 是未检查转换：1.0 回绕成 −32768。封条见 `AudioClippingTests`；限幅器本体在 `MixerEngine/PeakLimiter.cs` |
-| `EP-MIXER-11` | `TuneLab/ExperimentalPatchMixerPersistence.cs`（新）+ `Editor.cs` 四处 + `NativeProjectFormat.cs` / `TuneLabProjectCbor.cs` | 路由落盘（文件内 + sidecar） | **已落地**：三处保存都填 `NativeProjectFile.EpMixer`，打开时 `MixerPersistence.Load(project, path, file.EpMixer)`（文件内优先、sidecar 兜底）；CBOR 读写各一段 | 存盘后重开路由丢了 / 打开工程报错 / 原版打不开 | **不要给 SDK 的 `TrackInfo` 加字段**（冻结面）；载荷格式改了就抬 `branch` 号，**别动宿主 `version`**；读失败只许记日志，不许挡住打开工程 |
+| `EP-MIXER-11` | `TuneLab/ExperimentalPatchMixerPersistence.cs`（新）+ `Editor.cs` 四处 + `NativeProjectFormat.cs` / `TuneLabProjectCbor.cs` | 路由落盘（文件内 + sidecar） | **已落地**：三处保存都填 `NativeProjectFile.EpMixer`，打开时 `MixerPersistence.Load(project, path, file.EpMixer)`（文件内优先、sidecar 兜底）；CBOR 读写各一段 | 存盘后重开路由丢了 / 打开工程报错 / 原版打不开 | **不要给 SDK 的 `TrackInfo` 加字段**（冻结面）；载荷格式改了就抬 `branch` 号，**别动宿主 `version`**；读失败只许记日志，不许挡住打开工程。插入的 `state`（base64）将来也进这个载荷，**不要**塞进 `PropertyObject`（它没有字节串） |
+| `EP-MIXER-12` | `TuneLab.csproj` + `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchInsertSettings.cs`（新） | 插入效果：宿主引用 `InsertHost`、经 `IHostServices.InsertPlugins` 递出插件扫描设置 | **已落地**：`TuneLab.csproj` 多一条 `ProjectReference`（与 `EP-MIXER-7` 同一个 ItemGroup）；`InsertHost.csproj` 用 `<Compile Include="..\VstBridge\*.cs">` **各自编译一份**桥协议与共享音频环（两端布局必须逐字节一致）；`HostServices.InsertPlugins` 返回进程内单例 `InsertPluginSettings`（实现 `Abstractions/IInsertPluginSettings`）。**注意**：`ExperimentalPatch.csproj` 必须 `Compile Remove="VstBridge/**"`，否则默认 `**/*.cs` 会把桥的源码吞进 UI 补丁工程（还会因为没有 `AllowUnsafeBlocks` 而 CS0227） | 编译找不到命名空间 / CS0227 / CS0579 / 补丁窗显示"宿主尚未接入" | 宿主→补丁方向**不许反**：补丁只用 `Abstractions/IInsertPluginSettings`，不得 `using TuneLab.InsertPluginSettings`。宿主要加能力时优先往 `IHostServices` 加带默认实现的成员 |
+| `EP-MIXER-13` | `InsertHost/VstBridgeClient.cs` + `VstBridge/*.cs`（均为新文件）+ `TuneLab/ExperimentalPatchMixerModel.cs` | 32 位 VST2 的桥进程：JobObject 生命周期 + 共享内存音频环 | **已落地**：宿主侧 `VstBridgeClient` 建 `JobObject`（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）→ 启动 `TuneLab.ExperimentalPatch.VstBridge.exe --job <句柄> --pipe <名字>` → 桥 `AssignProcessToJobObject` 后按名字 `Open` 两段共享内存。音频数据走 `SharedAudioRing`（4 槽环形 + `Volatile` 序号 + ManualReset gate），指令走命名管道 JSON。宿主的 `SendProcess` 同步等一块，`BlockWaitMs = 20` 超时即直通。`VstBridge.csproj` 的 `Platforms = x86`、`RuntimeIdentifier = win-x86`——**绝不给 `TuneLab.csproj` 加 x86 目标** | 桥起不来 / 音频卡死或撕裂 / 宿主退出后桥变孤儿 | 桥**不被 `TuneLab.sln` 引用**（与 `MixerEngine` 同策略），由发布脚本按平台单独构。改 `BridgeSharedMemory.cs` 的布局 = 两端一起改，封条是 `tests/TuneLab.Tests/SharedAudioRingTests.cs`（2 万块双线程对撞） |
 
 ## 3. 重接流程（merge / rebase 之后照这个顺序）
 

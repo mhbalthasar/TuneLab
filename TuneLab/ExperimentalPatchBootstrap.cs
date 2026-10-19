@@ -134,6 +134,12 @@ internal static class ExperimentalPatchBootstrap
 
         public IMixerModel? CreateMixerModel() => ExperimentalPatchBootstrap.CreateMixerModel();
 
+        // 插件扫描设置（EP-MIXER-12）。进程内一份就够：它是无状态的本机设置读写 + 缓存，
+        // 与打开的工程无关，所以做成静态单例而不随工程重建。
+        public IInsertPluginSettings InsertPlugins => sInsertPlugins;
+
+        static readonly InsertPluginSettings sInsertPlugins = new();
+
         const string Prefix = "[ExperimentalPatch] ";
     }
 }

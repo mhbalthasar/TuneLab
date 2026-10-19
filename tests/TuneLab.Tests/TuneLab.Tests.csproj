@@ -15,6 +15,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\TuneLab\TuneLab.csproj" />
+    <!-- 插入效果的假后端直接在这里单测（真 VST3 后端要机器上有 64 位插件，另说）。
+         宿主已经引了 InsertHost；这里显式再引一次，是因为测试要直接用它的类型而不是透过宿主。 -->
+    <ProjectReference Include="..\..\ExperimentalPatch\InsertHost\InsertHost.csproj" />
     <!-- 命令行：保留参数名与批量文件切词的封条要读它的唯一真源，不另抄一份。 -->
     <ProjectReference Include="..\..\TuneLab.Cli\TuneLab.Cli.csproj" />
     <!-- 安装器：命令行是向导的镜像，"默认值与向导一致"这条约定由 SetupCliOptionsTests 机器可检。 -->

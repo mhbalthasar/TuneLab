@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       VstBridge — 32 位 VST 插件的宿主进程（DESIGN.md §5.3，Q6 拍板"桥进程"）
+       ════════════════════════════════════════════════════════════════════════
+       为什么需要它：VST2.4 的老插件大半是 32 位 x86 编译的。64 位宿主进程
+       LoadLibrary 一个 32 位 dll 会直接失败（ERROR_BAD_EXE_FORMAT），没有别的路。
+       而我们**绝不给 TuneLab 加 x86 目标**——那等于把整个 AnyCPU 工程钉死在 32 位上。
+
+       所以：把"加载 32 位插件"这件事整个搬到这个 x86 进程里做，宿主用 named pipe
+       跟它说话。宿主保持 AnyCPU，一条也不动。
+
+       三条硬纪律（本文件后面的代码都围着它们转）：
+
+       ① **只按需启动**。没有 32 位插件要加载时，这个进程根本不该存在。
+          宿主端 VstBridgeClient.EnsureStarted() 是唯一的启动入口。
+
+       ② **宿主单方面决定生死**。JobObject + KILL_ON_JOB_CLOSE：本进程被丢进宿主的
+          作业里，宿主一崩/一退，作业句柄关闭，本进程连句柄都没拿到就被内核杀掉。
+          反过来不行——本进程死掉不影响宿主继续跑（这正是"不能独活"的另一半）。
+          注意方向：**桥不能反过来把宿主关掉**，所以这里绝不创建带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+          又把宿主放进去的作业。
+
+       ③ **非 Windows 上这段代码不存在**。csproj 的 Platforms 只有 x86；宿主端的客户端
+           只在 OperatingSystem.IsWindows() 时才碰这些 API。别的平台上本工程既不编译
+           也不发布（它甚至不在 TuneLab.sln 里——由发布脚本按平台单独构）。
+       ════════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <!-- 单一平台：这个进程**必须**是 32 位，这是它存在的全部理由。
+         写成 win-x86（而不是 <PlatformTarget>x86</PlatformTarget>）是为了让 NuGet
+         正确地挑 x86 原生包。 -->
+    <Platforms>x86</Platforms>
+    <RuntimeIdentifier Condition="'$(Platforms)' == 'x86'">win-x86</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>TuneLab.ExperimentalPatch.VstBridge</AssemblyName>
+    <RootNamespace>TuneLab.ExperimentalPatch.VstBridge</RootNamespace>
+    <Version>2.1.1</Version>
+    <!-- 桥进程自己不需要 Avalonia（插件编辑器窗口是另一个话题，见 BridgeProtocol）。 -->
+  </PropertyGroup>
+
+</Project>

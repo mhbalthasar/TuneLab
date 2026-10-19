@@ -28,4 +28,8 @@ public interface IHostServices
     // 没有打开的工程 / 编辑器尚未就绪时返回 null —— 调用方负责重试或显示空态。
     // 默认实现返回 null：让只做日志/闪屏的旧实现（harness）不必跟着改。
     IMixerModel? CreateMixerModel() => null;
+
+    // 插入效果器的插件扫描设置（宿主持有的本机设置 + 扫描缓存）。
+    // 同样有默认实现：不接插入效果的宿主不该被迫实现它。
+    IInsertPluginSettings? InsertPlugins => null;
 }

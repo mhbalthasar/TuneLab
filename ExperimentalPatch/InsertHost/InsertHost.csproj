@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       InsertHost — VST 插入效果的宿主侧适配（DESIGN.md §5 / §7 Q1、Q9）
+       硬规矩（与 MixerEngine 同构，见 ExperimentalPatch/.agents/AGENTS.md §1）：
+         · 不引用宿主、不引用 Avalonia —— 只认引擎的 IMixInsert 契约
+         · 因此可以脱离音频设备独立单测（用一个假插件后端）
+         · 宿主（TuneLab）反过来引用本工程
+       与 MixerEngine 的唯一区别：本工程带**第三方 native dll**（VST3 host），
+       所以多两条纪律：
+         · native dll 一律加 .tlhost 后缀（.tlhost 相关的见 Vendored/README）
+         · OwnAudioVST3 的托管层是从上游降级 vendor 进来的，升级要按 README 的步骤重做
+       ════════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>TuneLab.ExperimentalPatch.InsertHost</AssemblyName>
+    <RootNamespace>TuneLab.ExperimentalPatch.InsertHost</RootNamespace>
+    <Version>2.1.1</Version>
+  </PropertyGroup>
+
+  <!-- 引擎是唯一依赖：插入最终要挂进混音图，而图的契约在 MixerEngine 里。 -->
+  <ItemGroup>
+    <ProjectReference Include="..\MixerEngine\MixerEngine.csproj" />
+  </ItemGroup>
+
+  <!-- 桥协议与共享音频环被**两个工程各编译一份**（VstBridge 与 InsertHost）。
+       不抽第三个共享工程是有意的：多一个工程就多一处被两端同时改的冲突面，
+       而这里的内容必须两边逐字节一致。<Compile Include> 让单一真相源
+       （VstBridge/ 目录）由两边分别编译，改一处两端一起生效。 -->
+  <ItemGroup>
+    <Compile Include="..\VstBridge\BridgeProtocol.cs" Link="Bridge\BridgeProtocol.cs" />
+    <Compile Include="..\VstBridge\BridgeSharedMemory.cs" Link="Bridge\BridgeSharedMemory.cs" />
+  </ItemGroup>
+
+  <!-- 原生 VST3 host（ownvst3）。三个平台各一份，运行时按 RID 选。
+       文件名带 .tlhost 后缀，避免与别的扩展带的那一份撞车（见 Vendored/README）。 -->
+  <ItemGroup>
+    <None Include="Native\win-x64\ownvst3.tlhost.dll" CopyToOutputDirectory="PreserveNewest" Link="ownvst3.tlhost.dll" />
+  </ItemGroup>
+
+</Project>

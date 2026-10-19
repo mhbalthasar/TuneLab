@@ -248,7 +248,7 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 | 格式 | 范围 | 库 | 现实评估 |
 |---|---|---|---|
 | VST2.4 | **仅 Windows** | VST.NET2（托管封装）+ **桥进程**（§5.3） | 可行。VST2 SDK 早已停止发放许可，VST.NET2 自带头文件；我们只做运行时加载、不分发 SDK。**x86 老插件必须走 32 位桥进程** |
-| VST3 | 全平台 | OwnAudioVST3（带托管程序集，必要时工程自编译） | 可行，但**放到 v2/v3**：先把混音器做完（§10 的阶段划分）。托管程序集的版本冲突用独立 ALC 隔离（§5.4） |
+| VST3 | 全平台 | OwnAudioVST3（**托管层源码降级 vendor 到 net8**，见 §5.4.1） | 可行，**已落地**：`InsertHost/Vendored/` + `Vst3Backend` / `Vst3Insert`。原生 dll 改名 `.tlhost` 防撞车。⚠️ 真插件验证未做（开发机无 64 位 VST3） |
 | JSFX | 全平台 | 需要 EEL2 解释器 | **最大风险**：没有现成 .NET 实现。要么包 `ysfx`（C++ 解释器，P/Invoke），要么自己写（数月）。见 §12 Q4 |
 
 - 三条路线共用一层**中间契约** `IInsertHost`：`Process(block)`、`LatencySamples`、`OpenEditor()`、
@@ -278,9 +278,46 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
   ③ 主工程不必引用任何与位数相关的原生库 → **AnyCPU 这条不变量不被破坏**。
 - **共享内存**：环形缓冲；块大小 / 采样率在握手时协商。桥的往返延迟（约一个块）计入 PDC（§3.5）。
   断线 / 超时 = 该插入 bypass + 标红，**不静默静音**。
-- **构建纪律**：桥是独立工程，`Platforms = x86;x64`；`dotnet build TuneLab.sln` 默认配置不编它，
-  由发布脚本按平台编。**绝不给 `TuneLab.csproj` 加 `x86` 目标或 `PlatformTarget`**——
-  那会把整个 AnyCPU 工程钉死在一个位数上。
+- **构建纪律**：桥是独立工程（`ExperimentalPatch/VstBridge/`），**只出 x86 一个平台**（32 位 VST2
+  与 x86 的 .vst3 包都归它）；`dotnet build TuneLab.sln` **不编它**（与 `MixerEngine` 同策略：
+  不出现在 sln 里，由宿主 ProjectReference 与发布脚本拉起）。
+  **绝不给 `TuneLab.csproj` 加 `x86` 目标或 `PlatformTarget`**——那会把整个 AnyCPU 工程钉死在一个位数上。
+
+#### 5.3.1 桥的生命周期（2026-10-20 落地）
+
+- **只按需启动**：宿主侧唯一入口 `VstBridgeClient.EnsureStartedAsync()`，只有真的要加载 32 位插件时才调。
+- **宿主单方面决定生死**：宿主先 `CreateJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，
+  再以 `--job <句柄>` 启动桥；桥自己 `AssignProcessToJobObject`。
+  - 宿主**退出 / 崩溃 / 被任务管理器杀掉** → 作业句柄被关闭 → 内核杀桥。不需要桥配合、也不需要宿主反应。
+  - 反过来**不成立**：桥绝不创建"能杀宿主"的作业。同步是单向的——桥不能独活，但也不能反过来决定宿主何时死。
+- **正常关闭**：宿主 `KillBridge()`（`Process.Kill(entireProcessTree: true)` + 放作业句柄）。
+- **宿主启动顺序**：作业必须在启动子进程**之前**建好，否则"崩在启动与加入之间"那一瞬桥就是孤儿。
+
+#### 5.3.2 音频走共享内存，不走管道（2026-10-20 修订）
+
+初版设计把音频也放命名管道里。**改了**，因为延迟不是问题、**阻塞才是**：
+
+- 管道的 `Write` 会在对端没读完时挂住。桥被调度器摘走一会儿、插件在自己的线程里忙，
+  宿主的**音频线程就跟着等**——等出来是一个听得见的爆音。
+- 共享内存让等待变成"在本地内存上转圈"，并且**可超时**：`BlockWaitMs = 20` 拿不到结果就
+  直通这一块、记日志、下一块照常。管道那条路上同样的等待不可控。
+
+| 数据 | 通路 | 为什么 |
+|---|---|---|
+| 音频（每块的样本） | **共享内存**：`SharedAudioRing`，4 槽环形，SPSC | 零拷贝、可超时、不阻塞在管道上 |
+| 指令（加载 / 取参 / 存取 state / 握手） | 命名管道 + JSON 帧 | 低频、"可失败"、要能带人类可读的原因 |
+
+`SharedAudioRing` 的三个设计要点（都在 `VstBridge/BridgeSharedMemory.cs`，两端各编译一份）：
+
+1. **SPSC，不用锁不用 CAS**。每链一个方向、一个生产者、一个消费者。环形容量取 4 而不是 1：
+   多出来的容量今天不要钱，将来要"提前一块流水、把桥的调度延迟藏掉"时协议一行不改。
+2. **序号推进 = 发布**（`Volatile.Write` 在写完数据之后）。x86/x64 的 TSO 保证数据先于序号可见。
+3. **gate 用 ManualReset，不用 AutoReset**。AutoReset 会把"早到的那次 Set"吃掉却没告知任何等待者，
+   而序号已经推进——下一次 `WaitOne` 永远等不到第二次通知，症状是偶发卡死。
+   （真实踩过：`SharedAudioRingTests` 的 2 万块对撞测试在 block 4 挂住。）
+
+宿主的音频线程仍然要**等桥把这一块做完**（同步语义，没有别处可等）；共享内存只是让这个等待
+变短、可控、可降级。真正扛"桥卡死"的是超时直通，不是这条通路本身。
 
 ### 5.4 隔离（VST3 那条特别要求）
 
@@ -292,6 +329,40 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
   两个版本同时加载就会按文件名撞车。可选解法：① 原生 dll 改名带版本号；② 插入宿主放进**独立进程**。
 - 建议：v1 做 ALC + 改名；**独立进程**留 v2（它同时是"插件崩了不带走应用"的正解）。
 - 插件崩溃：v1 承认"在进程内，插件崩 = 应用崩"，写进 §11 风险，不做假承诺。
+
+#### 5.4.1 VST3 的实际落地：源码降级 vendor + native 改名（2026-10-20）
+
+调研结果：**所有可用的 VST3 NuGet 托管封包都要求 net9/net10**（`OwnAudioVst` ≥1.7.0 → net10.0；
+`NAudio.Vst3` / `VST.NET2-Host` → net9/net10 + WindowsDesktop）。TuneLab 是 net8.0，装不上去，
+也不该为一个效果器插件把宿主的 TFM 抬上去。
+
+采用的办法：**上游托管层源码降级 vendor 进来，原生 dll 单独分发**。
+
+```
+ExperimentalPatch/InsertHost/
+  ├── Vendored/          OwnAudioVST3 的托管层（MIT，降级到 net8.0，来历与升级步骤见 README.md）
+  ├── Native/win-x64/    ownvst3.tlhost.dll
+  ├── Vst3Backend.cs     装配（UI 线程）：扫描、加载、Initialize、拒绝乐器
+  ├── Vst3Insert.cs      运行期（音频线程）：平面↔交织、参数、state、bypass
+  └── VstBridgeClient.cs 桥客户端（JobObject + 共享内存环）
+```
+
+三个要点：
+
+1. **降级零修补**。上游的 C# 在 net8 下原样编译通过——唯一要改的是原生库名。
+2. **原生 dll 加 `.tlhost` 后缀**。两个原生库同名同时加载，Windows 按**文件名**解析，
+   第二份会被静默忽略——症状是"两个插件忽然行为一样"这种极难排查的问题。
+   加后缀让它们各自一份。代价是托管层的路径搜索与 DllImportResolver 都要认新名字
+   （`Vst3Backend` 里装的 resolver）。`.so` / `.dylib` **不**加：soname / install name 与文件名强绑定，
+   改了反而更难找（我们目前只在 Windows 分发桥，所以不影响任何人）。
+3. **两层线程分工**。`IMixInsert.Process` 在音频线程：不分配、不加锁、不抛异常。
+   而加载 / 读状态 / 写参数 / 开界面全在 UI 线程、全都会失败。塞进一个类 = 音频线程上跑 UI 代码。
+   所以拆成 `Vst3Backend`（装配，允许失败）+ `Vst3Insert`（运行期）。
+
+**尚未验证**：开发机上没有 64 位 VST3 插件（只有 32 位的 Chow 系列，64 位进程 `LoadPlugin`
+会干净地返回 false）。所以"真插件出声 + 存读 + PDC 补偿"这条验收要等有插件时补做。
+在那之前，`InsertChainTests` 用假后端覆盖了"链被接进图、旁通真的跳过、latency 真的补 PDC"这些
+与后端无关的行为。
 
 ### 5.5 界面
 
@@ -487,7 +558,9 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 | 7 | `EP-MIXER-4` | `Data/Track.cs` / `ITrack.cs` | `Output` / `Sends` / `Inserts` | 中 |
 | 8 | `EP-MIXER-5` | `Data/Project.cs` | AUX 有序表 + 增删命令 | 中 |
 | 9 | `EP-MIXER-6` | `Data/NativeTrackInfo.cs` + `TuneLabProjectCbor.cs` | 序列化路由 / 插入：顶层键 `epMixer`（**版本保持 1**）+ 同目录 sidecar，见 §9 | 中 |
-| 10 | `EP-MIXER-7` | `TuneLab.csproj` | 两条 `ProjectReference`（`ExperimentalPatch` 已有，加 `MixerEngine` + `InsertHost`） | 低 |
+| 10 | `EP-MIXER-7` | `TuneLab.csproj` | 三条 `ProjectReference`（`ExperimentalPatch` 已有，加 `MixerEngine` + `InsertHost`） | 低 |
+| 13 | `EP-MIXER-12` | `TuneLab.csproj` + `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchInsertSettings.cs`（新） | 插件扫描设置经 `IHostServices.InsertPlugins` 递出 | 零 / 低 |
+| 14 | `EP-MIXER-13` | `InsertHost/VstBridgeClient.cs` + `VstBridge/*.cs`（均新文件） | 32 位 VST2 的桥进程（不在 sln，宿主按需启动） | 零 |
 | 11 | `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（v1 已规划） | 低 |
 | 12 | `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | 零 / 低 |
 

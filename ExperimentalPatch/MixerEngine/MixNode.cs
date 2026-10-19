@@ -52,14 +52,20 @@ public sealed class MixNode
     // 只有 Track 有。
     public IMixSource? Source { get; }
 
+    // 插入链（按顺序处理，就地）。推子之后、分发之前（DESIGN.md §3.2）。
+    // 没有插入时是空数组——退化图因此与无插入的路径逐位相同。
+    public IReadOnlyList<IMixInsert> Inserts { get; }
+
     public IReadOnlyList<MixEdge> Outputs { get; }
 
-    internal MixNode(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source, IReadOnlyList<MixEdge> outputs)
+    internal MixNode(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
+        IReadOnlyList<IMixInsert> inserts, IReadOnlyList<MixEdge> outputs)
     {
         Id = id;
         Kind = kind;
         State = state;
         Source = source;
+        Inserts = inserts;
         Outputs = outputs;
     }
 }

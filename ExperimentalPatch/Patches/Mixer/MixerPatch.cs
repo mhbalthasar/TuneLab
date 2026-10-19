@@ -24,12 +24,18 @@ public sealed class MixerPatch : IPatch
     IMixerModel? mModel;
     IHostServices? mHost;
     Window? mOwner;
+    Window? mInsertPathsWindow;
 
     public void Attach(IAnchorTable anchors)
     {
         // 模型要等编辑器就绪才取得到，所以宿主句柄在 app.ready 才落袋；菜单命令是之后才点的。
         anchors.OnAppReady(anchor => mHost = anchor.Host);
         anchors.AddCommand(new ExperimentalCommand("mixer.open", Label(anchors.Host), Open));
+
+        // 插入效果的插件扫描路径。挂在同一个「实验功能」菜单下：它与混音台是一套功能的两半
+        // （没有扫描路径就加不了效果器），但设成独立窗口而不是塞进宿主设置窗 —— 那个 tab 列表
+        // 是宿主硬编码的，改它就是给上游合并添一处冲突（见 InsertPluginPathsWindow 顶部注释）。
+        anchors.AddCommand(new ExperimentalCommand("mixer.insertPaths", Label(anchors.Host), OpenInsertPaths));
     }
 
     public void Detach()
@@ -41,6 +47,13 @@ public sealed class MixerPatch : IPatch
         mModel = null;
         mHost = null;
 
+        if (mInsertPathsWindow != null)
+        {
+            mInsertPathsWindow.Closed -= OnInsertPathsClosed;
+            mInsertPathsWindow.Close();
+            mInsertPathsWindow = null;
+        }
+
         if (window == null)
             return;
 
@@ -50,6 +63,39 @@ public sealed class MixerPatch : IPatch
 
     static string Label(IHostServices host)
         => host.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "混音台" : "Mixer";
+
+    static string InsertPathsLabel(IHostServices host)
+        => host.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+            ? "插件扫描路径…"
+            : "Plugin scan paths…";
+
+    void OpenInsertPaths()
+    {
+        var host = mHost;
+        if (host == null)
+            return;
+
+        // 单实例，与混音台同一套规矩（ MixerPatch 顶部注释 ①②③）。
+        if (mInsertPathsWindow != null)
+        {
+            mInsertPathsWindow.Activate();
+            return;
+        }
+
+        var window = new InsertPluginPathsWindow(host);
+        window.Closed += OnInsertPathsClosed;
+
+        mInsertPathsWindow = window;
+        ShowWindow(window);
+    }
+
+    void OnInsertPathsClosed(object? sender, EventArgs e)
+    {
+        if (sender is Window window)
+            window.Closed -= OnInsertPathsClosed;
+
+        mInsertPathsWindow = null;
+    }
 
     void Open()
     {
