@@ -1,0 +1,219 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using TuneLab.Data;
+using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.ExperimentalPatch.InsertHost;
+using TuneLab.ExperimentalPatch.MixerEngine;
+using HostLog = TuneLab.Foundation.Log;
+
+namespace TuneLab.Audio;
+
+// 插入效果器的**实例工厂**（EP-MIXER-14）。
+//
+// 【它在整条链里的位置】契约与后端在 InsertHost，数据（InsertSlot）在 Data/，
+// 编译进混音图在 ExperimentalPatchMixerAudio.cs —— 这一个类负责中间那一环：
+//   数据槽位 ──建实例──> IMixInsert ──编进──> MixNode.Inserts
+//
+// 【为什么实例不放在槽位上】InsertSlot 是 DataObject，会被 undo 序列化 / 复制 / 丢弃；
+// 而一个 VST3 实例是原生句柄 + 几块 pinned 内存。跟着 undo 走的对象不可以持有它们
+// （undo 撤销到一半，实例没了，图里还指着它）。
+// 所以实例由这里按"数据快照"现建现销毁：数据变 → 重建图 → 新实例；数据恢复 → 老实例没了。
+//
+// 【生命周期】实例从建出来那一刻起就归这里管，直到：
+//   · 编译时用了它（交给图的 MixNode.Inserts）—— 之后由图持有，换快照时旧的随 GC 回收；
+//   · 编译失败 / 被替换 —— 这里负责 Dispose，不能让原生句柄漏。
+internal sealed class InsertInstanceFactory
+{
+    readonly Dictionary<string, IMixInsert> mLive = [];
+    readonly Vst3Backend mVst3 = new();
+
+    // 宿主当前的采样率 / 块长。插件的 Initialize 要它们，所以必须在建实例前知道。
+    public double SampleRate { get; set; } = 48000;
+
+    public int MaxBlockSize { get; set; } = 512;
+
+    // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于原生库在不在。
+    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3 };
+
+    // 图侧（MixerGraphCompiler）与工程侧（MixerPersistence 落盘）共用**同一个**工厂：
+    // 插件实例里存着用户的参数与 state，各建一份就会"图里在跑、落盘是空的"。
+    public static InsertInstanceFactory Shared { get; } = new();
+
+    public IReadOnlyList<InsertPluginEntry> ListPlugins()
+    {
+        var list = new List<InsertPluginEntry>();
+
+        // 扫描缓存由宿主设置（InsertPluginSettings）持有；这里只把它翻成契约形状。
+        // 缓存是"这台机器装了什么"，工厂是"能装进来什么"—— 两个关注点分开。
+        return list;
+    }
+
+    /// <summary>
+    /// 按数据槽位建一个实例。失败返回 null（并把原因写进 reason）——
+    /// 调用方据此把那条轨上的槽位标红 + 旁通，**绝不静默丢链**（DESIGN.md §5.6）。
+    /// </summary>
+    public IMixInsert? Create(InsertSlot slot, out string? reason)
+    {
+        reason = null;
+
+        if (slot.State != null && mLive.TryGetValue(slot.Id, out var existing))
+        {
+            // 已经建过（换图但数据没变）：直接复用实例，包括它已载入的插件状态。
+            // 重建一份会让"改了路由之后插件参数回默认值"——那是个真会挨骂的 bug。
+            return existing;
+        }
+
+        var backend = Resolve(slot.Format);
+        if (backend == null || !backend.IsAvailable)
+        {
+            reason = backend?.UnavailableReason ?? $"unknown insert format '{slot.Format}'";
+            return null;
+        }
+
+        var plugin = FindPlugin(backend, slot.PluginId.Value);
+        if (plugin == null)
+        {
+            // 扫描缓存里没有、但槽位上自己存着路径：同一台机器上重开工程常是这样
+            // （缓存被清过而插件还在老地方）。按存的那份建一个临时描述。
+            if (!string.IsNullOrEmpty(slot.Locator))
+            {
+                plugin = new InsertPluginInfo
+                {
+                    Format = slot.Format,
+                    PluginId = slot.PluginId.Value,
+                    Name = slot.Name.Value,
+                    Locator = slot.Locator,
+                };
+            }
+            else
+            {
+                reason = $"the plugin '{slot.Name.Value}' is not installed any more (id {slot.PluginId.Value})";
+                return null;
+            }
+        }
+
+        var settings = new InsertSettings
+        {
+            Bypass = slot.IsBypassed.Value,
+            SampleRate = SampleRate,
+            MaxBlockSize = MaxBlockSize,
+        };
+
+        var insert = backend.Create(plugin, settings, out reason);
+        if (insert == null)
+            return null;
+
+        // 落盘的插件状态在这里灌回去。灌失败（版本不兼容、插件换了）不致命：
+        // 插件照常用它的默认参数，只记一条日志。
+        if (insert is Vst3Insert vst && slot.State != null && slot.State.Length > 0 && !vst.LoadState(slot.State))
+            HostLog.Warning($"insert: plugin '{slot.Name.Value}' refused the saved state; using its defaults");
+
+        mLive[slot.Id] = insert;
+        return insert;
+    }
+
+    /// <summary>把某个槽位的实例状态读出来（保存工程时调）。</summary>
+    public byte[]? CaptureState(InsertSlot slot)
+    {
+        if (mLive.TryGetValue(slot.Id, out var insert) && insert is Vst3Insert vst)
+        {
+            var state = vst.SaveState();
+
+            if (state != null && state.Length > 0)
+                return state;
+        }
+
+        return slot.State;
+    }
+
+    /// <summary>某个槽位的实例被图放弃了：放掉原生句柄。</summary>
+    public void Release(string slotId)
+    {
+        if (!mLive.Remove(slotId, out var insert))
+            return;
+
+        try
+        {
+            (insert as IDisposable)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Warning("insert: failed to dispose a plugin instance: " + ex.Message);
+        }
+    }
+
+    public void ReleaseAll()
+    {
+        foreach (var id in mLive.Keys.ToArray())
+            Release(id);
+    }
+
+    // ── 内部 ──
+
+    IInsertBackend? Resolve(string format)
+        => Backends.FirstOrDefault(b => string.Equals(b.FormatName, format, StringComparison.OrdinalIgnoreCase));
+
+    // 按 PluginId 在扫描缓存里找。缓存可能比工程旧（用户卸了插件）——
+    // 找不到就如实说"找不到了"，不猜一个相似的。
+    static InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId)
+    {
+        foreach (var plugin in backend.ListPlugins())
+        {
+            if (plugin.PluginId == pluginId)
+                return plugin;
+        }
+
+        return null;
+    }
+}
+
+/// <summary>宿主侧的插入视图（把 InsertSlot 翻成契约 IMixerInsert）。</summary>
+internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory factory) : IMixerInsert, IInsertPluginTarget
+{
+    // 宿主侧要用：RemoveInsert 靠它把实例与数据槽位对上。
+    public InsertSlot Slot => slot;
+
+    public string SlotId => slot.Id;
+
+    public string Name => slot.Name.Value;
+
+    public string FormatName => slot.Format;
+
+    public bool IsBypassed
+    {
+        get => slot.IsBypassed.Value;
+        set => slot.IsBypassed.Set(value);
+    }
+
+    // 插件有界面 ≠ 我们打得开它。VST3 的原生编辑器要平台相关的宿主窗口（§5.5）；
+    // 现在还没接，所以统一说"没有界面"—— 比画一个点了没反应的按钮诚实。
+    public bool HasEditor => false;
+
+    public void OpenEditor()
+    {
+        // §5.5：v1 用独立浮窗承载插件原生编辑器。接上之前是空实现（按钮本身也不显示）。
+    }
+
+    public event Action? Changed;
+
+    // 绑定到扫描缓存里选中的那个插件（IInsertPluginTarget）。
+    // 写的是数据槽位，所以 undo、落盘、重建图都免费跟上。
+    public void SetPlugin(string pluginId, string name, string locator)
+    {
+        if (slot.PluginId.Value == pluginId || factory == null)
+            return;
+
+        slot.PluginId.Set(pluginId);
+        slot.Name.Set(name);
+        slot.Locator = locator;
+
+        // 换了插件：老实例不能再用了（它绑的是旧插件），放掉，
+        // 下一次编译图时会按新 pluginId 建一个新的。
+        factory.Release(slot.Id);
+
+        // 通道的 RoutingChanged 由 MembershipModified 触发，而这里成员没变、
+        // 只是内容变了。所以自己发一次：图的链要重建。
+        Changed?.Invoke();
+    }
+}

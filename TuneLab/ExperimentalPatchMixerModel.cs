@@ -41,10 +41,10 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     public IReadOnlyList<IMixerOutput> Outputs => mOutputs;
     public IReadOnlyList<IMixerInsertFormat> InsertFormats => mFormats;
 
-    // 阶段一：AUX / output / send 已接通；插入效果仍是阶段二。
+    // 阶段一：AUX / output / send 已接通；插入效果的模型侧已接上（实例的装配见 InsertInstanceFactory）。
     public bool SupportsAux => true;
     public bool SupportsSends => true;
-    public bool SupportsInserts => false;
+    public bool SupportsInserts => true;
 
     public event Action? ChannelsChanged;
     public event Action? RoutingChanged;
@@ -119,6 +119,9 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
 
     internal IMixerOutput DeviceOutput => FindOutput(MixerOutputKind.Device, "device:default") ?? mOutputs[0];
 
+    // 插入效果器的实例工厂（宿主侧，EP-MIXER-14）。通道的 Inserts 视图要用它建实例。
+    internal InsertInstanceFactory InsertFactory => sInsertFactory;
+
     internal void RaiseRoutingChanged()
     {
         // 结构变了（output / send 增删）→ 重建混音图的边，再通知界面。
@@ -185,9 +188,19 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     void BuildFormats()
     {
         mFormats.Clear();
-        mFormats.Add(new MixerInsertFormat("VST3", false, "尚未接入"));
-        mFormats.Add(new MixerInsertFormat("VST2", false, OperatingSystem.IsWindows() ? "尚未接入" : "仅 Windows"));
-        mFormats.Add(new MixerInsertFormat("JSFX", false, "尚未实现"));
+
+        // 可用性按后端实况：原生库在 → VST3 可用；不在 → 禁用 + 原因（界面上直接显示）。
+        foreach (var backend in sInsertFactory.Backends)
+        {
+            mFormats.Add(new MixerInsertFormat(
+                backend.FormatName,
+                backend.IsAvailable,
+                backend.IsAvailable ? null : backend.UnavailableReason));
+        }
+
+        // VST2 / JSFX 还没接：保留条目但禁用 + 写明原因（DESIGN.md §6.3 的纪律——界面不画做不到的入口）。
+        mFormats.Add(new MixerInsertFormat("VST2", false, OperatingSystem.IsWindows() ? "not wired up yet" : "Windows only"));
+        mFormats.Add(new MixerInsertFormat("JSFX", false, "not implemented yet"));
     }
 
     void OnMembershipModified()
@@ -235,6 +248,11 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     readonly List<IMixerChannel> mChannels = [];
     readonly List<IMixerOutput> mOutputs = [];
     readonly List<IMixerInsertFormat> mFormats = [];
+
+    // 插入实例工厂：进程内一份。实例持有原生句柄，而适配器会随工程替换重建 ——
+    // 工厂跟着适配器走就会"换一次工程全部插件重新初始化、参数回默认"。
+    static readonly InsertInstanceFactory sInsertFactory = InsertInstanceFactory.Shared;
+
     int mMetersPending;
 }
 
@@ -403,6 +421,7 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 
     public abstract IDataProperty<MixerRoute> OutputProperty { get; }
     public abstract DataObjectList<Send> SendList { get; }
+    public abstract DataObjectList<InsertSlot> InsertList { get; }
 
     internal IDataObject Data { get; }
 
@@ -439,7 +458,18 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
         }
     }
 
-    public virtual IReadOnlyList<IMixerInsert> Inserts => [];
+    // 串联插入（按顺序处理）。活读：增删 / 旁通要立刻反映在浮窗里。
+    public virtual IReadOnlyList<IMixerInsert> Inserts
+    {
+        get
+        {
+            var list = new List<IMixerInsert>(InsertList.Count);
+            foreach (var slot in InsertList)
+                list.Add(new InsertSlotAdapter(slot, Owner.InsertFactory));
+
+            return list;
+        }
+    }
 
     public abstract (double LeftDb, double RightDb)? Peak { get; }
 
@@ -481,10 +511,32 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
     }
 
     public virtual IMixerInsert AddInsert(IMixerInsertFormat format)
-        => throw new NotSupportedException("mixer inserts are not implemented yet (M6)");
+    {
+        // 加在末尾。换序留到 M8（▲▼ / 拖拽），v1 不做。
+        var slot = new InsertSlot(
+            "insert-" + Guid.NewGuid().ToString("N"),
+            format.Name,
+            string.Empty,
+            string.Empty,
+            (DataObject)Data);
+
+        InsertList.Add(slot);   // 成员变化 → RaiseRoutingChanged（重建图 + 通知界面）
+        Data.Commit();          // 一步 undo：加一个槽位自成一个撤销单元
+
+        return new InsertSlotAdapter(slot, Owner.InsertFactory);
+    }
 
     public virtual void RemoveInsert(IMixerInsert insert)
-        => throw new NotSupportedException("mixer inserts are not implemented yet (M6)");
+    {
+        if (insert is not InsertSlotAdapter adapter)
+            return;
+
+        // 先放掉原生实例（插件句柄不是 DataObject 该持有的东西，见 InsertInstanceFactory 的注释），
+        // 再从列表里摘。顺序反了会出现"图里还指着它、而它已经没了"的窗口。
+        Owner.InsertFactory.Release(adapter.SlotId);
+        InsertList.Remove(adapter.Slot);
+        Data.Commit();
+    }
 
     public void Dispose()
     {
@@ -556,6 +608,7 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         track.Color.Modified.Subscribe(OnStateModified);
         track.Output.Modified.Subscribe(RaiseRoutingChanged);
         track.Sends.MembershipModified.Subscribe(RaiseRoutingChanged);
+        track.Inserts.MembershipModified.Subscribe(RaiseRoutingChanged);
         track.Pinned.Modified.Subscribe(OnPinChanged);
         track.SelectionChanged.Subscribe(OnStateModified);
     }
@@ -596,6 +649,7 @@ internal sealed class MixerTrackChannel : MixerChannelBase
 
     public override IDataProperty<MixerRoute> OutputProperty => mTrack.Output;
     public override DataObjectList<Send> SendList => ((Track)mTrack).Sends;
+    public override DataObjectList<InsertSlot> InsertList => ((Track)mTrack).Inserts;
 
     public override (double LeftDb, double RightDb)? Peak
     {
@@ -619,6 +673,7 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         mTrack.Color.Modified.Unsubscribe(OnStateModified);
         mTrack.Output.Modified.Unsubscribe(RaiseRoutingChanged);
         mTrack.Sends.MembershipModified.Unsubscribe(RaiseRoutingChanged);
+        mTrack.Inserts.MembershipModified.Unsubscribe(RaiseRoutingChanged);
         mTrack.Pinned.Modified.Unsubscribe(OnPinChanged);
         mTrack.SelectionChanged.Unsubscribe(OnStateModified);
     }
@@ -645,6 +700,7 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         aux.Name.Modified.Subscribe(OnStateModified);
         aux.Output.Modified.Subscribe(RaiseRoutingChanged);
         aux.Sends.MembershipModified.Subscribe(RaiseRoutingChanged);
+        aux.Inserts.MembershipModified.Subscribe(RaiseRoutingChanged);
         aux.Pinned.Modified.Subscribe(OnPinChanged);
     }
 
@@ -685,6 +741,7 @@ internal sealed class MixerAuxChannel : MixerChannelBase
 
     public override IDataProperty<MixerRoute> OutputProperty => Bus.Output;
     public override DataObjectList<Send> SendList => Bus.Sends;
+    public override DataObjectList<InsertSlot> InsertList => Bus.Inserts;
 
     // AUX 电平：走混音图的节点峰值（推子之后，DESIGN.md §3.4）。停止播放时返回 null → 表归零。
     public override (double LeftDb, double RightDb)? Peak
@@ -705,6 +762,7 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         Bus.Name.Modified.Unsubscribe(OnStateModified);
         Bus.Output.Modified.Unsubscribe(RaiseRoutingChanged);
         Bus.Sends.MembershipModified.Unsubscribe(RaiseRoutingChanged);
+        Bus.Inserts.MembershipModified.Unsubscribe(RaiseRoutingChanged);
         Bus.Pinned.Modified.Unsubscribe(OnPinChanged);
     }
 
@@ -774,6 +832,8 @@ internal sealed class MixerMasterChannel : IMixerChannel
     public IReadOnlyList<IMixerSend> Sends => [];
     public IReadOnlyList<IMixerInsert> Inserts => [];
 
+    // Master 也能挂插入（母带链，DESIGN.md §6.3）—— 只是它的槽位不在 Project 里，
+    // 所以宿主侧还没处可放。现在返回空表、AddInsert 说明原因，而不是画一个假按钮。
     // Master 电平：同一个节点查询（"master" 节点，推子之后）。
     public (double LeftDb, double RightDb)? Peak
     {
@@ -792,8 +852,14 @@ internal sealed class MixerMasterChannel : IMixerChannel
 
     public IMixerSend AddSend(IMixerOutput target) => throw new NotSupportedException("Master cannot have sends");
     public void RemoveSend(IMixerSend send) => throw new NotSupportedException("Master cannot have sends");
-    public IMixerInsert AddInsert(IMixerInsertFormat format) => throw new NotSupportedException("mixer inserts are not implemented yet (M6)");
-    public void RemoveInsert(IMixerInsert insert) => throw new NotSupportedException("mixer inserts are not implemented yet (M6)");
+
+    // Master 的插入链挂在哪儿还是 TODO：它不在 Project.Auxes 里，需要一个等价的位置。
+    // 在此之前如实说"不支持"，比让用户点出一个异常好。
+    public IMixerInsert AddInsert(IMixerInsertFormat format)
+        => throw new NotSupportedException("the Master insert chain needs a home in the host model (M6e)");
+
+    public void RemoveInsert(IMixerInsert insert)
+        => throw new NotSupportedException("the Master insert chain needs a home in the host model (M6e)");
 
     readonly MixerModelAdapter mOwner;
 }

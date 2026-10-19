@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using TuneLab.Audio;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Foundation;
@@ -49,6 +50,11 @@ internal static class MixerPersistence
     {
         var payload = new Payload { Branch = Branch };
 
+        // 插件的实时状态先采一遍（state chunk 存在插件实例里，不在数据里 ——
+        // 见 InsertInstanceFactory 的注释：实例不能跟着 undo 走）。
+        // 采不到的槽位保留它上次落盘的那份（可能是老版本的状态），不静默清空。
+        CaptureInsertStates(project);
+
         foreach (var aux in project.Auxes)
         {
             payload.Auxes.Add(new AuxDto
@@ -62,6 +68,7 @@ internal static class MixerPersistence
                 Output = ToDto(aux.Output.Value),
                 Sends = ToDtos(aux.Sends),
                 Pin = aux.Pinned.Value.ToString(),
+                Inserts = ToInsertDtos(aux.Inserts),
             });
         }
 
@@ -75,6 +82,7 @@ internal static class MixerPersistence
                 Output = ToDto(track.Output.Value),
                 Sends = ToDtos(track.Sends),
                 Pin = track.Pinned.Value.ToString(),
+                Inserts = ToInsertDtos(track.Inserts),
             });
         }
 
@@ -165,6 +173,7 @@ internal static class MixerPersistence
             aux.IsSolo.SetInfo(dto.Solo);
             aux.Output.SetInfo(FromDto(dto.Output));
             aux.Pinned.SetInfo(ParsePin(dto.Pin));
+            ApplyInserts(aux.Inserts, dto.Inserts);
             ApplySends(aux.Sends, dto.Sends);
 
             auxes[dto.Id] = aux;
@@ -189,6 +198,7 @@ internal static class MixerPersistence
 
             track.Output.SetInfo(FromDto(dto.Output));
             track.Pinned.SetInfo(ParsePin(dto.Pin));
+            ApplyInserts((DataObjectList<InsertSlot>)track.Inserts, dto.Inserts);
             ApplySends((DataObjectList<Send>)track.Sends, dto.Sends);
             matched++;
         }
@@ -233,6 +243,45 @@ internal static class MixerPersistence
         }
     }
 
+    // 插入槽位的装载。与 send 的区别：plugins 是**按 id 原样重建**的（不像轨道路由
+    // 需要重新对上）—— id 是我们自己生成的 GUID，不依赖宿主的任何顺序或命名。
+    static void ApplyInserts(DataObjectList<InsertSlot> list, List<InsertDto>? dtos)
+    {
+        if (dtos == null)
+            return;
+
+        foreach (var dto in dtos)
+        {
+            if (string.IsNullOrEmpty(dto.Id))
+                continue;
+
+            var slot = new InsertSlot(
+                dto.Id,
+                dto.Format ?? string.Empty,
+                dto.PluginId ?? string.Empty,
+                dto.Name ?? dto.PluginId ?? string.Empty,
+                list);
+
+            slot.IsBypassed.SetInfo(dto.Bypass);
+
+            if (!string.IsNullOrEmpty(dto.State))
+            {
+                try
+                {
+                    slot.State = Convert.FromBase64String(dto.State);
+                }
+                catch (FormatException)
+                {
+                    // 坏 base64 = 手改坏了。丢掉这一段、保留空槽位：
+                    // 宁可让插件用自己的默认参数，也不让整个工程打不开。
+                    HostLog.Warning("mixer: an insert's saved state is not valid base64; ignored");
+                }
+            }
+
+            list.Add(slot);
+        }
+    }
+
     static RouteDto ToDto(MixerRoute route) => new()
     {
         Kind = route.Kind.ToString(),
@@ -240,8 +289,7 @@ internal static class MixerPersistence
         Name = route.Name ?? string.Empty,
     };
 
-    static List<SendDto> ToDtos(IReadOnlyDataObjectList<Send> sends)
-    {
+    static List<SendDto> ToDtos(IReadOnlyDataObjectList<Send> sends)    {
         var list = new List<SendDto>(sends.Count);
         foreach (var send in sends)
         {
@@ -251,6 +299,56 @@ internal static class MixerPersistence
                 Id = send.Target.Value.Id ?? string.Empty,
                 Name = send.Target.Value.Name ?? string.Empty,
                 Gain = send.Gain.Value,
+            });
+        }
+
+        return list;
+    }
+
+    // 保存前把每个插件的 state chunk 采回数据槽位。采不到（插件没起 / 没报状态）
+    // 就保留槽位上原有的一份 —— 清空会让"关掉编辑器再存盘"丢掉用户的插件设置。
+    static void CaptureInsertStates(Project project)
+    {
+        var factory = InsertInstanceFactory.Shared;
+
+        foreach (var track in project.Tracks)
+        {
+            foreach (var slot in track.Inserts)
+                Capture(factory, slot);
+        }
+
+        foreach (var aux in project.Auxes)
+        {
+            foreach (var slot in aux.Inserts)
+                Capture(factory, slot);
+        }
+    }
+
+    static void Capture(InsertInstanceFactory factory, InsertSlot slot)
+    {
+        var state = factory.CaptureState(slot);
+
+        if (state != null && state.Length > 0)
+            slot.State = state;
+    }
+
+    // 插入槽位 → DTO。state 是 base64（DESIGN.md §9.4 / §5.6：
+    static List<InsertDto> ToInsertDtos(IReadOnlyDataObjectList<InsertSlot> slots)
+    {
+        var list = new List<InsertDto>(slots.Count);
+
+        foreach (var slot in slots)
+        {
+            list.Add(new InsertDto
+            {
+                Id = slot.Id,
+                Format = slot.Format,
+                PluginId = slot.PluginId.Value,
+                Name = slot.Name.Value,
+                Bypass = slot.IsBypassed.Value,
+                State = slot.State == null || slot.State.Length == 0
+                    ? null
+                    : Convert.ToBase64String(slot.State),
             });
         }
 
@@ -306,6 +404,7 @@ internal static class MixerPersistence
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
         public string? Pin { get; set; }
+        public List<InsertDto>? Inserts { get; set; }
     }
 
     sealed class TrackDto
@@ -315,6 +414,19 @@ internal static class MixerPersistence
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
         public string? Pin { get; set; }
+        public List<InsertDto>? Inserts { get; set; }
+    }
+
+    // 一个插入槽位。state 是 base64（DESIGN.md §9.4 / §5.6：
+    // VST 的 chunk 是二进制，而载荷是 JSON 文本）。
+    sealed class InsertDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string? Format { get; set; }
+        public string? PluginId { get; set; }
+        public string? Name { get; set; }
+        public bool Bypass { get; set; }
+        public string? State { get; set; }
     }
 
     class RouteDto

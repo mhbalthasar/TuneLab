@@ -24,8 +24,8 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     IDataProperty<string> Color { get; }
     new IDataProperty<MixerRoute> Output { get; }
     new IReadOnlyDataObjectList<Send> Sends { get; }
-    IDataProperty<MixerPin> Pinned { get; }
-    bool ExportEnabled { get; set; }
+    new IReadOnlyDataObjectList<InsertSlot> Inserts { get; }
+    IDataProperty<MixerPin> Pinned { get; }    bool ExportEnabled { get; set; }
     int ExportChannels { get; set; }
     IReadOnlyDataObjectLinkedList<IPart> Parts { get; }
 

@@ -177,6 +177,20 @@ public interface IMixerInsert
     event Action? Changed;
 }
 
+// 一个"还能被告知自己是哪个插件"的插入（补丁侧从扫描缓存里点选时用）。
+//
+// 【为什么单独一个接口而不是塞进 IMixerInsert】IMixerInsert 是**已挂上**的插入：
+// 它已经有名字、有旁通态、有界面。而"绑定到哪个插件"只发生在刚 `AddInsert(format)`
+// 那一刻——宿主建槽位时还不知道用户选了什么（补丁先调 AddInsert 拿一个壳，再点菜单填内容）。
+// 合成一个接口会让"每个插入都能被重新绑到别的插件"，那不是我们想要的语义
+// （换插件 = 换一个槽位，见 IMixerInsertFormat 的注释）。
+public interface IInsertPluginTarget
+{
+    // 把宿主扫描到的那个插件绑到这个槽位上。
+    // pluginId = 稳定标识（VST3 classId / VST2 uniqueId），locator = 后端定位用的路径。
+    void SetPlugin(string pluginId, string name, string locator);
+}
+
 public interface IMixerInsertFormat
 {
     string Name { get; }

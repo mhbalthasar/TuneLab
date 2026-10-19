@@ -177,14 +177,27 @@ public class MixerModelAdapterTests
     }
 
     [Fact]
-    public void InsertFormats_AreUnavailableBeforePhaseTwo()
+    public void InsertFormats_ReportRealAvailability()
     {
         var (_, _, model) = Create(Track("t1"));
 
         using (model)
         {
             Assert.NotEmpty(model.InsertFormats);
-            Assert.All(model.InsertFormats, format => Assert.False(format.IsAvailable));
+
+            // VST3 的可用性 = 原生库在不在（测试机上 native dll 不在 exe 旁，
+            // 所以这里是"不可用 + 有原因"）。真正要钉的是：
+            // 每个格式都给出**为什么**不可用，而不是光秃秃一个 false ——
+            // 界面把那句话直接显示给用户（DESIGN.md §6.3 的纪律）。
+            foreach (var format in model.InsertFormats)
+            {
+                if (!format.IsAvailable)
+                    Assert.False(string.IsNullOrWhiteSpace(format.UnavailableReason));
+            }
+
+            // 没实现的格式永远是禁用的：界面不画做不到的入口。
+            Assert.False(model.InsertFormats.Single(f => f.Name == "JSFX").IsAvailable);
+            Assert.False(model.InsertFormats.Single(f => f.Name == "VST2").IsAvailable);
         }
     }
 

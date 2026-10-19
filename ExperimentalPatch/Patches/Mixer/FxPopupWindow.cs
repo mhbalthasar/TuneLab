@@ -1,6 +1,10 @@
 using System;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
@@ -101,9 +105,7 @@ public sealed class FxPopupWindow : Window
             Margin = new Thickness(MixerMetrics.PopupPadding, 2, MixerMetrics.PopupPadding, MixerMetrics.PopupPadding),
             IsVisible = mCanAdd,
         };
-        add.Click += AddFirstAvailable;
-
-        // 宿主还没接插入（阶段二）：不画"添加"按钮，直接说清为什么。
+        add.Click += () => ShowAddMenu(add);
         var hint = new TextBlock
         {
             Text = L("插入效果尚未接入", "Inserts are not wired up yet"),
@@ -142,6 +144,61 @@ public sealed class FxPopupWindow : Window
             mChannel.AddInsert(format);
             return;
         }
+    }
+
+    // 点"+ 添加效果"：按格式分组列出缓存里的插件（不现扫，缓存见 InsertPluginSettings）。
+    // 空 / 全部不可用时直接说明原因，而不是给一个点了没反应的按钮。
+    void ShowAddMenu(Control anchor)
+    {
+        var plugins = mHost.InsertPlugins?.CachedPlugins ?? [];
+
+        var menu = new ContextMenu();
+
+        foreach (var format in mFormats)
+        {
+            var candidates = plugins.Where(p => p.Format == format.Name).ToList();
+
+            var header = new MenuItem { Header = format.Name, IsEnabled = false };
+            menu.Items.Add(header);
+
+            if (!format.IsAvailable)
+            {
+                menu.Items.Add(DisabledItem(format.UnavailableReason ?? "unavailable"));
+                continue;
+            }
+
+            if (candidates.Count == 0)
+            {
+                menu.Items.Add(DisabledItem(L("（没有扫描到，去「插件扫描路径」扫一次）",
+                    "(nothing scanned yet — check the plugin scan paths)")));
+                continue;
+            }
+
+            foreach (var plugin in candidates)
+            {
+                var item = new MenuItem { Header = plugin.Name };
+                item.IsEnabled = plugin.IsAvailable;
+
+                if (!plugin.IsAvailable)
+                    item.Header = plugin.Name + "   — " + (plugin.UnavailableReason ?? "");
+
+                item.Click += (_, _) => AddInsert(format, plugin);
+                menu.Items.Add(item);
+            }
+        }
+
+        menu.Open(anchor);
+    }
+
+    static MenuItem DisabledItem(string header) => new() { Header = header, IsEnabled = false };
+
+    void AddInsert(IMixerInsertFormat format, InsertPluginEntry plugin)
+    {
+        var insert = mChannel.AddInsert(format);
+
+        // 插件的定位信息（路径 / classId）写回数据槽位 —— 宿主据此建实例。
+        if (insert is IInsertPluginTarget target)
+            target.SetPlugin(plugin.PluginId, plugin.Name, plugin.Locator);
     }
 
     void Rebuild()

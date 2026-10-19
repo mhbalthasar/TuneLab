@@ -43,7 +43,8 @@ internal sealed class MixerGraphCompiler
         {
             var state = new AuxChannelState(aux);
             auxStates.Add(state);
-            nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state);
+            nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null,
+                BuildInserts(aux.Id, aux.Inserts));
         }
 
         for (int i = 0; i < trackList.Count; i++)
@@ -53,7 +54,8 @@ internal sealed class MixerGraphCompiler
             trackStates.Add(state);
 
             string id = "track-" + i;
-            nodes[id] = builder.AddNode(id, MixNodeKind.Track, state, new TrackMixSource(graph, track));
+            nodes[id] = builder.AddNode(id, MixNodeKind.Track, state, new TrackMixSource(graph, track),
+                BuildInserts(id, track.Inserts));
         }
 
         // 目的地解析：AUX 按 id 找节点；设备进 device sink；Cable 未实现 → 回落到 Master 并记日志。
@@ -102,6 +104,65 @@ internal sealed class MixerGraphCompiler
         mTrackStates = trackStates.ToArray();
         mAuxStates = auxStates.ToArray();
         return snapshot;
+    }
+
+    // 把一条通道的数据槽位变成引擎的 IMixInsert 链（EP-MIXER-14）。
+    //
+    // 三条纪律：
+    //   ① 建不出来的槽位**不能**让整张图失败 —— 换成"直通"占位，并记日志。
+    //      一个插件卸了就让混音台整张图建不起来，比丢一个效果器严重得多。
+    //   ② 顺序就是数据里的顺序（= 界面看到的顺序），别在这里重排。
+    //   ③ 实例的释放归工厂：这里只负责"这次编译用了哪些"。
+    static List<IMixInsert> BuildInserts(string channelId, IReadOnlyList<InsertSlot> slots)
+    {
+        if (slots.Count == 0)
+            return [];
+
+        // 与落盘（MixerPersistence）共用同一个工厂：图里跑的那个实例，
+        // 就是保存工程时采 state 的那个。各建一份会采到空。
+        var factory = sInsertFactory;
+
+        var chain = new List<IMixInsert>(slots.Count);
+
+        foreach (var slot in slots)
+        {
+            if (slot.IsBypassed.Value)
+            {
+                // 旁通的槽位连实例都不建：插件白加载一次只是浪费，
+                // 而"旁通时不碰插件"还顺手避开了"旁通时插件还在跑"的 CPU 开销。
+                chain.Add(new BypassedInsert(slot.Name.Value, slot.Format));
+                continue;
+            }
+
+            var insert = sInsertFactory.Create(slot, out var reason);
+
+            if (insert == null)
+            {
+                HostLog.Warning($"mixer: insert '{slot.Name.Value}' on {channelId} is unavailable ({reason}); passing through");
+                chain.Add(new BypassedInsert(slot.Name.Value, slot.Format));
+                continue;
+            }
+
+            chain.Add(insert);
+        }
+
+        return chain;
+    }
+
+    // 与 MixerGraphCompiler 共用同一个工厂：图里跑的那个实例，就是落盘时采 state 的那个。
+    static readonly InsertInstanceFactory sInsertFactory = InsertInstanceFactory.Shared;
+
+    /// <summary>占位插入：不做事，只是让链的长度与界面显示的一致。</summary>
+    sealed class BypassedInsert(string name, string format) : IMixInsert
+    {
+        public string Name => name;
+        public bool IsBypassed => true;
+        public int LatencySamples => 0;
+
+        public void Process(Span<float> buffer, int offset, int count)
+        {
+            // 直通：什么都不做。放在这里而不是让引擎跳过，链的长度因此是稳定的。
+        }
     }
 
     // 每个块开头刷新一次 solo 判据。**两个独立域**（DESIGN.md §3.3）：

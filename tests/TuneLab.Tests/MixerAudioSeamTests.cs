@@ -77,6 +77,9 @@ public class MixerAudioSeamTests
         // 路由：默认直接去 Master、没有 send。
         public MixerRoute Output { get; init; } = MixerRoute.Master;
         public IReadOnlyList<Send> Sends { get; init; } = [];
+
+        // 插入链：默认空（阶段一；插入的封条在 InsertChainTests）。
+        public IReadOnlyDataObjectList<InsertSlot> Inserts { get; init; } = new DataObjectList<InsertSlot>();
     }
 
     static void AssertBitEqual(float[] expected, float[] actual)
