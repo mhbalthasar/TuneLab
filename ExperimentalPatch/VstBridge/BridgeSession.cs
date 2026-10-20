@@ -142,6 +142,7 @@ internal sealed class BridgeSession : IDisposable
             Slot = message.Slot,
             Ok = result.Ok,
             Reason = result.Reason,
+            ChildWindows = result.ChildWindows,
         }));
     }
 

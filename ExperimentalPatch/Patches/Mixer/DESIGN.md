@@ -564,6 +564,32 @@ ExperimentalPatch/InsertHost/
 补丁侧只经 `IMixerInsert.HasEditor` / `OpenEditor()` 这两件事，不知道底下分了几条路。
 宿主侧向活实例要答案 —— 插件建失败 / 还没编图时按钮自然就是灰的。
 
+#### 5.7.5 编辑器四连坑：名字不刷新 / 空窗 / 弹一次就没了 / 卡死（2026-10-20 修复）
+
+四个症状连着报上来，根因各不相同，逐个记下来：
+
+1. **刚加完插件只看到格式字样**：`FxPopupWindow.AddInsert` 里 `AddInsert(format)` 那次
+   `InsertList.Add` 会响 `RoutingChanged`（浮窗订阅它），但那一刻槽位的名字**还是空的** ——
+   `SetPlugin` 写在后面，而它只发自己那个 adapter 的 `Changed`（没人订阅）。
+   所以浮窗要关掉再打开才刷新。修法：`AddInsert` 末尾显式 `Rebuild()`。
+2. **窗口打开是空的**：VST3 有些插件把 GUI 挂在自己的消息队列上，不泵就不画。
+   现在编辑器窗口有一个 20ms 的后台定时器调 `SafeDispatchMessage`（native 侧对不需要的
+   插件是空操作）。VST2 那边的问题是"插件返回成功却什么也没建"——桥现在会数宿主窗口里的
+   子窗口（`ChildWindows`），0 就记一条日志说清是依赖缺失，而不是留一个空窗让用户猜。
+3. **第一个窗口关掉后就再也弹不出**：`InsertEditorHost` 的字典靠 `WindowClosed` 事件注销。
+   第一版只写了一半（`Vst2EditorShell` 没有这个事件、`Vst3EditorWindow` 的实现被基类的
+   `event EventHandler Closed` 撞名吞掉），于是关闭后条目留着，第二次点复用一个**已关闭**的
+   `Window` —— Avalonia 的 `Window.Close()` 之后再 `Show()` 什么也不会发生。
+   修法：接口成员改名 `WindowClosed`（避开撞名）+ 显式实现 + 两个实现都发。
+4. **打开某个编辑器直接卡死整个窗口**：`CreateEditor` 调的是**插件自己的代码**，
+   弹模态 / 跑自己的消息循环都会把我们的 UI 线程连同调音台挂住（VST2 侧同理：
+   宿主等桥回执时 UI 线程不能呼吸）。现在两条路都有上限：
+   VST3 丢到后台线程等（8s），VST2 等 3s；超时就把窗口留在"加载插件界面…"的提示态
+   并记日志，**界面始终活着**。
+
+置顶：VST3 编辑器窗口自绘标题栏上有一个「置顶」钮，与混音台主窗同一套交互；
+VST2 的窗口由桥创建，用的是 Win32 标准顶层窗口，用户可以在它自己的标题栏上置顶。
+
 ## 6. 界面
 
 ### 6.1 通道条（新布局）

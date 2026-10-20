@@ -1,3 +1,4 @@
+using System;
 using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Foundation;
@@ -9,6 +10,11 @@ internal interface IInsertEditorWindow
 {
     void Activate();
     void DropEditor();
-    void Close();
     void Show();
+    void Close();
+
+    // 真的关掉时回调一声（用户点了 ✕ / 原生窗口自己没了）。宿主据此注销槽位。
+    // 名字故意不叫 Closed：Avalonia 的 TopLevel.Closed 已经是 event EventHandler，
+    // 撞名会让实现方"意外实现"接口成员 —— 那正是这一轮修掉的 bug。
+    event Action? WindowClosed;
 }

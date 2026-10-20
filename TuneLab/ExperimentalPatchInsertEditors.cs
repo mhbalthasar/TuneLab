@@ -31,6 +31,10 @@ internal static class InsertEditorHost
             return;
         }
 
+        // 桥那头的情况（超时 / 空窗 / 拒绝）经这个出口进宿主日志 ——
+        // Vst2EditorShell 自己不能引用宿主日志类型，所以留了个静态钩子。
+        Vst2EditorShell.HostLog = message => Log.Warning("insert: " + message);
+
         IInsertEditorWindow? window = insert switch
         {
             Vst3Insert vst3 => Vst3EditorWindow.Create(vst3, pluginName),
@@ -42,6 +46,11 @@ internal static class InsertEditorHost
             return;
 
         sWindows[slotId] = window;
+
+        // 关闭了就注销：Avalonia 的 Window 关闭后不可再 Show；VST2 那边的原生窗口
+        // 也可能被用户直接点掉。留着条目 = "第一个还能用、之后再也弹不开"。
+        window.WindowClosed += () => sWindows.Remove(slotId);
+
         window.Show();
     }
 

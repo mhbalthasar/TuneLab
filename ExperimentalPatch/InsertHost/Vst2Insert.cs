@@ -69,7 +69,9 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
 
     // 编辑器窗口由**桥进程**开（插件在哪个进程加载，窗口就只能在哪个进程），
     // 所以这里只是发一条消息 + 把失败原因带回来。调用会等插件建完 UI。
-    public (bool Ok, string? Reason) OpenEditor() => mClient.OpenEditorBlocking(mSlotId, Name);
+    // ChildWindows > 0 = 桥确认插件建出了 GUI；0 = 空窗（见 Vst2EditorWindow）。
+    public (bool Ok, string? Reason, int ChildWindows) OpenEditor()
+        => mClient.OpenEditorBlocking(mSlotId, Name);
 
     // 窗口已经在桥那边开着：把它带到前台。已经没开（插件没界面 / 窗口被关过）时返回 false。
     public bool TryActivateEditor() => mClient.BringEditorToFrontBlocking(mSlotId);

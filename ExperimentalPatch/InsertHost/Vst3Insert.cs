@@ -25,6 +25,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     volatile bool mBypassed;
     bool mDisposed;
     bool mEditorOpen;
+    bool mNeedsPump;
 
     public Vst3Insert(InsertPluginInfo plugin, OwnVst3Wrapper wrapper, double sampleRate, int blockSize, bool bypassed)
     {
@@ -160,12 +161,34 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         try
         {
             mEditorOpen = mWrapper.CreateEditor(parent);
+
+            // 插件把 GUI 挂在自己的线程/自己的消息队列上时，不泵消息就什么都不画 ——
+            // 用户看到"窗口是空的，但没报错"。PumpMessages 由编辑器窗口的定时器驱动。
+            mNeedsPump = mEditorOpen;
             return mEditorOpen;
         }
         catch (Exception)
         {
             mEditorOpen = false;
+            mNeedsPump = false;
             return false;
+        }
+    }
+
+    // 泵插件自己的消息队列。对不需要它的插件是空操作（native 侧判断）。
+    public void PumpEditorMessages()
+    {
+        if (!mEditorOpen)
+            return;
+
+        try
+        {
+            mWrapper.SafeDispatchMessage();
+        }
+        catch (Exception)
+        {
+            // 插件已经不在了：窗口跟着关，这里不该再把异常抛到定时器上。
+            mNeedsPump = false;
         }
     }
 
@@ -175,6 +198,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
             return;
 
         mEditorOpen = false;
+        mNeedsPump = false;
 
         try
         {

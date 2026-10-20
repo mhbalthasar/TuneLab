@@ -39,6 +39,7 @@ namespace OwnVST3Host
         private delegate* unmanaged[Cdecl]<void> _clearStringCacheFunc;
         private delegate* unmanaged[Cdecl]<IntPtr, void> _processIdleFunc;
         private delegate* unmanaged[Cdecl]<IntPtr, byte> _isEditorOpenFunc;
+        private delegate* unmanaged[Cdecl]<IntPtr, void> _safeDispatchMessageFunc;
         private delegate* unmanaged[Cdecl]<IntPtr, int> _getActualInputChannelsFunc;
         private delegate* unmanaged[Cdecl]<IntPtr, int> _getActualOutputChannelsFunc;
         private delegate* unmanaged[Cdecl]<IntPtr, int> _getLatencySamplesFunc;
@@ -81,6 +82,7 @@ namespace OwnVST3Host
             _clearStringCacheFunc = (delegate* unmanaged[Cdecl]<void>)_export("VST3Plugin_ClearStringCache");
             _processIdleFunc = (delegate* unmanaged[Cdecl]<IntPtr, void>)_tryExport("VST3Plugin_ProcessIdle");
             _isEditorOpenFunc = (delegate* unmanaged[Cdecl]<IntPtr, byte>)_tryExport("VST3Plugin_IsEditorOpen");
+            _safeDispatchMessageFunc = (delegate* unmanaged[Cdecl]<IntPtr, void>)_tryExport("VST3Plugin_SafeDispatchMessage");
             _getActualInputChannelsFunc = (delegate* unmanaged[Cdecl]<IntPtr, int>)_tryExport("VST3Plugin_GetActualInputChannels");
             _getActualOutputChannelsFunc = (delegate* unmanaged[Cdecl]<IntPtr, int>)_tryExport("VST3Plugin_GetActualOutputChannels");
             _getLatencySamplesFunc = (delegate* unmanaged[Cdecl]<IntPtr, int>)_tryExport("VST3Plugin_GetLatencySamples");

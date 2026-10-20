@@ -451,6 +451,11 @@ public sealed class OpenEditorResultMessage
     // 失败原因（"插件没有界面" / "拒绝打开"）。界面可以直接显示。
     [JsonPropertyName("reason")]
     public string? Reason { get; init; }
+
+    // 宿主窗口里挂了多少个子窗口。0 = 插件返回了却什么也没建（依赖缺失 / GUI 框架
+    // 初始化失败：这类故障用户看到的就是"窗口是空的，但没报错"）。宿主据此给一句明话。
+    [JsonPropertyName("childWindows")]
+    public int ChildWindows { get; init; }
 }
 
 public sealed class CloseEditorMessage

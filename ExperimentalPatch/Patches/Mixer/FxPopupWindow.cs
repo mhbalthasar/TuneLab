@@ -244,6 +244,11 @@ public sealed class FxPopupWindow : Window
         // 插件的定位信息（路径 / classId）写回数据槽位 —— 宿主据此建实例。
         if (insert is IInsertPluginTarget target)
             target.SetPlugin(plugin.PluginId, plugin.Name, plugin.Locator);
+
+        // 立刻重建行。RoutingChanged 只在**成员**增删时响，而这里加槽位那次响完之后
+        // 名字还是空的（SetPlugin 写的是内容，不是成员）—— 不重建的话用户刚加完只看到
+        // 一个没有名字的格式标签，要把浮窗关掉再打开才正常。
+        Rebuild();
     }
 
     void Rebuild()

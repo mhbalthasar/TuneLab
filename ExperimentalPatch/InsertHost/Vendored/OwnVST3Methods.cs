@@ -561,6 +561,21 @@ namespace OwnVST3Host
         }
 
         /// <summary>
+        /// Pumps this plugin's own message queue.
+        ///
+        /// Plugins that create their UI off the calling thread (or that need their window
+        /// messages pumped from the creator thread) will not draw until this runs. Call it
+        /// from the UI thread on a timer while the editor is open — it is a no-op for
+        /// plugins that do not need it.
+        /// </summary>
+        public void SafeDispatchMessage()
+        {
+            CheckDisposed();
+            if (_safeDispatchMessageFunc != null)
+                _safeDispatchMessageFunc(_pluginHandle);
+        }
+
+        /// <summary>
         /// Gets all parameters
         /// </summary>
         /// <returns>List of parameters</returns>

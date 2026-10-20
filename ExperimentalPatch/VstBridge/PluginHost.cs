@@ -228,26 +228,28 @@ internal sealed class PluginHost
 
     // 打开插件的原生编辑器。窗口由**桥进程**创建（插件在哪个进程加载，窗口就得在哪个进程），
     // 宿主只负责发这条消息 + 把结果告诉界面。
-    public (bool Ok, string? Reason) OpenEditor(int slotNumber, string title)
+    // 返回的 ChildWindows = 宿主窗口里挂了多少个子窗口：0 = 插件返回了却什么也没建
+    // （依赖缺失 / GUI 框架初始化失败——用户看到的就是"窗口是空的，但没报错"）。
+    public (bool Ok, string? Reason, int ChildWindows) OpenEditor(int slotNumber, string title)
     {
         if (!mSlots.TryGetValue(slotNumber, out var slot))
-            return (false, "slot not found");
+            return (false, "slot not found", 0);
 
         if (!slot.HasEditor)
-            return (false, "the plugin has no editor");
+            return (false, "the plugin has no editor", 0);
 
         // 已经开着：带回前台，不重建（重建会丢插件窗口里的临时状态）。
         if (slot.Editor != null)
         {
             slot.Editor.BringToFront();
-            return (true, null);
+            return (true, null, slot.Editor.ChildWindowCount);
         }
 
         if (!Vst2EditorWindow.TryOpen(slot.Effect, slot.Dispatcher, title, out var editor) || editor == null)
-            return (false, "the plugin refused to open its editor");
+            return (false, "the plugin refused to open its editor", 0);
 
         slot.Editor = editor;
-        return (true, null);
+        return (true, null, editor.ChildWindowCount);
     }
 
     public bool CloseEditor(int slotNumber)

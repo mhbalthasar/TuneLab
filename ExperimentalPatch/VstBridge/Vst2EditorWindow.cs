@@ -55,6 +55,13 @@ internal sealed class Vst2EditorWindow : IDisposable
     readonly ManualResetEventSlim mReady = new(false);
     bool mOpened;
 
+    // 宿主窗口里挂了多少个子窗口（effEditOpen 之后）。>0 = 插件真的建出了 GUI。
+    public int ChildWindowCount => mChildCount;
+
+    // 宿主窗口里的子窗口数（effEditOpen 之后）。>0 = 插件真的建出了 GUI。
+    // 只在编辑器线程写、桥的主线程读（开编辑器时那一次），所以 volatile。
+    volatile int mChildCount;
+
     // 必须在 UI 线程上调用（和 open / idle / close 同一条线程）——所以它只由 Run 用。
     Vst2EditorWindow(IntPtr effect, Vst2DispatcherProc dispatcher, string title)
     {
@@ -100,9 +107,15 @@ internal sealed class Vst2EditorWindow : IDisposable
 
         mThread.Start();
 
-        // 等 effEditOpen 返回。插件初始化重时可能几百毫秒，15 秒还没好就当它坏了。
-        return mReady.Wait(TimeSpan.FromSeconds(15)) && mOpened;
+        // 等窗口建出来 + effEditOpen 返回。插件初始化重时可能几百毫秒。
+        // 【为什么这里也设上限】宿主那边有 3 秒超时，但桥自己不能无限等：等满就放弃，
+        // 并把线程留给它自己收拾（编辑器线程是后台线程，插件卡在里面也不挡住桥退出）。
+        return mReady.Wait(StartTimeout) && mOpened;
     }
+
+    // 宿主侧 OpenEditorBlocking 等 3 秒。桥这边稍微长一点：窗口创建 + 插件建 UI
+    // 可能真的接近一秒，多数时间是 100~400ms。
+    static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(4);
 
     // 从桥的主线程调：把窗口带到前面（已经打开时）或请求关闭。
     public void BringToFront()
@@ -131,8 +144,7 @@ internal sealed class Vst2EditorWindow : IDisposable
 
     // ── 编辑器线程 ──
 
-    void Run()
-    {
+    void Run()    {
         string className = "TuneLabVst2Editor_" + Guid.NewGuid().ToString("N");
 
         WndProcDelegate wndProc = WindowProc;
@@ -178,6 +190,13 @@ internal sealed class Vst2EditorWindow : IDisposable
 
         // effEditOpen：把宿主窗口句柄交给插件，它会在里面创建自己的子窗口。
         Call(EffEditOpen, 0, IntPtr.Zero, hwnd, 0);
+
+        // 插件"返回了但什么也没建"是常见故障（依赖缺失、GUI 框架初始化失败）：
+        // 宿主那边只会看到一个空窗口。这里把"窗口里到底有没有子窗口"如实报上去，
+        // 宿主据此区分"空窗"和"没建出窗口"。
+        mChildCount = CountChildren(hwnd);
+
+        mOpened = mChildCount > 0;
 
         // 打开之后再问一次尺寸：不少插件只有在这时才报得准，然后按它调整窗口。
         bool hasRealSize = TryGetEditorSize(out int openedWidth, out int openedHeight);
@@ -259,8 +278,25 @@ internal sealed class Vst2EditorWindow : IDisposable
         return true;
     }
 
-    IntPtr Call(int opcode, int index, IntPtr value, IntPtr ptr, float opt)
+    // 宿主窗口里挂了多少个子窗口。VST2 的插件几乎都在这里创建自己的 GUI 子窗口，
+    // 所以这个数字直接说明"effEditOpen 之后到底有没有东西在窗口里"。
+    static int CountChildren(IntPtr parent)
     {
+        int count = 0;
+
+        bool Enum(IntPtr hwnd, IntPtr lParam)
+        {
+            count++;
+            return true;
+        }
+
+        WndEnumProc proc = Enum;
+        EnumChildWindows(parent, proc, IntPtr.Zero);
+        GC.KeepAlive(proc);
+        return count;
+    }
+
+    IntPtr Call(int opcode, int index, IntPtr value, IntPtr ptr, float opt)    {
         try
         {
             return mDispatcher(mEffect, opcode, index, value, ptr, opt);
@@ -273,6 +309,8 @@ internal sealed class Vst2EditorWindow : IDisposable
     }
 
     // ── Win32 ──
+
+    delegate bool WndEnumProc(IntPtr hwnd, IntPtr lParam);
 
     const uint WsOverlappedWindow = 0x00CF0000;
 
@@ -363,6 +401,9 @@ internal sealed class Vst2EditorWindow : IDisposable
 
     [DllImport("user32.dll")]
     static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll")]
+    static extern bool EnumChildWindows(IntPtr hWndParent, WndEnumProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? lpModuleName);

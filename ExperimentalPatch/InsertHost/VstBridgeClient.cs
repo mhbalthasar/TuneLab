@@ -65,10 +65,14 @@ internal sealed class VstBridgeClient : IDisposable
             mErrorLines.Clear();
 
         LastStartError = null;
+        LastEditorError = null;
     }
 
     // 启动阶段失败的原因（beyond the bridge's own stderr）。
     public string? LastStartError { get; private set; }
+
+    // 编辑器最近一次失败的原因（超时 / 插件拒绝）。界面可以直接显示给用户。
+    public string? LastEditorError { get; private set; }
 
     // 一次"发一条指令 + 读一条回复"必须原子：管道是单条流，
     // UI 线程改参数、音频线程发块，两条来回一交错就会把回复读错人。
@@ -283,11 +287,13 @@ internal sealed class VstBridgeClient : IDisposable
 
     // 打开插件的原生编辑器。窗口在**桥进程**里（见 Vst2EditorWindow），这里只等它的回执。
     // 失败原因原样带回去（"no editor" / "refused"），界面可以据此禁用按钮。
-    public async Task<(bool Ok, string? Reason)> TryOpenEditorAsync(int slot, string title,
+    // ChildWindows 是桥那头"宿主窗口里到底挂了几个子窗口"：0 = 插件返回了却没建 GUI
+    // （依赖缺失那一类，用户看到的就是空窗口）。
+    public async Task<(bool Ok, string? Reason, int ChildWindows)> TryOpenEditorAsync(int slot, string title,
         CancellationToken cancellation = default)
     {
         if (!IsRunning)
-            return (false, "the bridge is not running");
+            return (false, "the bridge is not running", 0);
 
         try
         {
@@ -298,14 +304,16 @@ internal sealed class VstBridgeClient : IDisposable
             }), cancellation).ConfigureAwait(false);
 
             if (reply == null)
-                return (false, "the bridge did not answer");
+                return (false, "the bridge did not answer", 0);
 
             var result = JsonSerializer.Deserialize<OpenEditorResultMessage>(reply);
-            return result == null ? (false, "bad reply") : (result.Ok, result.Reason);
+            return result == null
+                ? (false, "bad reply", 0)
+                : (result.Ok, result.Reason, result.ChildWindows);
         }
         catch (Exception)
         {
-            return (false, "the bridge did not answer");
+            return (false, "the bridge did not answer", 0);
         }
     }
 
@@ -438,14 +446,21 @@ internal sealed class VstBridgeClient : IDisposable
 
     // 开编辑器要等插件建 UI（几百毫秒很常见）。给它一个上限：插件在 effEditOpen 里卡死时
     // 不能把宿主 UI 线程一起带走 —— 超时就杀桥，音频本来也已经直通了。
-    public (bool Ok, string? Reason) OpenEditorBlocking(int slot, string title)
+    //
+    // 【为什么是 3 秒而不是 15 秒】用户点「界面」之后 UI 线程会等在这里。3 秒以上在交互上
+    // 就是"软件卡死了"（用户原话）。真需要更久的插件是少数，而"宁可窗口空着、界面活着"
+    // 比"界面冻结十几秒"好 —— 超时后窗口留着，用户还是能继续混音的。
+    public (bool Ok, string? Reason, int ChildWindows) OpenEditorBlocking(int slot, string title)
     {
         var task = Task.Run(() => TryOpenEditorAsync(slot, title));
 
         if (!task.Wait(EditorOpenTimeout))
         {
+            LastEditorError = $"the plugin did not open its editor within {EditorOpenTimeout.TotalSeconds:0.#}s";
+
+            // 杀桥：管道里已经错位的回复留着会答错下一个问题（见 EnsureStartedAsync 的注记）。
             KillBridge();
-            return (false, "the plugin did not open its editor in time");
+            return (false, LastEditorError, 0);
         }
 
         return task.Result;
@@ -455,6 +470,9 @@ internal sealed class VstBridgeClient : IDisposable
 
     // 已经开着的窗口再点一次「界面」= 带到前台。桥没开窗（插件没界面 / 已关）时回 false，
     // 界面据此决定是重新开一扇还是什么都不做。
+    //
+    // 这条**不该**长等：桥侧只是把已有窗口带到前台（SetForegroundWindow / SetWindowPos），
+    // 是微秒级的活。等了 3 秒还没回来说明桥卡死了，那时该走的是超时那条路。
     public bool BringEditorToFrontBlocking(int slot)
     {
         var task = Task.Run(async () =>
@@ -480,10 +498,14 @@ internal sealed class VstBridgeClient : IDisposable
             }
         });
 
-        return task.Wait(EditorOpenTimeout) && task.Result;
+        return task.Wait(RaiseTimeout) && task.Result;
     }
 
-    static readonly TimeSpan EditorOpenTimeout = TimeSpan.FromSeconds(15);
+    // 带到前台是微秒级的活：3 秒还没回来说明桥卡死了，那时该走的是超时那条路。
+    static readonly TimeSpan RaiseTimeout = TimeSpan.FromSeconds(3);
+
+    // 建插件 UI 的上限。3 秒以上在交互上就是"软件卡死了"（用户原话）。
+    static readonly TimeSpan EditorOpenTimeout = TimeSpan.FromSeconds(3);
 
     public byte[]? GetStateBlocking(int slot) => RunBlocking(() => TryGetStateAsync(slot));
 
