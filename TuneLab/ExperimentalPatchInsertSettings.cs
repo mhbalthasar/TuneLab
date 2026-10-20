@@ -119,35 +119,45 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
     string? mLastScanText;
 
-    public IReadOnlyList<InsertPluginEntry> Scan()
+    public IReadOnlyList<InsertPluginEntry> Scan(IProgress<InsertScanProgress>? progress = null)
     {
         var state = Load();
 
         var entries = new List<InsertPluginEntry>();
 
         // 扫哪 = 用户配的清单（EP-MIXER-12）。空清单 = 什么都不扫，不擅自去扫系统目录。
-        // 扫哪 = 用户配的清单（EP-MIXER-12）。空清单 = 什么都不扫，不擅自去扫系统目录。
-        entries.AddRange(sVst3Backend.ListPlugins(state.Vst3Paths ?? []).Select(p => new InsertPluginEntry
-        {
-            Format = p.Format,
-            PluginId = p.PluginId,
-            Name = p.Name,
-            Vendor = p.Vendor,
-            Category = p.Category,
-            Locator = p.Locator,
-        }));
+        var vst3Paths = state.Vst3Paths ?? [];
+        var vst2Paths = state.Vst2Paths ?? [];
 
-        // VST2 的 32 位插件要过桥（Vst2Backend / VstBridge），这里先扫出来、标成
-        // "当前进程用不了"。用户看得见自己装了，而不是"明明装了却搜不到"。
-        entries.AddRange(sVst2Backend.ListPlugins(state.Vst2Paths ?? []).Select(p => new InsertPluginEntry
-        {
-            Format = p.Format,
-            PluginId = p.PluginId,
-            Name = p.Name,
-            Vendor = p.Vendor,
-            Category = p.Category,
-            Locator = p.Locator,
-        }));
+        // 进度条跨两个格式累计：两个后端各自只会报"我在自己这份清单里走到第几条"，
+        // 全局的偏移量只有这里知道。
+        int total = vst3Paths.Count + vst2Paths.Count;
+
+        entries.AddRange(sVst3Backend.ListPlugins(vst3Paths, (index, _, directory) =>
+            progress?.Report(new InsertScanProgress(index, Math.Max(total, 1), directory)))
+            .Select(p => new InsertPluginEntry
+            {
+                Format = p.Format,
+                PluginId = p.PluginId,
+                Name = p.Name,
+                Vendor = p.Vendor,
+                Category = p.Category,
+                Locator = p.Locator,
+            }));
+
+        // VST2 一律过桥（Vst2Backend / VstBridge），x86 与 x64 都支持；
+        // 桥的可执行文件缺失时 Create 会给原因，扫描这里只负责"列出来"。
+        entries.AddRange(sVst2Backend.ListPlugins(vst2Paths, (index, _, directory) =>
+            progress?.Report(new InsertScanProgress(vst3Paths.Count + index, Math.Max(total, 1), directory)))
+            .Select(p => new InsertPluginEntry
+            {
+                Format = p.Format,
+                PluginId = p.PluginId,
+                Name = p.Name,
+                Vendor = p.Vendor,
+                Category = p.Category,
+                Locator = p.Locator,
+            }));
 
         state.Cache = entries.Select(ToCached).ToList();
         state.LastScanUtc = DateTime.UtcNow.ToString("u");

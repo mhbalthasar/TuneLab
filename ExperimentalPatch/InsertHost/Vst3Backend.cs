@@ -82,7 +82,7 @@ public sealed class Vst3Backend : IInsertBackend
         return File.Exists(candidate) ? NativeLibrary.Load(candidate) : IntPtr.Zero;
     }
 
-    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null)
+    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null, Action<int, int, string>? onDirectory = null)
     {
         if (NativePath == null)
             return [];
@@ -92,10 +92,13 @@ public sealed class Vst3Backend : IInsertBackend
         // （编辑器设置里那份），所以这里自己走一遍目录枚举，再用
         // PluginScanner.ResolveAsync 把 bundle 补成完整描述（名字 / 厂商 / 声道数）。
         if (directories != null && directories.Count > 0)
-            return ListFromDirectories(directories);
+            return ListFromDirectories(directories, onDirectory);
 
         try
         {
+            // 没有清单时只有"一遍标准位置"，进度就报一次（1/1）。
+            onDirectory?.Invoke(0, 1, "standard VST3 locations");
+
             List<PluginDescriptor> found;
             try
             {
@@ -145,12 +148,17 @@ public sealed class Vst3Backend : IInsertBackend
     //      （几十毫秒一个，几百个就是十秒级，正好是"打开菜单卡一下"的来源）。
     //      bundle 名是 VST3 平台规定的，同一台机器上稳定；换机器重新扫就对上了。
     //      ⚠️ 代价：两个不同插件同名时会撞。取舍记在这里，别以后误以为是 bug。
-    static IReadOnlyList<InsertPluginInfo> ListFromDirectories(IReadOnlyList<string> directories)
+    static IReadOnlyList<InsertPluginInfo> ListFromDirectories(IReadOnlyList<string> directories, Action<int, int, string>? onDirectory)
     {
         var list = new List<InsertPluginInfo>();
 
-        foreach (string directory in directories)
+        for (int i = 0; i < directories.Count; i++)
         {
+            string directory = directories[i];
+
+            // 进度先报后扫：卡在一个大目录上时，界面上写的就是"正在扫这个"。
+            onDirectory?.Invoke(i, directories.Count, directory);
+
             if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
                 continue;
 

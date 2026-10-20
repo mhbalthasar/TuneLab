@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
@@ -146,8 +147,15 @@ public sealed class FxPopupWindow : Window
         }
     }
 
-    // 点"+ 添加效果"：按格式分组列出缓存里的插件（不现扫，缓存见 InsertPluginSettings）。
-    // 空 / 全部不可用时直接说明原因，而不是给一个点了没反应的按钮。
+    // 点"+ 添加效果"：按**格式 → 厂商 → 插件**三级列出缓存里的插件（不现扫，缓存见 InsertPluginSettings）。
+    //
+    // 为什么分三级：一个装了插件的机器动辄几百个，平铺一列没法找；而 VST2 / VST3 的厂商
+    // （Voxengo / Waves / …）本来就是人记插件的方式。空 / 全部不可用时直接说明原因，
+    // 而不是给一个点了没反应的按钮。
+    //
+    // ⚠️ VST2 的厂商要靠**加载插件**才问得到，而扫描不加载（见 Vst2Backend 顶部注释），
+    // 所以 VST2 的清单只有文件名、厂商是空的 —— 那些插件全部归到「（未知厂商）」，
+    // 三级菜单在 VST2 下退化成两级。要真厂商得把扫描也搬进桥进程，那是另一件事。
     void ShowAddMenu(Control anchor)
     {
         var plugins = mHost.InsertPlugins?.CachedPlugins ?? [];
@@ -158,36 +166,62 @@ public sealed class FxPopupWindow : Window
         {
             var candidates = plugins.Where(p => p.Format == format.Name).ToList();
 
-            var header = new MenuItem { Header = format.Name, IsEnabled = false };
-            menu.Items.Add(header);
-
+            // 格式自己就是第一级（子菜单），不可用 / 空的时候才退化成一个禁用的叶子。
             if (!format.IsAvailable)
             {
-                menu.Items.Add(DisabledItem(format.UnavailableReason ?? "unavailable"));
+                menu.Items.Add(DisabledItem($"{format.Name} — {format.UnavailableReason ?? "unavailable"}"));
                 continue;
             }
 
             if (candidates.Count == 0)
             {
-                menu.Items.Add(DisabledItem(L("（没有扫描到，去「插件扫描路径」扫一次）",
-                    "(nothing scanned yet — check the plugin scan paths)")));
+                menu.Items.Add(DisabledItem($"{format.Name} — " + L("没有扫描到，去「设置 → 插件扫描」扫一次",
+                    "nothing scanned yet (Settings → Plugin scan)")));
                 continue;
             }
 
-            foreach (var plugin in candidates)
+            var formatItem = new MenuItem { Header = format.Name };
+
+            foreach (var vendor in GroupByVendor(candidates))
             {
-                var item = new MenuItem { Header = plugin.Name };
-                item.IsEnabled = plugin.IsAvailable;
+                var vendorItem = new MenuItem { Header = vendor.Key };
 
-                if (!plugin.IsAvailable)
-                    item.Header = plugin.Name + "   — " + (plugin.UnavailableReason ?? "");
+                foreach (var plugin in vendor.Value)
+                {
+                    var item = new MenuItem { Header = plugin.Name };
+                    item.IsEnabled = plugin.IsAvailable;
 
-                item.Click += (_, _) => AddInsert(format, plugin);
-                menu.Items.Add(item);
+                    if (!plugin.IsAvailable)
+                        item.Header = plugin.Name + "   — " + (plugin.UnavailableReason ?? "");
+
+                    var capturedFormat = format;
+                    var capturedPlugin = plugin;
+                    item.Click += (_, _) => AddInsert(capturedFormat, capturedPlugin);
+
+                    vendorItem.Items.Add(item);
+                }
+
+                formatItem.Items.Add(vendorItem);
             }
+
+            menu.Items.Add(formatItem);
         }
 
         menu.Open(anchor);
+    }
+
+    // 厂商分组：按厂商名排序（人不记顺序，只记名字），空厂商归到一个显式的占位名，
+    // 而不是混在里面看不出来"为什么这些没有厂商"。
+    IEnumerable<KeyValuePair<string, List<InsertPluginEntry>>> GroupByVendor(List<InsertPluginEntry> plugins)
+    {
+        string unknown = L("（未知厂商）", "(unknown vendor)");
+
+        return plugins
+            .GroupBy(p => string.IsNullOrWhiteSpace(p.Vendor) ? unknown : p.Vendor)
+            .OrderBy(g => g.Key, StringComparer.CurrentCultureIgnoreCase)
+            .Select(g => new KeyValuePair<string, List<InsertPluginEntry>>(
+                g.Key,
+                g.OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList()));
     }
 
     static MenuItem DisabledItem(string header) => new() { Header = header, IsEnabled = false };

@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -33,6 +34,8 @@ public sealed class InsertPluginPathsPage : UserControl
     readonly ObservableCollection<PathEntry> mVst3 = [];
     readonly ObservableCollection<PathEntry> mVst2 = [];
     readonly TextBlock mStatus = new();
+    readonly ScanProgressBar mProgress = new();
+    bool mScanning;
 
     public InsertPluginPathsPage(IHostServices host)
     {
@@ -67,13 +70,18 @@ public sealed class InsertPluginPathsPage : UserControl
             Vst2Format,
             mVst2);
 
-        var scan = new StripButton
+        var scan = new ChromeButton
         {
+            // 与「+ 添加路径」同一个控件、同一档尺寸：同一页里两个动作按钮长得不一样，
+            // 是在暗示它们不是一类东西（而它们正是同一类：一个本机设置的写操作）。
             Text = L("立即扫描", "Scan now"),
-            Width = 96,
-            Height = 24,
+            Width = 84,
+            Height = 20,
         };
-        scan.Click += () => Scan();
+        scan.Click += () => Scan(scan);
+
+        mProgress.Margin = new Thickness(14, 8, 14, 0);
+        mProgress.IsVisible = false;
 
         mStatus.FontSize = 10.5;
         mStatus.Foreground = Palette.Brush(Palette.TextLabel);
@@ -89,11 +97,17 @@ public sealed class InsertPluginPathsPage : UserControl
 
         var footer = new Border
         {
-            Height = 40,
             Background = Palette.Brush(Palette.Interface),
             BorderBrush = Palette.Brush(Palette.Line, 0.4),
             BorderThickness = new Thickness(0, 1, 0, 0),
-            Child = footerRow,
+            Child = new StackPanel
+            {
+                Children =
+                {
+                    mProgress,
+                    new Border { Padding = new Thickness(14, 8, 14, 8), Child = footerRow },
+                },
+            },
         };
 
         var body = new ScrollViewer
@@ -278,7 +292,7 @@ public sealed class InsertPluginPathsPage : UserControl
             Width = 380,
         };
 
-        var ok = new StripButton { Text = L("添加", "Add"), Width = 60, Height = 22 };
+        var ok = new ChromeButton { Text = L("添加", "Add"), Width = 60, Height = 20 };
 
         var dialog = new Window
         {
@@ -333,8 +347,16 @@ public sealed class InsertPluginPathsPage : UserControl
         Save(format, paths);
     }
 
-    void Scan()
+    // 「立即扫描」：**扔到后台线程**，边扫边把进度画出来，不卡界面。
+    //
+    // 【为什么必须异步】扫几十个目录要几秒到几十秒；同步扫的话窗口直接冻住 ——
+    // 连"关掉它"都点不动，用户只能杀进程。这里 UI 线程只做三件事：置灰按钮、
+    // 收进度、写结果；真正走路的是后台线程。
+    async void Scan(ChromeButton button)
     {
+        if (mScanning)
+            return;
+
         // 先把两个清单落盘：扫描读的是文件里那份，内存里的改动不写就不会生效。
         Save(Vst3Format, mVst3);
         Save(Vst2Format, mVst2);
@@ -343,15 +365,46 @@ public sealed class InsertPluginPathsPage : UserControl
         if (settings == null)
             return;
 
+        mScanning = true;
+        button.IsEnabled = false;
+        mProgress.Value = 0;
+        mProgress.IsVisible = true;
+        mStatus.Text = L("正在扫描…", "Scanning…");
+
+        // Progress<T> 在**构造它的线程**（这里是 UI 线程）上回调，所以下面直接碰控件是安全的。
+        var progress = new Progress<InsertScanProgress>(p =>
+        {
+            mProgress.Value = p.TotalDirectories <= 0 ? 0 : (double)p.DoneDirectories / p.TotalDirectories;
+
+            mStatus.Text = L(
+                $"正在扫描 {p.DoneDirectories + 1}/{p.TotalDirectories}：{p.Directory}",
+                $"Scanning {p.DoneDirectories + 1}/{p.TotalDirectories}: {p.Directory}");
+        });
+
         try
         {
-            var entries = settings.Scan();
-            mStatus.Text = L($"已扫描：{entries.Count} 个插件", $"Scanned: {entries.Count} plugin(s)");
+            var entries = await Task.Run(() => settings.Scan(progress));
+
+            mProgress.Value = 1;
+
+            // 重读一次清单：扫描期间可能被别的窗口改过（也可能就是我们刚写的）。
+            Reload();
+
+            string when = settings.LastScanText ?? string.Empty;
+            mStatus.Text = L($"已扫描：{entries.Count} 个插件（{when}）",
+                $"Scanned: {entries.Count} plugin(s) ({when})");
         }
         catch (Exception ex)
         {
+            // 失败就别再 Reload 了 —— 那会把这句话盖掉，用户只看得到"上次扫描时间"。
             mStatus.Text = L("扫描失败，详见日志", "Scan failed - see the log");
             mHost.LogError("plugin scan failed", ex);
+        }
+        finally
+        {
+            mScanning = false;
+            button.IsEnabled = true;
+            mProgress.IsVisible = false;
         }
     }
 

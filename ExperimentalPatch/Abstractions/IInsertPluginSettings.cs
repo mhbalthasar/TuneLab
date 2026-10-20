@@ -16,8 +16,11 @@ public interface IInsertPluginSettings
     // 改一份路径清单。空列表 = 清空这份格式的路径。
     void SetPaths(string format, IReadOnlyList<string> paths);
 
-    /// <summary>扫一遍并更新缓存。慢（秒级）——只该由"立即扫描"这种显式动作触发。</summary>
-    IReadOnlyList<InsertPluginEntry> Scan();
+    /// <summary>
+    /// 扫一遍并更新缓存。慢（秒级）——只该由"立即扫描"这种显式动作触发，
+    /// 而且**别在 UI 线程上直接调**：调用方把它扔到后台线程，用 progress 把进度画出来。
+    /// </summary>
+    IReadOnlyList<InsertPluginEntry> Scan(IProgress<InsertScanProgress>? progress = null);
 
     /// <summary>读缓存（打开插件菜单用这个，不现扫）。</summary>
     IReadOnlyList<InsertPluginEntry> CachedPlugins { get; }
@@ -25,6 +28,14 @@ public interface IInsertPluginSettings
     // 上次扫描时间（本地时间）；null = 还没扫过。
     string? LastScanText { get; }
 }
+
+// 扫描进度。宿主**按目录**推进（一个目录报一次），界面据此画进度条。
+//
+// 【为什么按目录而不是按文件】文件是"几百上千"的量级：每扫到一个就跨界回调一次，既压满 UI 线程，
+// 进度条也只会疯抖 —— 人看不出"走到哪儿了"。目录是"几条到几十条"，刚好够用。
+// DoneDirectories 是**已经走完**的数量，Directory 是**正在扫**的那条（两者不同步是故意的：
+// 前者画进度条，后者让用户看见卡在哪个目录上）。
+public sealed record InsertScanProgress(int DoneDirectories, int TotalDirectories, string Directory);
 
 // 一个被扫到的插件。宿主用它喂混音台的"添加效果"菜单。
 public sealed class InsertPluginEntry

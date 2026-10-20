@@ -1,3 +1,4 @@
+using System;
 using TuneLab.ExperimentalPatch.MixerEngine;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
@@ -26,7 +27,10 @@ public interface IInsertBackend
     // directories 非空 = 只扫这些目录（用户在设置里配的清单）。
     // 为空 / null = 扫后端自己的默认位置。
     // 慢，但只在打开菜单 / 扫描时调；宿主负责缓存（见 InsertPluginCatalog）。
-    IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null);
+    //
+    // onDirectory：**每进入一个目录之前**回调一次（参数 = 本次调用内的序号、本次的目录数、目录本身）。
+    // 只为给"立即扫描"画进度条：跨格式的累计由宿主自己算（它知道两个格式各有多少条）。
+    IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null, Action<int, int, string>? onDirectory = null);
 
     // 创建一个挂上图的实例。失败返回 null（并把原因写进 reason）——绝不是抛异常，
     // 调用方（宿主）据此把 UI 上的那个槽位标红 + 旁通（DESIGN.md §5.6）。

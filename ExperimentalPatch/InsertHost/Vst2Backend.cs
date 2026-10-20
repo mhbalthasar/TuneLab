@@ -26,7 +26,7 @@ public sealed class Vst2Backend : IInsertBackend
     public string? UnavailableReason
         => OperatingSystem.IsWindows() ? null : "the VST2 bridge is Windows-only";
 
-    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null)
+    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null, Action<int, int, string>? onDirectory = null)
     {
         if (directories == null || directories.Count == 0)
             return [];
@@ -37,8 +37,13 @@ public sealed class Vst2Backend : IInsertBackend
         // 按完整路径去重，别在菜单里出现两行一模一样的。
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (string directory in directories)
+        for (int i = 0; i < directories.Count; i++)
         {
+            string directory = directories[i];
+
+            // 进度先报后扫（见 IInsertBackend.ListPlugins 的说明）。
+            onDirectory?.Invoke(i, directories.Count, directory);
+
             if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
                 continue;
 
