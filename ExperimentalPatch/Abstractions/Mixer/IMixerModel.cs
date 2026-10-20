@@ -126,6 +126,11 @@ public interface IMixerChannel
     IMixerSend AddSend(IMixerOutput target);
     void RemoveSend(IMixerSend send);
 
+    // 这条通道能不能把信号送到 target。
+    // 假 = "输出到自己"或"会成环"——两者都会被引擎拒绝，菜单据此**不把它列出来**，
+    // 免得用户点了个"点了没反应"的目标。Master 恒 false（它没有 send）。
+    bool CanSendTo(IMixerOutput target);
+
     // 串联插入（按顺序处理）。Master 也可以有。
     IReadOnlyList<IMixerInsert> Inserts { get; }
     IMixerInsert AddInsert(IMixerInsertFormat format);

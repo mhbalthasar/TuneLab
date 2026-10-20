@@ -115,6 +115,19 @@ internal partial class SettingsWindow : Window
             new("Extension Routing", Assets.ExtensionRouting, CreateRoutingPage),
         };
 
+        // [EP-MIXER-16] 补丁贡献的设置页（实验功能）。排在宿主自己的 tab 之后；
+        // 没有补丁 / 没有贡献时这段是空循环，设置窗与上游逐项一致。
+        //   标题由补丁按界面语言给（补丁层不往上游翻译表加条目，.Tr 查不到就原样保留）；
+        //   内容在运行时是一个 Avalonia Control——契约里写 object 只是为了让 Abstractions 不沾 Avalonia。
+        foreach (var contribution in ExperimentalPatchBootstrap.GetSettingsTabs())
+        {
+            var captured = contribution;
+            tabPages.Add(new TabPageInfo(
+                captured.Title,
+                Assets.Extensions,
+                () => captured.CreateContent() as Control ?? new Panel()));
+        }
+
         // Build sidebar tab buttons
         foreach (var tabPage in tabPages)
         {

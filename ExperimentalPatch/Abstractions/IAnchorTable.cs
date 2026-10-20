@@ -34,4 +34,9 @@ public interface IAnchorTable
     // 登记一条「实验功能」菜单命令。宿主在**构建菜单时**一次性取走（启动早期），
     // 之后再登记不会出现在已建好的菜单里。返回的 IDisposable 可撤销登记。
     IDisposable AddCommand(ExperimentalCommand command);
+
+    // ── 设置页贡献 ──
+    // 登记一页「设置」窗的内容（宿主在打开设置窗时取一次快照，排在宿主自己的 tab 之后）。
+    // 与命令不同，这里不急于在启动时登记：宿主取快照发生在打开窗口那一刻，晚登记也会出现。
+    IDisposable AddSettingsTab(SettingsTabContribution tab);
 }

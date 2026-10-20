@@ -95,9 +95,14 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 
 ### 3.4 电平表从哪取
 
-- 通道表 = 该节点**推子之后、路由之前**的信号（= 它自己贡献了多少），与今天 `InvokeRealtimeAmplitude` 的语义一致。
+- 通道表 = 该节点**推子与声像之后、路由之前**的信号（= 它自己贡献了多少），与今天 `InvokeRealtimeAmplitude` 的语义一致。
 - Master 表 = Master 推子之后的最终输出（这就是原先规划的那个"Master 电平查询"）。
 - 静音 / 未 solo 时仍返回 null → 表变黑（v1 已定）。
+- **轨道表也走节点抽头**（`InvokeRealtimeTrackAmplitude`），不再读音源本身：
+  `InvokeRealtimeAmplitude` 取的是来源信号（pre-fader / pre-pan），推子推到底表不动、
+  声像拧到一边两根柱子还是一样高 —— 表就成了摆设。节点 id 是编译期的 `track-<i>`，
+  所以按 `AudioGraph.Tracks` 的顺序找下标（顺序与编译器一致）。
+- **左右两根柱子各自独立**：早先取 `max(L,R)` 驱动两根柱子，声像的左右偏置在表上完全看不见。
 
 ### 3.5 延迟补偿（PDC）
 
@@ -254,6 +259,10 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 - 三条路线共用一层**中间契约** `IInsertHost`：`Process(block)`、`LatencySamples`、`OpenEditor()`、
   `SaveState()` / `LoadState()`、`Parameters`。上层（图、UI、持久化）只认它，不认 VST2 / VST3 / JSFX。
 - 扫描 / 枚举插件单独线程 + 缓存（一次几十毫秒到几秒），不阻塞 UI。
+- **扫描路径与「立即扫描」住在宿主的「设置」窗里**（一页 `EP-MIXER-16` 的补丁 tab，VST2 / VST3 各一份清单）：
+  它是"这台机器上插件装在哪儿"的本机设置，跟界面语言、音频设备同类，散在「实验功能」菜单里没人找得到。
+  这一页只经 `IHostServices.InsertPlugins` 读写，落盘在 `{DataFolder}/insert-plugins.json`
+  （受 `TUNELAB_DATA_DIR` 重定向），**不进 `.tlpx`**。
 
 ### 5.3 VST2 的位数：x86 老插件与 AnyCPU
 
@@ -491,7 +500,11 @@ ExperimentalPatch/InsertHost/
 
 - 点 `Send N` → 一个**独立浮动小窗**（非模态、可一直开着、跟着调音台窗口）。
 - 每条 send 一行：目的地名（`AUX 1`）+ 横向增益推子 + 当前 dB + `✕` 移除；
-  底部 `+ 添加 send ▾`（菜单列 Aux / Master）。
+  底部 `+ 添加 send ▾`：**点开的是一个目标菜单**，由人挑（不是按 Master→AUX1→AUX2 的顺序替人塞一条）。
+  - 菜单里只列真能加的：**已加过的、不可用的（Cable）、输出到自己、会成环的**都不出现
+    （判据是 `IMixerChannel.CanSendTo`，与引擎的拒绝理由同源）。
+  - 一条都不剩 → 显示禁用的 `（空）`，说明"没有可加的了"，而不是弹一个空菜单。
+  - 加/删 send 会走 `RoutingChanged` 重建行；**改增益不重建**（否则拖动中的推子会被抽走）。
 - 增益推子量程沿用 §4.3（−∞..+12）。
 - 不是"确认 / 取消"式：改动即时生效（与调音台其它控件一致），undo 粒度 = 一次拖动。
 - 关掉调音台窗口时，浮窗一起关。
@@ -548,6 +561,11 @@ ExperimentalPatch/InsertHost/
 
 - **改名**：双击通道条的名字就地编辑（Enter 提交、Esc 取消、失焦提交）。写回 `Track.Name` /
   `AuxBus.Name`，一步 undo。空名字不接受（轨道头也靠名字认轨）。
+  - **改 AUX 名要让别处跟着变**：这个名字不只出现在 AUX 自己那一条上，还出现在每条轨的 send 目标行、
+    所有通道的 output 接线菜单、以及通道条上那行短名里。所以
+    ① `IMixerOutput.Name` / `ShortName` 是**活读**的（委托，不是构造时拷下的字符串）；
+    ② `AuxBus.Name.Modified` 触发 `ChannelsChanged`（整表重建 + 关掉浮窗，**不重建音频图**——
+       改名不是结构变化）。少任何一半都会留下"改了 AUX1 的名字，别的条上还写着 AUX 1"。
 - **分组线**：轨道组与 AUX 组之间一条 2px、`LINE` 85% 的亮线（两组都有内容时才出现）。
 - **横向滚动**（轨道多时）：
   - 滚轮：窗口内滚轮 = 横向滚动（一格 60 DIP）；
@@ -634,6 +652,7 @@ ExperimentalPatch/InsertHost/
 | 14 | `EP-MIXER-13` | `InsertHost/VstBridgeClient.cs` + `VstBridge/*.cs`（均新文件） | 32 位 VST2 的桥进程（不在 sln，宿主按需启动） | 零 |
 | 11 | `EP-MIXER-8` | `UI/MainWindow/Editor/Editor.cs` | 「实验功能」菜单（v1 已规划） | 低 |
 | 12 | `EP-MIXER-9` | `ExperimentalPatchBootstrap.cs` + `TuneLab/ExperimentalPatchMixerAudio.cs`（新） | `CreateMixerModel()` 薄转发 + 快照编译器 | 零 / 低 |
+| 15 | `EP-MIXER-16` | `UI/Settings/SettingsWindow.axaml.cs` + `ExperimentalPatchBootstrap.cs` + `ExperimentalPatch/Abstractions/SettingsTabContribution.cs`（新） | 「设置」窗尾部接上补丁贡献的 tab（插件扫描路径）。宿主 tab 列表原样不动，没有贡献时与上游逐项一致 | 低（一段 `foreach`） |
 
 `EP-MIXER-*` 的逐条说明、断点症状与重接步骤见 `.agents/mixer-reconnect.md`。
 
@@ -737,7 +756,7 @@ ExperimentalPatch/InsertHost/
 |---|---|---|
 | M6 | `IInsertHost` + **VST3**（OwnAudioVST3，独立 ALC） | 挂一个 VST3：出声、存读、延迟被 PDC 补偿 |
 | M7 | **VST2：一律过桥**（x86 + x64 两个桥，§5.3）。**已完成**：`PluginHost` 的 C ABI、`Vst2Backend`/`Vst2Insert`、位数判定、参数/状态、桥的多任务串行化 | 51 个真插件（46 × x64 + 5 × x86）全部出声、旁通逐位一致；插件崩只死桥 |
-| M8 | FX 浮窗接线：旁通 / 界面 / 增删；插件扫描缓存；找不到插件的降级 | 与外观稿一致；插件缺失不丢链 |
+| M8 | FX 浮窗接线：旁通 / 界面 / 增删；插件扫描缓存；找不到插件的降级。**扫描路径设置已落在宿主设置窗的一页 tab（`EP-MIXER-16`）** | 与外观稿一致；插件缺失不丢链 |
 | M9 | JSFX（§12 Q4：先 spike 再定） | — |
 
 ### 阶段三：以后
@@ -755,7 +774,7 @@ ExperimentalPatch/InsertHost/
 | VST2 许可与 SDK 合规 | 中 | 只做运行时加载、不分发 SDK；文档写明 |
 | 工程格式兼容 | 中 | 版本 +1，老版本硬失败；native DTO 不进 SDK |
 | 上游合并冲突 | 中 | §7 选项 A；改动集中在 3~5 个文件，尽量整段替换而非散点修改 |
-| 范围失控 | 高 | v1 明确不含：多设备、pre-fader send、AUX 重命名 / pan、分轨批量导出、参数自动化 |
+| 范围失控 | 高 | v1 明确不含：多设备、pre-fader send、分轨批量导出、参数自动化（AUX 的改名与 pan 已做，见 §6.6 / §4.1） |
 
 ## 12. 决策记录（2026-10-19，均已拍板）
 

@@ -110,6 +110,24 @@ public static class PatchHost
         }
     }
 
+    // 宿主：打开「设置」窗时取一次补丁贡献的 tab 快照。没有补丁 / 没有贡献 → 空表（设置窗与上游一致）。
+    public static IReadOnlyList<SettingsTabContribution> GetSettingsTabs()
+    {
+        var hub = mHub;
+        if (hub == null)
+            return [];
+
+        try
+        {
+            return hub.GetSettingsTabs();
+        }
+        catch (Exception ex)
+        {
+            hub.Host.LogError("failed to collect experimental settings tabs", ex);
+            return [];
+        }
+    }
+
     // 宿主：退出收尾调用（须早于宿主引擎销毁，补丁才能安全访问宿主服务）。
     public static void Shutdown()
     {

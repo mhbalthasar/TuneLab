@@ -24,7 +24,6 @@ public sealed class MixerPatch : IPatch
     IMixerModel? mModel;
     IHostServices? mHost;
     Window? mOwner;
-    Window? mInsertPathsWindow;
 
     public void Attach(IAnchorTable anchors)
     {
@@ -32,10 +31,13 @@ public sealed class MixerPatch : IPatch
         anchors.OnAppReady(anchor => mHost = anchor.Host);
         anchors.AddCommand(new ExperimentalCommand("mixer.open", Label(anchors.Host), Open));
 
-        // 插入效果的插件扫描路径。挂在同一个「实验功能」菜单下：它与混音台是一套功能的两半
-        // （没有扫描路径就加不了效果器），但设成独立窗口而不是塞进宿主设置窗 —— 那个 tab 列表
-        // 是宿主硬编码的，改它就是给上游合并添一处冲突（见 InsertPluginPathsWindow 顶部注释）。
-        anchors.AddCommand(new ExperimentalCommand("mixer.insertPaths", Label(anchors.Host), OpenInsertPaths));
+        // 插入效果的插件扫描路径：宿主「设置」窗里的一页（EP-MIXER-16）。
+        // 早先它是「实验功能」菜单里的第二条命令，而且标签误用了 Label() —— 菜单里于是出现
+        // 两个一模一样的「混音台」，第二条点开的是路径窗，看着就像"点了没反应"。
+        // 它本来就属于设置，放进设置窗既不再占菜单，也找得到。
+        anchors.AddSettingsTab(new SettingsTabContribution(
+            InsertPathsLabel(anchors.Host),
+            () => new InsertPluginPathsPage(anchors.Host)));
     }
 
     public void Detach()
@@ -46,13 +48,6 @@ public sealed class MixerPatch : IPatch
         mWindow = null;
         mModel = null;
         mHost = null;
-
-        if (mInsertPathsWindow != null)
-        {
-            mInsertPathsWindow.Closed -= OnInsertPathsClosed;
-            mInsertPathsWindow.Close();
-            mInsertPathsWindow = null;
-        }
 
         if (window == null)
             return;
@@ -66,36 +61,8 @@ public sealed class MixerPatch : IPatch
 
     static string InsertPathsLabel(IHostServices host)
         => host.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
-            ? "插件扫描路径…"
-            : "Plugin scan paths…";
-
-    void OpenInsertPaths()
-    {
-        var host = mHost;
-        if (host == null)
-            return;
-
-        // 单实例，与混音台同一套规矩（ MixerPatch 顶部注释 ①②③）。
-        if (mInsertPathsWindow != null)
-        {
-            mInsertPathsWindow.Activate();
-            return;
-        }
-
-        var window = new InsertPluginPathsWindow(host);
-        window.Closed += OnInsertPathsClosed;
-
-        mInsertPathsWindow = window;
-        ShowWindow(window);
-    }
-
-    void OnInsertPathsClosed(object? sender, EventArgs e)
-    {
-        if (sender is Window window)
-            window.Closed -= OnInsertPathsClosed;
-
-        mInsertPathsWindow = null;
-    }
+            ? "插件扫描"
+            : "Plugin scan";
 
     void Open()
     {

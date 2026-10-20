@@ -13,6 +13,10 @@ namespace TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
 // 同样的量程（−86.8..+6 dB）、同样的快起慢落（瞬时起、48 dB/s 落）、同样的峰值保持（1 s，之后 24 dB/s 落）、
 // 同样的绿→黄→红渐变锚点（−12 / −3 / 0 dB）。这样同一个工程里，调音台的表与轨道头的表读数一致——
 // 两个表各说各话比没有表更糟。
+//
+// 【两根柱子各自独立】左/右各有自己的目标值、回落状态与峰值保持计时。
+// 早先的实现取两通道较大值驱动两根柱子 —— 那样声像一拧，柱子照样等高，
+// 表就再也反映不出"偏左/偏右"这件事（而那正是声像旋钮唯一能看见的反馈）。
 internal sealed class StereoMeter : Control
 {
     // 量程：−48..+6 dB。
@@ -37,10 +41,11 @@ internal sealed class StereoMeter : Control
     public const double CompactChannelWidth = 4;
     public const double CompactWidth = CompactChannelWidth * 2 + ChannelGap;
 
-    double mTargetDb = MinDb;
-    double mBarDb = MinDb;
-    double mPeakHoldDb = MinDb;
-    double mPeakHoldTimer;
+    // [0] = 左, [1] = 右。两声道完全独立（见类注释）。
+    readonly double[] mTargetDb = [MinDb, MinDb];
+    readonly double[] mBarDb = [MinDb, MinDb];
+    readonly double[] mPeakHoldDb = [MinDb, MinDb];
+    readonly double[] mPeakHoldTimer = [0, 0];
 
     readonly System.Diagnostics.Stopwatch mClock = new();
     DispatcherTimer? mTimer;
@@ -62,10 +67,14 @@ internal sealed class StereoMeter : Control
     // 硬归零（还没播过、或停止播放时用）。
     public void Reset()
     {
-        mTargetDb = MinDb;
-        mBarDb = MinDb;
-        mPeakHoldDb = MinDb;
-        mPeakHoldTimer = 0;
+        for (int channel = 0; channel < 2; channel++)
+        {
+            mTargetDb[channel] = MinDb;
+            mBarDb[channel] = MinDb;
+            mPeakHoldDb[channel] = MinDb;
+            mPeakHoldTimer[channel] = 0;
+        }
+
         mTimer?.Stop();
         InvalidateVisual();
     }
@@ -73,30 +82,33 @@ internal sealed class StereoMeter : Control
     // 目标降到底：让当前读数自然落回去，而不是"啪"地清掉。
     public void Release()
     {
-        mTargetDb = MinDb;
+        mTargetDb[0] = MinDb;
+        mTargetDb[1] = MinDb;
         EnsureRunning();
     }
 
     void SetAmplitude(double leftDb, double rightDb)
     {
-        // 取两通道较大的一个驱动显示：柱子是两根、但"顶到哪儿"由更响的那边决定。
-        // （宿主是两条独立 viewer、各自一个 dB；这里一根控件画两根，故取 max。
-        //  代价是两边的回落速度统一——在调音台上看不出差别。）
-        double db = Math.Max(leftDb, rightDb);
-        double v = double.IsNaN(db) ? MinDb : Math.Max(db, MinDb);
-        mTargetDb = v;
-
-        if (v > mBarDb)
-            mBarDb = v;   // 瞬时起振
-
-        if (mBarDb >= mPeakHoldDb)
-        {
-            mPeakHoldDb = mBarDb;
-            mPeakHoldTimer = PeakHoldSeconds;
-        }
+        Step(0, leftDb);
+        Step(1, rightDb);
 
         EnsureRunning();
         InvalidateVisual();
+    }
+
+    void Step(int channel, double db)
+    {
+        double v = double.IsNaN(db) ? MinDb : Math.Max(db, MinDb);
+        mTargetDb[channel] = v;
+
+        if (v > mBarDb[channel])
+            mBarDb[channel] = v;   // 瞬时起振
+
+        if (mBarDb[channel] >= mPeakHoldDb[channel])
+        {
+            mPeakHoldDb[channel] = mBarDb[channel];
+            mPeakHoldTimer[channel] = PeakHoldSeconds;
+        }
     }
 
     void EnsureRunning()
@@ -119,26 +131,34 @@ internal sealed class StereoMeter : Control
         double dt = Math.Min(mClock.Elapsed.TotalSeconds, MaxFrameSeconds);
         mClock.Restart();
 
-        if (mTargetDb > mBarDb)
-            mBarDb = mTargetDb;
-        else if (mBarDb > mTargetDb)
-            mBarDb = Math.Max(mTargetDb, mBarDb - BarReleaseDbPerSec * dt);
+        bool idle = true;
 
-        if (mBarDb >= mPeakHoldDb)
+        for (int channel = 0; channel < 2; channel++)
         {
-            mPeakHoldDb = mBarDb;
-            mPeakHoldTimer = PeakHoldSeconds;
-        }
-        else
-        {
-            mPeakHoldTimer -= dt;
-            if (mPeakHoldTimer <= 0)
-                mPeakHoldDb = Math.Max(mBarDb, mPeakHoldDb - PeakReleaseDbPerSec * dt);
+            if (mTargetDb[channel] > mBarDb[channel])
+                mBarDb[channel] = mTargetDb[channel];
+            else if (mBarDb[channel] > mTargetDb[channel])
+                mBarDb[channel] = Math.Max(mTargetDb[channel], mBarDb[channel] - BarReleaseDbPerSec * dt);
+
+            if (mBarDb[channel] >= mPeakHoldDb[channel])
+            {
+                mPeakHoldDb[channel] = mBarDb[channel];
+                mPeakHoldTimer[channel] = PeakHoldSeconds;
+            }
+            else
+            {
+                mPeakHoldTimer[channel] -= dt;
+                if (mPeakHoldTimer[channel] <= 0)
+                    mPeakHoldDb[channel] = Math.Max(mBarDb[channel], mPeakHoldDb[channel] - PeakReleaseDbPerSec * dt);
+            }
+
+            if (mBarDb[channel] > MinDb || mPeakHoldDb[channel] > MinDb)
+                idle = false;
         }
 
         InvalidateVisual();
 
-        if (mBarDb <= MinDb && mPeakHoldDb <= MinDb)
+        if (idle)
             mTimer?.Stop();
     }
 
@@ -172,28 +192,28 @@ internal sealed class StereoMeter : Control
         if (width <= 0 || height <= 0)
             return;
 
-        double level = Percent(mBarDb);
         var brush = MeterBrush(height);
         double channelWidth = Math.Max(1, (width - ChannelGap) / 2);
 
         for (int channel = 0; channel < 2; channel++)
         {
             double x = channel * (channelWidth + ChannelGap);
-            var column = new Rect(x, 0, channelWidth, height);
+            double level = Percent(mBarDb[channel]);
 
-            context.FillRectangle(Palette.Brush(Palette.Back), column);
+            context.FillRectangle(Palette.Brush(Palette.Back), new Rect(x, 0, channelWidth, height));
 
             if (level > 0)
                 context.FillRectangle(brush, new Rect(x, height * (1 - level), channelWidth, height * level));
-        }
 
-        // 峰值保持线：到 0 dB 以上时变红——那是"顶了"，不是"偏高"。
-        if (mPeakHoldDb > MinDb)
-        {
-            double y = height * (1 - Percent(mPeakHoldDb));
-            var color = mPeakHoldDb >= PeakDb ? Palette.AmpPeak : Palette.LightWhite;
-            var pen = new Pen(Palette.Brush(color), 1);
-            context.DrawLine(pen, new Point(0, y), new Point(width, y));
+            // 峰值保持线：到 0 dB 以上时变红——那是"顶了"，不是"偏高"。
+            // 每根柱子各画自己那条（只在本柱宽度内），否则一条横线又会把两声道"连"起来。
+            if (mPeakHoldDb[channel] > MinDb)
+            {
+                double y = height * (1 - Percent(mPeakHoldDb[channel]));
+                var color = mPeakHoldDb[channel] >= PeakDb ? Palette.AmpPeak : Palette.LightWhite;
+                var pen = new Pen(Palette.Brush(color), 1);
+                context.DrawLine(pen, new Point(x, y), new Point(x + channelWidth, y));
+            }
         }
     }
 }

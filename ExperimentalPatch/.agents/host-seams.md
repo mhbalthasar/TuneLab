@@ -106,6 +106,24 @@ internal IStartupScreen? CreateStartupScreen()   // 第一个非 null 胜出；�
 // ③ 宿主：PatchHost.CreateStartupScreen() + ExperimentalPatchBootstrap.CreateStartupScreen()（带 Guard，返回 null）
 ```
 
+**第二个范例：`app.settings`（往宿主已有的窗口里加一页）。** 与闪屏同形，差别只有三点：
+
+- **取快照的时机是"每次打开设置窗"**，不是"启动一次"（命令锚点 `app.commands` 是后者）——
+  晚登记的贡献也会出现。
+- 仍然注册**工厂**（`Func<object>`）：每次开窗都新建一页，于是那页永远读当时的设置。
+  **别缓存控件**：缓存会把上一扇窗的视觉树复用过去。
+- 返回 `object` 而不是 `Control`：`Abstractions` 里不许出现 Avalonia 类型（AGENTS.md §2 硬规矩），
+  宿主在 `SettingsWindow` 就地转型；转不动就当空页 —— 一个坏贡献不该让设置窗整扇打不开。
+
+```csharp
+// ① 契约（Abstractions/SettingsTabContribution.cs）：标题由补丁按 UiLanguage 自己给
+public sealed record SettingsTabContribution(string Title, Func<object> CreateContent);
+IDisposable AddSettingsTab(SettingsTabContribution tab);
+
+// ② 耦合层：AnchorHub 存清单 → PatchHost.GetSettingsTabs() → ExperimentalPatchBootstrap.GetSettingsTabs()
+// ③ 宿主：SettingsWindow 建完自己的 tabPages **之后**、建侧栏按钮**之前** foreach 追加（没有贡献 = 空循环）
+```
+
 **两条不变量**：
 
 - **必须处理"没有"**：`CreateXxx()` 返回 `null` 时，宿主走**与上游逐行一致**的原样路径。这是本层存在

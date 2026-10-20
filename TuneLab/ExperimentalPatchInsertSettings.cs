@@ -98,7 +98,26 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         }
     }
 
-    public string? LastScanText { get; private set; }
+    public string? LastScanText
+    {
+        get
+        {
+            // 本进程刚扫过 → 用内存里那份；否则从落盘的缓存时间还原。
+            // 早先只读内存：重启后明明有缓存，界面上却写"尚未扫描"。
+            if (mLastScanText != null)
+                return mLastScanText;
+
+            var state = Load();
+            if (string.IsNullOrEmpty(state.LastScanUtc))
+                return null;
+
+            return DateTimeOffset.TryParse(state.LastScanUtc, out var scanned)
+                ? scanned.ToLocalTime().ToString("G")
+                : state.LastScanUtc;
+        }
+    }
+
+    string? mLastScanText;
 
     public IReadOnlyList<InsertPluginEntry> Scan()
     {
@@ -135,7 +154,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
         Save(state);
 
-        LastScanText = DateTime.Now.ToString("G");
+        mLastScanText = DateTime.Now.ToString("G");
 
         return entries;
     }
@@ -173,22 +192,31 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     {
         string path = SettingsPath;
 
-        if (!File.Exists(path))
-            return new State();
+        State state;
 
-        try
+        if (!File.Exists(path))
         {
-            var state = JsonSerializer.Deserialize<State>(File.ReadAllText(path), JsonOptions) ?? new State();
-            state.Vst3Paths ??= DefaultVst3Paths.ToList();
-            state.Vst2Paths ??= DefaultVst2Paths.ToList();
-            return state;
+            state = new State();
         }
-        catch (Exception ex)
+        else
         {
-            // 读不出来就退回默认清单：设置坏了不该让混音台打不开。
-            HostLog.Error("insert-plugins: failed to read settings, falling back to defaults: " + ex.Message);
-            return new State();
+            try
+            {
+                state = JsonSerializer.Deserialize<State>(File.ReadAllText(path), JsonOptions) ?? new State();
+            }
+            catch (Exception ex)
+            {
+                // 读不出来就退回默认清单：设置坏了不该让混音台打不开。
+                HostLog.Error("insert-plugins: failed to read settings, falling back to defaults: " + ex.Message);
+                state = new State();
+            }
         }
+
+        // 默认值必须在**两条路径上都补齐**：早先只在"文件存在"那条补，于是首次运行（文件还不存在）
+        // 返回的是 null 清单，Scan() 便一个目录都不扫 —— 界面上就是"明明装了插件却搜不到"。
+        state.Vst3Paths ??= DefaultVst3Paths.ToList();
+        state.Vst2Paths ??= DefaultVst2Paths.ToList();
+        return state;
     }
 
     public static void Save(State state)

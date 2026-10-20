@@ -49,6 +49,61 @@ public class MixerRoutingTests
     }
 
     [Fact]
+    public void RenamingAnAux_FollowsIntoOutputsAndSendTargets()
+    {
+        var (_, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            model.AddAux();
+
+            var aux = model.Channels.First(c => c.Kind == MixerChannelKind.Aux);
+            var track = model.Channels.First(c => c.Kind == MixerChannelKind.Track);
+
+            var send = track.AddSend(Output(model, MixerOutputKind.Aux, aux.Id));
+
+            aux.Name = "BBB";
+
+            // 名字是**活读**的：output 菜单 / 通道条短名 / 已存在的 send 目标行都必须跟着变，
+            // 而不是停在构造时拷下来的那个字符串（那是"改名了，别处还写 AUX 1"的根因）。
+            Assert.Equal("BBB", Output(model, MixerOutputKind.Aux, aux.Id).Name);
+            Assert.Equal("BBB", send.Target.Name);
+
+            project.RemoveAux(project.Auxes[0]);
+        }
+    }
+
+    [Fact]
+    public void CanSendTo_RejectsSelfAndCycles()
+    {
+        var (_, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            model.AddAux();
+            model.AddAux();
+
+            var auxes = model.Channels.Where(c => c.Kind == MixerChannelKind.Aux).ToArray();
+            var track = model.Channels.First(c => c.Kind == MixerChannelKind.Track);
+
+            Assert.True(track.CanSendTo(Output(model, MixerOutputKind.Aux, auxes[0].Id)));
+
+            // 输出到自己：菜单里不该出现（点了也会被引擎拒绝）。
+            Assert.False(auxes[0].CanSendTo(Output(model, MixerOutputKind.Aux, auxes[0].Id)));
+
+            // 成环：AUX1 → AUX2 之后，AUX2 不能再 → AUX1。
+            auxes[0].Output = Output(model, MixerOutputKind.Aux, auxes[1].Id);
+            Assert.False(auxes[1].CanSendTo(Output(model, MixerOutputKind.Aux, auxes[0].Id)));
+
+            // Master 恒 false（它没有 send）。
+            Assert.False(model.Master.CanSendTo(Output(model, MixerOutputKind.Master)));
+
+            foreach (var bus in project.Auxes.ToArray())
+                project.RemoveAux(bus);
+        }
+    }
+
+    [Fact]
     public void TrackOutput_CanGoToAnAux()
     {
         var (_, project, model) = Create(Track("t1"));

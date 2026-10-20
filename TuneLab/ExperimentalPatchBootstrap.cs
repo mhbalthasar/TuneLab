@@ -58,6 +58,20 @@ internal static class ExperimentalPatchBootstrap
         }
     }
 
+    // 「设置」窗尾部的补丁页（补丁贡献）。没有补丁 / 没有贡献 = 空表，设置窗与上游逐项一致。
+    public static IReadOnlyList<SettingsTabContribution> GetSettingsTabs()
+    {
+        try
+        {
+            return PatchHost.GetSettingsTabs();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error("Experimental patch settings tabs failed: " + ex);
+            return [];
+        }
+    }
+
     // 退出收尾调用（App 的 desktop.Exit），须早于宿主引擎销毁。
     public static void Stop()
     {

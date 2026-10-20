@@ -18,7 +18,7 @@
      方向与 UI 补丁一致（宿主 → 补丁侧），没有任何一边引用宿主。
 ```
 
-宿主对补丁层的认知被压到**五个静态方法 + 一份 `IHostServices`**：
+宿主对补丁层的认知被压到**六个静态方法 + 一份 `IHostServices`**：
 
 | 宿主文件 | 位置 | 干什么 |
 |---|---|---|
@@ -26,7 +26,7 @@
 | `TuneLab/App.axaml.cs` | `OnFrameworkInitializationCompleted` 开头 | `ExperimentalPatchBootstrap.CreateStartupScreen()` → 取闪屏并据此分派整段启动 |
 | `TuneLab/App.axaml.cs` | `HandleStartupArgs(args[1..])` 之后 | `ExperimentalPatchBootstrap.Ready()` → 触发 `app.ready` |
 | `TuneLab/App.axaml.cs` | `desktop.Exit` 首行 | `ExperimentalPatchBootstrap.Stop()` → 触发 `app.shutdown` + 卸载补丁 |
-| `TuneLab/ExperimentalPatchBootstrap.cs` | — | `IHostServices` 实现 + 异常兜底 + `CreateMixerModel()`（宿主侧 `IMixerModel` 适配器，按工程缓存）+ `GetCommands()`（补丁贡献的菜单命令） |
+| `TuneLab/ExperimentalPatchBootstrap.cs` | — | `IHostServices` 实现 + 异常兜底 + `CreateMixerModel()`（宿主侧 `IMixerModel` 适配器，按工程缓存）+ `GetCommands()`（补丁贡献的菜单命令）+ `GetSettingsTabs()`（补丁贡献的设置页） |
 | `TuneLab/ExperimentalPatchMixerModel.cs` | — | **新增文件**：`IMixerModel` / `IMixerChannel` 的宿主实现（读 `Track` 的 DataProperty，写回带 undo merge） |
 | `TuneLab/TuneLab.csproj` + `TuneLab.sln` | — | 两个 `ProjectReference`（`ExperimentalPatch` / `MixerEngine`）+ 一条工程项 |
 
@@ -101,6 +101,7 @@
 | `app.ready` | 通知 | 主窗口已建、启动参数已分流（工程已打开） | `AppReadyAnchor` | 需要窗口/编辑器的注入。 |
 | `app.shutdown` | 通知 | 退出时，宿主引擎销毁**之前** | `AppShutdownAnchor` | 收尾。宿主服务此时仍可用；要快，别阻塞退出。 |
 | `app.splash` | 贡献 | `OnFrameworkInitializationCompleted` **开头**（Avalonia 已起，启动工作一行都还没干） | `IStartupScreen` | 提供启动闪屏。没人提供 = 宿主走无闪屏的原样路径。 |
+| `app.settings` | 贡献 | 每次打开「设置」窗、建完宿主自己的 tab 之后 | `SettingsTabContribution`（标题 + `Func<object>`，运行时是 `Control`） | 往设置窗尾部加一页。没有贡献 = 与上游逐项一致。**标题由补丁按 `UiLanguage` 自己给**，别动上游翻译表。 |
 
 通知型锚点触发顺序固定为 `app.startup` → `app.ready` → `app.shutdown`，各**恰好一次**；`app.splash` 是索取，不参与这个序列。
 

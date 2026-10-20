@@ -170,20 +170,33 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     {
         mOutputs.Clear();
 
-        mOutputs.Add(new MixerOutput(MixerOutputKind.Master, "master", "Master", "Master", true));
+        mOutputs.Add(new MixerOutput(MixerOutputKind.Master, "master", static () => "Master", static () => "Master", true));
 
+        // 名字传**委托**而不是拷好的字符串：AUX 改名后，send 目标、output 接线菜单 / 通道条上的短名
+        // 都要立刻跟着变（见 MixerOutput.Name 的注释）。
         foreach (var aux in mProject.Auxes)
-            mOutputs.Add(new MixerOutput(MixerOutputKind.Aux, aux.Id, aux.Name.Value, aux.Name.Value, true));
+        {
+            var bus = aux;
+            mOutputs.Add(new MixerOutput(MixerOutputKind.Aux, bus.Id, () => bus.Name.Value, () => bus.Name.Value, true));
+        }
 
-        string deviceName = AudioEngine.CurrentDevice.Value;
-        if (string.IsNullOrWhiteSpace(deviceName))
-            deviceName = "默认输出设备";
-
-        mOutputs.Add(new MixerOutput(MixerOutputKind.Device, "device:default", deviceName, "设备", true));
+        mOutputs.Add(new MixerOutput(MixerOutputKind.Device, "device:default", DeviceName, DeviceShortName, true));
 
         // daw_cable：菜单里保留这一类，但它是禁用项（DESIGN.md §4.5）。
-        mOutputs.Add(new MixerOutput(MixerOutputKind.Cable, "cable", "（未实现）", "Cable", false));
+        mOutputs.Add(new MixerOutput(MixerOutputKind.Cable, "cable", static () => "（未实现）", static () => "Cable", false));
     }
+
+    static string DeviceName()
+    {
+        string name = AudioEngine.CurrentDevice.Value;
+        return string.IsNullOrWhiteSpace(name) ? "默认输出设备" : name;
+    }
+
+    // 通道条上那一行只有 84px：完整设备名塞不下（DESIGN.md §4.5）。
+    static string DeviceShortName()
+        => TuneLab.I18N.TranslationManager.CurrentLanguage.Value.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+            ? "设备"
+            : "Device";
 
     void BuildFormats()
     {
@@ -459,6 +472,14 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
         }
     }
 
+    // 与 Output 同一个判据（不能到自己、不能成环），只是**问**而不是**改**：
+    // send 菜单用它筛目标（点了会被拒绝的条目不列出来）。
+    public bool CanSendTo(IMixerOutput target)
+    {
+        var route = Owner.RouteOf(target);
+        return route.Id != Id && !Owner.WouldCycle(Id, route.Id);
+    }
+
     // 串联插入（按顺序处理）。活读：增删 / 旁通要立刻反映在浮窗里。
     public virtual IReadOnlyList<IMixerInsert> Inserts
     {
@@ -656,7 +677,8 @@ internal sealed class MixerTrackChannel : MixerChannelBase
     {
         get
         {
-            AudioEngine.InvokeRealtimeAmplitude(mTrack, out var amplitude);
+            // 图节点（推子 / 声像之后）—— 不是音源本身，否则表不随推子与声像动。
+            AudioEngine.InvokeRealtimeTrackAmplitude(mTrack, out var amplitude);
             if (amplitude == null)
                 return null;
 
@@ -698,7 +720,9 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         aux.Pan.Modified.Subscribe(OnStateModified);
         aux.IsMute.Modified.Subscribe(OnStateModified);
         aux.IsSolo.Modified.Subscribe(OnStateModified);
-        aux.Name.Modified.Subscribe(OnStateModified);
+        // 改名不是本通道自己的事：别的轨的 send 目标行、所有 output 接线菜单与通道条短名都在显示这个名字。
+        // 所以走"整表重建"（不动音频图），而不是只刷新自己那一条。
+        aux.Name.Modified.Subscribe(OnNameModified);
         aux.Output.Modified.Subscribe(RaiseRoutingChanged);
         aux.Sends.MembershipModified.Subscribe(RaiseRoutingChanged);
         aux.Inserts.MembershipModified.Subscribe(RaiseRoutingChanged);
@@ -760,7 +784,7 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         Bus.Pan.Modified.Unsubscribe(OnStateModified);
         Bus.IsMute.Modified.Unsubscribe(OnStateModified);
         Bus.IsSolo.Modified.Unsubscribe(OnStateModified);
-        Bus.Name.Modified.Unsubscribe(OnStateModified);
+        Bus.Name.Modified.Unsubscribe(OnNameModified);
         Bus.Output.Modified.Unsubscribe(RaiseRoutingChanged);
         Bus.Sends.MembershipModified.Unsubscribe(RaiseRoutingChanged);
         Bus.Inserts.MembershipModified.Unsubscribe(RaiseRoutingChanged);
@@ -768,6 +792,8 @@ internal sealed class MixerAuxChannel : MixerChannelBase
     }
 
     void OnStateModified() => RaiseStateChanged();
+
+    void OnNameModified() => Owner.RaiseChannelsChanged();
 
     void OnPinChanged() => Owner.RaiseChannelsChanged();
 }
@@ -853,6 +879,7 @@ internal sealed class MixerMasterChannel : IMixerChannel
 
     public IMixerSend AddSend(IMixerOutput target) => throw new NotSupportedException("Master cannot have sends");
     public void RemoveSend(IMixerSend send) => throw new NotSupportedException("Master cannot have sends");
+    public bool CanSendTo(IMixerOutput target) => false;
 
     // Master 的插入链挂在哪儿还是 TODO：它不在 Project.Auxes 里，需要一个等价的位置。
     // 在此之前如实说"不支持"，比让用户点出一个异常好。
@@ -882,12 +909,16 @@ internal sealed class MixerSendAdapter(MixerModelAdapter model, Send send) : IMi
     public event Action? Changed;
 }
 
-internal sealed class MixerOutput(MixerOutputKind kind, string id, string name, string shortName, bool isAvailable) : IMixerOutput
+internal sealed class MixerOutput(MixerOutputKind kind, string id, Func<string> name, Func<string> shortName, bool isAvailable) : IMixerOutput
 {
     public MixerOutputKind Kind => kind;
     public string Id => id;
-    public string Name => name;
-    public string ShortName => shortName;
+
+    // 名字是**活读**的，不是构造时拷下来的字符串：AUX 一改名，别处显示这个名字的地方
+    // （send 目标行、output 接线菜单、通道条上的短名）必须立刻跟上。
+    // 早先它在 BuildOutputs 时把名字拷成 string，于是改名只改了 AUX 自己那一条。
+    public string Name => name();
+    public string ShortName => shortName();
     public bool IsAvailable => isAvailable;
 }
 

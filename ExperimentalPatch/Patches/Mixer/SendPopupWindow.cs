@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
@@ -41,8 +43,8 @@ public sealed class SendPopupWindow : Window
         Content = BuildContent();
 
         mChannel.RoutingChanged += Rebuild;
-        foreach (var send in mChannel.Sends)
-            send.Changed += Rebuild;
+        // 不订阅每条 send 的 Changed：Sends 每次读都会新建适配器（引用不等，订阅根本留不住），
+        // 而增删 send 已经由 RoutingChanged 覆盖；改增益更不该重建行——拖动中的滑块会被抽走。
 
         Rebuild();
     }
@@ -99,7 +101,7 @@ public sealed class SendPopupWindow : Window
             Margin = new Thickness(MixerMetrics.PopupPadding, 2, MixerMetrics.PopupPadding, MixerMetrics.PopupPadding),
             IsVisible = mCanAdd,
         };
-        add.Click += AddFirstAvailable;
+        add.Click += () => ShowAddMenu(add);
 
         // 宿主还没接 send（阶段一）：不画"添加"按钮，直接说清为什么 —— 点了没反应的按钮比没有更糟。
         var hint = new TextBlock
@@ -130,16 +132,49 @@ public sealed class SendPopupWindow : Window
         };
     }
 
-    void AddFirstAvailable()
+    // 点「+ 添加发送」→ 弹出**可选目标**菜单，由人挑一条，而不是替他按 Master→AUX1→AUX2 的顺序硬塞。
+    //
+    // 菜单里只列"真能加"的：已加过的、不可用的（Cable）、输出到自己、会成环的，全都不出现。
+    // 一条都不剩 → 显示禁用的「（空）」，说明"没有可加的了"，而不是弹一个空菜单让人以为坏了。
+    void ShowAddMenu(Control anchor)
     {
-        var used = mChannel.Sends;
+        var flyout = new MenuFlyout { Placement = PlacementMode.Top };
+
+        var candidates = Candidates();
+        if (candidates.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem
+            {
+                Header = L("（空）", "(Empty)"),
+                IsEnabled = false,
+            });
+        }
+        else
+        {
+            foreach (var output in candidates)
+            {
+                var target = output;
+                var item = new MenuItem { Header = target.Name };
+                item.Click += (_, _) => mChannel.AddSend(target);
+                flyout.Items.Add(item);
+            }
+        }
+
+        flyout.ShowAt(anchor);
+    }
+
+    // 可选目标 = 可用 + 没加过 + 引擎不会拒绝（见 IMixerChannel.CanSendTo）。
+    List<IMixerOutput> Candidates()
+    {
+        var result = new List<IMixerOutput>();
+
         foreach (var output in mOutputs)
         {
-            if (!output.IsAvailable)
+            if (!output.IsAvailable || !mChannel.CanSendTo(output))
                 continue;
 
             bool already = false;
-            foreach (var send in used)
+            foreach (var send in mChannel.Sends)
             {
                 if (send.Target.Id == output.Id)
                 {
@@ -148,12 +183,11 @@ public sealed class SendPopupWindow : Window
                 }
             }
 
-            if (already)
-                continue;
-
-            mChannel.AddSend(output);
-            return;
+            if (!already)
+                result.Add(output);
         }
+
+        return result;
     }
 
     void Rebuild()
@@ -222,8 +256,6 @@ public sealed class SendPopupWindow : Window
     {
         base.OnClosed(e);
         mChannel.RoutingChanged -= Rebuild;
-        foreach (var send in mChannel.Sends)
-            send.Changed -= Rebuild;
     }
 
     string L(string zh, string en)

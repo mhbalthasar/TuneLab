@@ -69,7 +69,7 @@ public sealed class Mixer
         }
     }
 
-    // 取某个节点的峰值电平（dB）。AUX / Master 的表用它。
+    // 取某个节点的峰值电平（dB）。调音台的表用它（Track / AUX / Master 同一口径）。
     // 停止播放时引擎不渲染，这里读到的会是最后一帧 —— 调用方（宿主）负责判定"现在没在播"。
     public bool TryGetPeakDb(string nodeId, out double leftDb, out double rightDb)
     {
@@ -143,7 +143,9 @@ public sealed class Mixer
                     ApplyGain(state, target, targetOffset, count);
             }
 
-            if (node.Kind is MixNodeKind.Aux or MixNodeKind.Master)
+            // 电平抽头：Track / AUX / Master 同一口径 —— 推子与声像**之后**、插入链之前。
+            // Track 也要测：通道条的表必须能反映声像（左右两根柱子各走各的）。
+            if (node.Kind is MixNodeKind.Track or MixNodeKind.Aux or MixNodeKind.Master)
                 MeasurePeak(target, targetOffset, count, runtime, i);
 
             if (!hasSignal)
