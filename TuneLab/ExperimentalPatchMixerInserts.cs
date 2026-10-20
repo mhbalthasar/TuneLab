@@ -312,7 +312,7 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
     // 真正打开面板时才查。这里不做往返，免得"建行"这种热路径被 IO 拖住。
     public bool HasParameters => factory.TryGetLive(slot.Id, out var insert) && insert != null;
 
-    public void OpenParameters()
+    public void OpenParameters(string context)
     {
         if (!factory.TryGetLive(slot.Id, out var insert) || insert == null)
         {
@@ -320,7 +320,10 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
             return;
         }
 
-        InsertEditorHost.ShowParameters(slot.Id, slot.Name.Value, insert);
+        // context 由界面拼（「轨道名 — FX 名」）。缺了也照开，只是抬头退化成插件名。
+        string title = string.IsNullOrWhiteSpace(context) ? slot.Name.Value : context;
+
+        InsertEditorHost.ShowParameters(slot.Id, title, insert);
     }
 
     public event Action? Changed;
@@ -347,5 +350,6 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
         Changed?.Invoke();
     }
 }
+
 
 

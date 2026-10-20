@@ -406,6 +406,26 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 
+    // 把参数改动"冲"进处理器。
+    //
+    // 【为什么需要】VST3 的参数改动走 processor 的 IParameterChanges 队列，**只有 process()
+    // 才会消费它**。播放时音频线程每块都在 process，改动自然生效；但停止时没有任何 process，
+    // 于是改动一直排在队列里、读回来还是旧值 —— 用户看到的就是"调完几秒后自动变回去"。
+    // 实测（探针）：SetParameter 之后 process 一次，读回值才变成新值。
+    //
+    // 【线程】只允许在**没在播放**时调（宿主负责判断）。那条路上没有音频线程在跑，
+    // 所以这里不需要加锁，也不会和实时处理抢插件。
+    public void FlushParameterChanges()
+    {
+        if (mDisposed)
+            return;
+
+        const int frames = 512;
+        var silence = new float[frames * 2];
+
+        Process(silence, 0, frames);
+    }
+
     // 窗口尺寸变了：把客户区告诉插件（IPlugView::onSize）。
     public void ResizeEditor(int width, int height)
     {
@@ -485,6 +505,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 }
+
 
 
 

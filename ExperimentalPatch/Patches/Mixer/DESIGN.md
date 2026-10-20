@@ -782,6 +782,34 @@ VST3 的 IEditController、VST2 的 getParameter 一直都在。所以「界面�
 菜单的可用性：`IMixerInsert.HasParameters`（有活实例即为真）。这样"插件没 GUI 但有参数"
 的槽位也能用 —— 正是这个功能存在的意义。
 
+#### 5.7.13 插件列表里每个插件出现两次：真装了两份（2026-10-21）
+
+**不是扫描 bug**：`%APPDATA%\TuneLab\insert-plugins.json` 里 186 条记录、121 个唯一
+PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的装在两个目录里
+（例如 `C:\Program Files\Common Files\VST3\AnSpec.vst3` 与
+`Y:\Insts\VSTEffects\VST3\09_Analysis_Tools\AnSpec.vst3\...`，VST2 同理）。
+这不是软链接，是两份实体。
+
+**为什么要排重**：`PluginId`（VST3 = bundle 名，VST2 = 文件名）**就是工程里持久化的标识**，
+两条同 PluginId 的记录对工程来说是同一个东西。列两条既没有信息量，还会让人以为装了两套
+不同的插件。
+
+**做法**：按 `(格式, PluginId)` 去重，保留扫描顺序里的第一条（= 路径清单里靠前的那个）。
+两处都排：`Scan` 落盘前，以及 `CachedPlugins` 读取时（老缓存不重扫也能立刻变干净）。
+
+#### 5.7.14 多平台：与 vendored 包装层对齐（2026-10-21）
+
+`OwnVST3.cs` 里已经写好了三平台的文件名：Windows `ownvst3.tlhost.dll`、
+Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 现在与它
+**逐字一致**（之前 Linux/macOS 写成了 `ownvst3.tlhost.so`，永远找不到）。
+
+查找顺序（都在 `AppContext.BaseDirectory` 下）：同目录 → `runtimes/<rid>/native/`
+（NuGet 惯例）→ `native/<rid>/` → 环境变量 `TL_VST3_NATIVE`。
+
+`InsertHost.csproj` 的 RID 选择也不再写死 x64：`$(RuntimeIdentifier)` → SDK 给的
+`$(NETCoreSdkPortableRuntimeIdentifier)`（覆盖 win/linux/osx 的 x64 与 arm64）→ 平台兜底。
+往 `Native/<rid>/` 里放对应平台的二进制即可，不需要改代码。
+
 **顺带**：VST2 的窗口开在桥进程里，`SetForegroundWindow` 会被 Windows 静默拒绝
 （只有前台进程或获它授权的进程才能抢前台），表现是"窗口开了但藏在宿主下面"。
 宿主现在在发 `OpenEditor` 之前调 `AllowSetForegroundWindow(桥的 pid)`，
@@ -1137,6 +1165,7 @@ VST3 的 IEditController、VST2 的 getParameter 一直都在。所以「界面�
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

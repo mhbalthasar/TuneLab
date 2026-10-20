@@ -34,6 +34,7 @@ public sealed class InsertParameterWindow : Window
     }
 
     readonly ParameterSource mSource;
+    readonly string mHeaderText;
     readonly StackPanel mRows = new() { Spacing = 4 };
     readonly TextBlock mEmpty = new();
     readonly List<Row> mRowViews = [];
@@ -56,7 +57,9 @@ public sealed class InsertParameterWindow : Window
     {
         mSource = source;
 
+        // 抬头只说"哪条轨道的哪个 FX"，别堆功能说明。
         Title = title;
+        mHeaderText = title;
         Width = 620;
         Height = 520;
         MinWidth = 420;
@@ -79,7 +82,17 @@ public sealed class InsertParameterWindow : Window
                     .Select(p => new Parameter(p.Id, p.Name, p.MinValue, p.MaxValue, p.CurrentValue,
                         p.DefaultValue is >= double.MinValue and <= double.MaxValue ? p.DefaultValue : null))
                     .ToList(),
-                Write = (id, value) => vst3.SetParameter(id, value),
+                Write = (id, value) =>
+                {
+                    vst3.SetParameter(id, value);
+
+                    // VST3 的参数改动要等一次 process() 才被处理器消费。播放中音频线程
+                    // 每块都在跑，自然就生效；停止时没人跑，改动会一直排队、读回来还是旧值
+                    // （用户报的"调完几秒后自动变回去"）。所以停止时补一块静音。
+                    // 只在"没在播放"时补：播放中碰插件会和音频线程抢，得不偿失。
+                    if (!AudioEngine.IsPlaying)
+                        vst3.FlushParameterChanges();
+                },
                 PollInterval = TimeSpan.FromMilliseconds(200),
             },
             Vst2Insert vst2 => new ParameterSource
@@ -112,9 +125,10 @@ public sealed class InsertParameterWindow : Window
             Padding = new Thickness(10, 6),
             Child = new TextBlock
             {
-                Text = "由 TuneLab 接管：参数面板（不依赖插件界面）",
+                Text = mHeaderText,
                 FontSize = 11,
                 Foreground = new SolidColorBrush(Color.FromRgb(210, 210, 216)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
             },
         };
 
@@ -191,13 +205,16 @@ public sealed class InsertParameterWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
 
+        // 高度给足：Avalonia 的 Slider 自带 20px 的滑块，压到 20 会把轨道和拇指裁掉
+        // （用户报"sliderbar 高度明显有问题"就是这个）。26 刚好容下拇指 + 轨道。
         var slider = new Slider
         {
             Minimum = min,
             Maximum = max,
             Value = Math.Clamp(parameter.Value, min, max),
             VerticalAlignment = VerticalAlignment.Center,
-            Height = 20,
+            Height = 26,
+            Margin = new Thickness(0, 0, 10, 0),
         };
 
         var row = new Row { Id = parameter.Id, Slider = slider, ValueText = value };
@@ -218,7 +235,12 @@ public sealed class InsertParameterWindow : Window
         slider.PointerPressed += (_, _) => row.Dragging = true;
         slider.PointerReleased += (_, _) => row.Dragging = false;
 
-        var cell = new Grid { ColumnDefinitions = new ColumnDefinitions("220,*,74") };
+        // 每行 30：与 FX 浮窗的行高同一口径，滑杆不会贴到上下边框。
+        var cell = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("210,*,74"),
+            Height = 30,
+        };
         Grid.SetColumn(name, 0);
         Grid.SetColumn(slider, 1);
         Grid.SetColumn(value, 2);
@@ -322,4 +344,11 @@ public sealed class InsertParameterWindow : Window
             : value.ToString("0.###");
     }
 }
+
+
+
+
+
+
+
 

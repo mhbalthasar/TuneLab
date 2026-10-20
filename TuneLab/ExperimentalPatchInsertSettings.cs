@@ -94,7 +94,10 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         get
         {
             var state = Load();
-            return state.Cache.Select(ToEntry).ToList();
+
+            // 老缓存里可能有重复（同一插件装在两处）。这里也排一次，
+            // 免得用户不重新扫描就一直看到两份。
+            return Dedupe(state.Cache.Select(ToEntry).ToList());
         }
     }
 
@@ -176,6 +179,12 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 Locator = p.Locator,
             }));
 
+        // 同一台机器上"同一个插件装了两份"很常见（系统目录一份 + 自己的收藏目录一份）。
+        // 它们的 PluginId 相同 —— 而 PluginId 正是工程里存的标识，重复条目只会让菜单出现
+        // 两条一模一样的项，且选中哪一条都指回同一个 id。按 (格式, PluginId) 排重，
+        // 保留扫描顺序里的第一条（= 用户路径清单里靠前的那个）。
+        entries = Dedupe(entries);
+
         state.Cache = entries.Select(ToCached).ToList();
         state.LastScanUtc = DateTime.UtcNow.ToString("u");
 
@@ -184,6 +193,22 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         mLastScanText = DateTime.Now.ToString("G");
 
         return entries;
+    }
+
+    // 按 (格式, PluginId) 去重。PluginId 是工程里持久化的标识，所以"同名同格式"的两条
+    // 对工程来说根本就是同一个东西 —— 列两条既没用又会让人以为装了两套不同的插件。
+    static List<InsertPluginEntry> Dedupe(List<InsertPluginEntry> entries)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unique = new List<InsertPluginEntry>(entries.Count);
+
+        foreach (var entry in entries)
+        {
+            if (seen.Add(entry.Format + "|" + entry.PluginId))
+                unique.Add(entry);
+        }
+
+        return unique;
     }
 
     static readonly Vst3Backend sVst3Backend = new();
@@ -294,4 +319,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         public string Locator { get; set; } = string.Empty;
     }
 }
+
+
+
 

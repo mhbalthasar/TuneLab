@@ -74,7 +74,7 @@ internal static class InsertEditorHost
     // 同一个槽位只留一扇，再点就激活已有的那扇。
     static readonly Dictionary<string, InsertParameterWindow> sParameterWindows = [];
 
-    public static void ShowParameters(string slotId, string pluginName, IMixInsert insert)
+    public static void ShowParameters(string slotId, string title, IMixInsert insert)
     {
         if (sParameterWindows.TryGetValue(slotId, out var existing) && !existing.IsVisible)
         {
@@ -88,7 +88,7 @@ internal static class InsertEditorHost
             return;
         }
 
-        var window = InsertParameterWindow.Create(pluginName, insert);
+        var window = InsertParameterWindow.Create(title, insert);
         sParameterWindows[slotId] = window;
 
         window.Closed += (_, _) => sParameterWindows.Remove(slotId);
@@ -139,6 +139,8 @@ internal static class InsertEditorHost
         sWindows.Clear();
     }
 }
+
+
 
 
 

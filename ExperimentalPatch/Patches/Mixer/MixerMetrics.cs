@@ -1,4 +1,4 @@
-namespace TuneLab.ExperimentalPatch.Patches.Mixer;
+﻿namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
 // 混音台的尺寸常量，集中一处：布局散落的魔数最难受，也要跟 DESIGN.md §6.1 保持一致。
 internal static class MixerMetrics
@@ -30,7 +30,8 @@ internal static class MixerMetrics
 
     // 浮窗（send / FX / output 菜单）。
     public const double PopupWidth = 380;
-    public const double PopupRowHeight = 26;
+    public const double PopupRowHeight = 30;
     public const double PopupHeaderHeight = 30;
     public const double PopupPadding = 10;
 }
+

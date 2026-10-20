@@ -273,10 +273,10 @@ public sealed class FxPopupWindow : Window
 
         var managed = new MenuItem
         {
-            Header = L("TuneLab 接管（参数面板）", "TuneLab controls (parameter panel)"),
+            Header = L("参数面板", "Parameter panel"),
             IsEnabled = insert.HasParameters,
         };
-        managed.Click += (_, _) => insert.OpenParameters();
+        managed.Click += (_, _) => insert.OpenParameters(mChannel.Name + " — " + insert.Name);
 
         menu.Items.Add(gui);
         menu.Items.Add(managed);
@@ -325,7 +325,7 @@ public sealed class FxPopupWindow : Window
         {
             Text = L("旁通", "Bypass"),
             Width = 46,
-            Height = 18,
+            Height = 20,
             IsChecked = insert.IsBypassed,
         };
 
@@ -342,7 +342,7 @@ public sealed class FxPopupWindow : Window
         {
             Text = L("界面", "UI"),
             Width = 40,
-            Height = 18,
+            Height = 20,
             IsEnabled = insert.HasEditor || insert.HasParameters,
         };
         // 左键：有插件 GUI 就开 GUI；没有 GUI（或 GUI 打不开）就走参数面板 ——
@@ -352,7 +352,7 @@ public sealed class FxPopupWindow : Window
             if (insert.HasEditor)
                 insert.OpenEditor();
             else
-                insert.OpenParameters();
+                insert.OpenParameters(mChannel.Name + " — " + insert.Name);
         };
 
         // 右键：两条路。
@@ -362,10 +362,10 @@ public sealed class FxPopupWindow : Window
         // 干脆没做界面），但参数一直是能读能写的。
         editor.ContextMenu = BuildEditorMenu(insert);
 
-        var remove = new ChromeButton { Text = "✕", Width = 18, Height = 18, HoverColor = Palette.CloseHover };
+        var remove = new ChromeButton { Text = "✕", Width = 20, Height = 20, HoverColor = Palette.CloseHover };
         remove.Click += () => mChannel.RemoveInsert(insert);
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("16,*,46,40,18"), Height = MixerMetrics.PopupRowHeight };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("18,*,48,42,20"), Height = MixerMetrics.PopupRowHeight };
         Grid.SetColumn(order, 0);
         Grid.SetColumn(nameRow, 1);
         Grid.SetColumn(bypass, 2);
@@ -388,6 +388,11 @@ public sealed class FxPopupWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
+
+
+
 
 
 

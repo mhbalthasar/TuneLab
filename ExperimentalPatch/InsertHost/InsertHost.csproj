@@ -48,7 +48,10 @@
        目前仓库里只有 win-x64 一份；把别的平台的二进制丢进对应目录即可，不用改代码。
        （ownvst3 上游支持 win/linux/osx 的 x64 与 arm64，见 Vendored/README.md） -->
   <PropertyGroup>
+    <!-- 优先用显式 RID；否则用 SDK 给的"构建机 RID"（win-x64 / win-arm64 / linux-arm64 /
+         osx-arm64 … 全都覆盖，不再写死 x64）。 -->
     <Vst3NativeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and '$(NETCoreSdkPortableRuntimeIdentifier)' != ''">$(NETCoreSdkPortableRuntimeIdentifier)</Vst3NativeRid>
     <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</Vst3NativeRid>
     <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</Vst3NativeRid>
     <Vst3NativeRid Condition="'$(Vst3NativeRid)' == ''">linux-x64</Vst3NativeRid>
@@ -59,4 +62,5 @@
   </ItemGroup>
 
 </Project>
+
 

@@ -28,10 +28,12 @@ public sealed class Vst3Backend : IInsertBackend
     // 不需要改代码（DESIGN.md §5.4）。
     public const string NativeBaseName = "ownvst3.tlhost";
 
+    // 文件名要与 vendored 包装层（OwnVST3.cs 的 GetNativeLibraryName）一致：
+    // Windows 是重命名过的 ownvst3.tlhost.dll，Linux/macOS 用上游的 libownvst3.*。
     public static string NativeFileName =>
         OperatingSystem.IsWindows() ? NativeBaseName + ".dll" :
-        OperatingSystem.IsMacOS() ? NativeBaseName + ".dylib" :
-        NativeBaseName + ".so";
+        OperatingSystem.IsMacOS() ? "libownvst3.dylib" :
+        "libownvst3.so";
 
     // 运行时标识（与 .NET 的 RID 同名）：win-x64 / win-arm64 / win-x86 /
     // linux-x64 / linux-arm64 / osx-x64 / osx-arm64。
@@ -92,7 +94,12 @@ public sealed class Vst3Backend : IInsertBackend
         if (File.Exists(beside))
             return beside;
 
-        // 2. native/<rid>/ 子目录（按平台分目录放，免得 arm64/x64 的同名文件打架）
+        // 2. runtimes/<rid>/native/（NuGet 惯例，vendored 包装层也认这个布局）
+        string packed = Path.Combine(AppContext.BaseDirectory, "runtimes", NativeRid, "native", NativeFileName);
+        if (File.Exists(packed))
+            return packed;
+
+        // 3. native/<rid>/（本仓库自己的分目录放法，免得 arm64/x64 的同名文件打架）
         string perRid = Path.Combine(AppContext.BaseDirectory, "native", NativeRid, NativeFileName);
         if (File.Exists(perRid))
             return perRid;
@@ -399,6 +406,8 @@ public sealed class Vst3Backend : IInsertBackend
     public InsertPluginInfo? Resolve(string pluginId)
         => ListPlugins(probeInstruments: false).FirstOrDefault(p => p.PluginId == pluginId);
 }
+
+
 
 
 

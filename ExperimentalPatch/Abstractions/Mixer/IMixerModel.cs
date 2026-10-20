@@ -182,9 +182,10 @@ public interface IMixerInsert
     // 插件暴露了可枚举的参数吗？（TuneLab 接管的参数面板据此决定是否可用）
     bool HasParameters { get; }
 
-    // 由 TuneLab 自己画参数面板：把插件的参数列成滑杆/数值，不依赖插件 GUI。
+    // 参数面板：宿主自己把插件的参数列成滑杆/数值，不依赖插件 GUI。
     // 插件 GUI 画不出来（缺依赖、没有 GL、干脆没有界面）时，这是唯一的调节途径。
-    void OpenParameters();
+    // context = 窗口抬头用的「哪条轨道的哪个 FX」，由界面拼好传进来。
+    void OpenParameters(string context);
 
     event Action? Changed;
 }
@@ -213,4 +214,5 @@ public interface IMixerInsertFormat
     // 不可用时给一句原因（"仅 Windows" / "尚未实现"），直接显示在菜单里。
     string? UnavailableReason { get; }
 }
+
 
