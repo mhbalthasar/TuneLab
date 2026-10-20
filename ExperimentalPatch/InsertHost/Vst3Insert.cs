@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using OwnVST3Host;
 using TuneLab.ExperimentalPatch.MixerEngine;
 
@@ -191,6 +192,33 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
             mNeedsPump = false;
         }
     }
+
+    /// <summary>
+    /// 我们给的宿主窗口里挂了多少个子窗口。0 = 插件声称成功却什么也没画进来
+    /// （实测 Sound Delay：CreateEditor 返回 true、没有任何子窗口、泵消息也没用）。
+    /// 宿主据此给用户一句明话，而不是留一个空窗。
+    /// </summary>
+    public int ChildWindowCount(IntPtr parent)
+    {
+        if (parent == IntPtr.Zero)
+            return 0;
+
+        int count = 0;
+
+        bool Enum(IntPtr hwnd, IntPtr lParam)
+        {
+            count++;
+            return true;
+        }
+
+        EnumChildWindows(parent, Enum, IntPtr.Zero);
+        return count;
+    }
+
+    [DllImport("user32.dll")]
+    static extern bool EnumChildWindows(IntPtr parent, EnumChildProc proc, IntPtr lParam);
+
+    delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
 
     public void CloseEditor()
     {

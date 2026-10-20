@@ -186,8 +186,19 @@ public sealed class Vst3EditorWindow : Window, IInsertEditorWindow
 
         if (!open.Wait(EditorOpenTimeout))
         {
-            HostLog.Warning($"insert: '{mInsert.Name}' did not finish opening its editor "
-                          + $"within {EditorOpenTimeout.TotalSeconds:0.#}s; the window stays empty");
+            // 插件在自己的 CreateEditor 里自锁了。实测的典型：BC Chorus 4 找不到它的
+            // Skins/default.xml，走"请选择 skin 文件"那条路弹 GetOpenFileName 模态框 ——
+            // 那个框跑在**调用 CreateEditor 的这条线程**的消息队列上，而这条线程正卡在
+            // CreateEditor 里等它。窗口过程全程只收到一条 WM_PAINT，一片死寂。
+            // 这不是宿主能解的（REAPER 之类是在另一条线程上跑插件消息循环，我们没有这个余量），
+            // 但至少要说清楚是插件卡在自己的界面上，而不是让我们看起来像是崩了。
+            HostLog.Warning($"insert: '{mInsert.Name}' deadlocked inside its own CreateEditor "
+                          + $"after {EditorOpenTimeout.TotalSeconds:0.#}s (it is waiting for a window or "
+                          + "message that only its own code can service — commonly a missing asset, "
+                          + "e.g. a skin file the install does not contain)");
+
+            ReplaceHint($"插件卡在自己的界面上了：{mInsert.Name}"
+                      + "（通常是插件自身资源缺失，重新安装该插件一般能解决）");
             return;
         }
 
@@ -196,6 +207,16 @@ public sealed class Vst3EditorWindow : Window, IInsertEditorWindow
             // 插件有界面却建不出来（依赖缺失 / 版本不兼容）。提示文字换成明话。
             HostLog.Warning($"insert: '{mInsert.Name}' reported HasEditor=true but CreateEditor returned false");
             ReplaceHint($"这个插件没有打开界面：{mInsert.Name}");
+            return;
+        }
+
+        // CreateEditor 返回了成功，但窗口里可能什么都没有（实测 Sound Delay：返回 true、
+        // 0 个子窗口、泵消息 1 秒也没有）。native 库那侧没有报错，这里照实说。
+        if (mInsert.ChildWindowCount(mParent) == 0)
+        {
+            HostLog.Warning($"insert: '{mInsert.Name}' returned success but created no GUI "
+                          + "(its framework initialised nothing into our window)");
+            ReplaceHint($"插件没有画出界面：{mInsert.Name}");
             return;
         }
 
@@ -232,8 +253,14 @@ public sealed class Vst3EditorWindow : Window, IInsertEditorWindow
 
     void ReplaceHint(string text)
     {
-        if (mHint != null)
-            mHint.Text = text;
+        if (mHint == null)
+            return;
+
+        mHint.Text = text;
+        // 插件卡死/没画出界面时要说两行，所以允许换行 + 居中铺开。
+        mHint.TextWrapping = TextWrapping.Wrap;
+        mHint.TextAlignment = TextAlignment.Center;
+        mHint.Margin = new Thickness(24);
     }
 
     void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
