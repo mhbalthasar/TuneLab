@@ -1,4 +1,4 @@
-namespace TuneLab.ExperimentalPatch.Abstractions;
+﻿namespace TuneLab.ExperimentalPatch.Abstractions;
 
 // 混音台的契约：补丁向宿主索取「当时的混音状态」，宿主负责把 internal 的 Track / Project 翻过来。
 //
@@ -179,6 +179,13 @@ public interface IMixerInsert
     // 打开插件自己的设置窗。没有界面时是空实现。
     void OpenEditor();
 
+    // 插件暴露了可枚举的参数吗？（TuneLab 接管的参数面板据此决定是否可用）
+    bool HasParameters { get; }
+
+    // 由 TuneLab 自己画参数面板：把插件的参数列成滑杆/数值，不依赖插件 GUI。
+    // 插件 GUI 画不出来（缺依赖、没有 GL、干脆没有界面）时，这是唯一的调节途径。
+    void OpenParameters();
+
     event Action? Changed;
 }
 
@@ -206,3 +213,4 @@ public interface IMixerInsertFormat
     // 不可用时给一句原因（"仅 Windows" / "尚未实现"），直接显示在菜单里。
     string? UnavailableReason { get; }
 }
+

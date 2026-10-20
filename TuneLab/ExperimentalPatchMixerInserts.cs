@@ -308,6 +308,21 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
         InsertEditorHost.Show(slot.Id, slot.Name.Value, insert);
     }
 
+    // 有活实例就认为"可以问参数"：VST3 的 Parameters 是本地调用，VST2 的走桥但只在
+    // 真正打开面板时才查。这里不做往返，免得"建行"这种热路径被 IO 拖住。
+    public bool HasParameters => factory.TryGetLive(slot.Id, out var insert) && insert != null;
+
+    public void OpenParameters()
+    {
+        if (!factory.TryGetLive(slot.Id, out var insert) || insert == null)
+        {
+            HostLog.Warning($"insert: '{slot.Name.Value}' has no live instance; cannot show its parameters");
+            return;
+        }
+
+        InsertEditorHost.ShowParameters(slot.Id, slot.Name.Value, insert);
+    }
+
     public event Action? Changed;
 
     // 绑定到扫描缓存里选中的那个插件（IInsertPluginTarget）。
@@ -332,4 +347,5 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
         Changed?.Invoke();
     }
 }
+
 

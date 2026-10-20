@@ -762,6 +762,26 @@ insert: OpenGL 1.1.0 Microsoft Corporation GDI Generic — editors that need Ope
 所以 VST3 的插件级断言只能靠"宿主侧的环境探测 + 结果判断"间接归因；
 VST2 那条路能直接把插件自己的话贴出来。
 
+#### 5.7.12 「界面」键右键：插件 GUI / TuneLab 接管（2026-10-21）
+
+插件 GUI 画不出来时（缺依赖、没有可用 OpenGL、干脆没做界面），参数并不是取不到 ——
+VST3 的 IEditController、VST2 的 getParameter 一直都在。所以「界面」键做成两条路：
+
+- **左键**：有插件 GUI 就开 GUI；没有就走参数面板（别留一个点了没反应的键）。
+- **右键**：两项 ——「插件 GUI」与「TuneLab 接管（参数面板）」。
+
+**参数面板**（`TuneLab/ExperimentalPatchInsertParameterEditor.cs`）由宿主自己画：
+每个参数一行 = 名字 + 滑杆 + 数值（VST3 还多一个「↺ 回默认」）。思路与 JSFX 的
+非 @gfx 渲染一致 —— 不碰插件的窗口，只读写它的参数。
+
+- 参数来源：VST3 `Parameters`（本地调用）；VST2 `GetParameters()`（过桥，一次往返）。
+- 刷新：VST3 200ms、VST2 1.5s（过桥别太勤）。**正在拖的那一根不覆盖**（`Dragging`），
+  轮询回填时置 `Applying` 以免把同一个值再写回插件（否则每秒几十次无意义往返）。
+- 同一槽位只留一扇窗，再点就激活已有的。
+
+菜单的可用性：`IMixerInsert.HasParameters`（有活实例即为真）。这样"插件没 GUI 但有参数"
+的槽位也能用 —— 正是这个功能存在的意义。
+
 **顺带**：VST2 的窗口开在桥进程里，`SetForegroundWindow` 会被 Windows 静默拒绝
 （只有前台进程或获它授权的进程才能抢前台），表现是"窗口开了但藏在宿主下面"。
 宿主现在在发 `OpenEditor` 之前调 `AllowSetForegroundWindow(桥的 pid)`，
@@ -1117,6 +1137,7 @@ VST2 那条路能直接把插件自己的话贴出来。
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

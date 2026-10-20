@@ -68,6 +68,34 @@ internal static class InsertEditorHost
         Log.Warning($"insert: '{pluginName}' has an unhandled format; cannot open an editor");
     }
 
+    // ── TuneLab 接管的参数面板 ──
+    //
+    // 与插件 GUI 完全独立的一条路：不碰插件的窗口，只读写它的参数。
+    // 同一个槽位只留一扇，再点就激活已有的那扇。
+    static readonly Dictionary<string, InsertParameterWindow> sParameterWindows = [];
+
+    public static void ShowParameters(string slotId, string pluginName, IMixInsert insert)
+    {
+        if (sParameterWindows.TryGetValue(slotId, out var existing) && !existing.IsVisible)
+        {
+            sParameterWindows.Remove(slotId);
+            existing = null;
+        }
+
+        if (existing != null)
+        {
+            existing.Activate();
+            return;
+        }
+
+        var window = InsertParameterWindow.Create(pluginName, insert);
+        sParameterWindows[slotId] = window;
+
+        window.Closed += (_, _) => sParameterWindows.Remove(slotId);
+
+        window.Show();
+    }
+
     static void Register(string slotId, IInsertEditorWindow shell)
     {
         shell.WindowClosed += () => sWindows.Remove(slotId);
@@ -111,6 +139,7 @@ internal static class InsertEditorHost
         sWindows.Clear();
     }
 }
+
 
 
 

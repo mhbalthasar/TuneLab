@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Avalonia;
@@ -263,6 +263,26 @@ public sealed class FxPopupWindow : Window
         mRows.IsVisible = mChannel.Inserts.Count > 0;
     }
 
+    // 「界面」键的右键菜单：插件自己的 GUI，或者由 TuneLab 接管画参数。
+    ContextMenu BuildEditorMenu(IMixerInsert insert)
+    {
+        var menu = new ContextMenu();
+
+        var gui = new MenuItem { Header = L("插件 GUI", "Plugin GUI") };
+        gui.Click += (_, _) => insert.OpenEditor();
+
+        var managed = new MenuItem
+        {
+            Header = L("TuneLab 接管（参数面板）", "TuneLab controls (parameter panel)"),
+            IsEnabled = insert.HasParameters,
+        };
+        managed.Click += (_, _) => insert.OpenParameters();
+
+        menu.Items.Add(gui);
+        menu.Items.Add(managed);
+        return menu;
+    }
+
     Control BuildRow(IMixerInsert insert, int index)
     {
         var order = new TextBlock
@@ -323,9 +343,24 @@ public sealed class FxPopupWindow : Window
             Text = L("界面", "UI"),
             Width = 40,
             Height = 18,
-            IsEnabled = insert.HasEditor,
+            IsEnabled = insert.HasEditor || insert.HasParameters,
         };
-        editor.Click += insert.OpenEditor;
+        // 左键：有插件 GUI 就开 GUI；没有 GUI（或 GUI 打不开）就走参数面板 ——
+        // 别让用户对着一个点了没反应的键。右键菜单里两条路都列着，随时可换。
+        editor.Click += () =>
+        {
+            if (insert.HasEditor)
+                insert.OpenEditor();
+            else
+                insert.OpenParameters();
+        };
+
+        // 右键：两条路。
+        //   1. 插件 GUI（与左键相同）；
+        //   2. TuneLab 接管 —— 宿主自己把参数画成滑杆，不依赖插件界面。
+        // 第二条存在的理由很实在：插件 GUI 可能根本画不出来（缺依赖 / 没有可用的 OpenGL /
+        // 干脆没做界面），但参数一直是能读能写的。
+        editor.ContextMenu = BuildEditorMenu(insert);
 
         var remove = new ChromeButton { Text = "✕", Width = 18, Height = 18, HoverColor = Palette.CloseHover };
         remove.Click += () => mChannel.RemoveInsert(insert);
@@ -353,3 +388,6 @@ public sealed class FxPopupWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
+
