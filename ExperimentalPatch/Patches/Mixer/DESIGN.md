@@ -740,6 +740,28 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 - 在 `TuneLab.exe`（以及桥进程目录）旁放一份 Mesa3D 的软件 `opengl32.dll`（llvmpipe），
   它会提供 GL 4.x。注意 VST2 的窗口在桥进程里，那份目录也要放。
 
+**宿主现在会自己说清楚这件事**：`InsertHost/OpenGlProbe.cs` 在第一次打开编辑器时建一个
+隐藏窗口 + GL 上下文读 `GL_VERSION`，结果缓存。低于 1.3（或连上下文都建不出来）就写一条
+warning：
+
+```
+insert: OpenGL 1.1.0 Microsoft Corporation GDI Generic — editors that need OpenGL 1.3+
+(DPF/NanoVG, e.g. ZamDynamicEQ / Dragonfly) will render blank on this machine
+```
+
+这样"白窗"在日志里能直接对上原因，不必再从插件 stderr 里翻断言。
+
+**两类日志怎么分**：
+
+| 来源 | 能看到吗 | 内容 |
+|---|---|---|
+| 宿主自己 | 是（宿主日志） | 打开/关闭、超时、`IsEditorOpen`、GL 版本 |
+| 插件断言（VST3，进程内） | **否** | 走进程 stderr，GUI 进程没有控制台，读不到 |
+| 插件断言（VST2，桥进程） | 是 | 桥的 stderr 被客户端接管，失败时拼进 `insert:` 日志 |
+
+所以 VST3 的插件级断言只能靠"宿主侧的环境探测 + 结果判断"间接归因；
+VST2 那条路能直接把插件自己的话贴出来。
+
 **顺带**：VST2 的窗口开在桥进程里，`SetForegroundWindow` 会被 Windows 静默拒绝
 （只有前台进程或获它授权的进程才能抢前台），表现是"窗口开了但藏在宿主下面"。
 宿主现在在发 `OpenEditor` 之前调 `AllowSetForegroundWindow(桥的 pid)`，
@@ -1095,6 +1117,7 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

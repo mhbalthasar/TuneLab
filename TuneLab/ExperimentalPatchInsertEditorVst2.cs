@@ -43,14 +43,18 @@ public sealed class Vst2EditorShell : IInsertEditorWindow
 
         if (!ok)
         {
-            Log.Warning($"insert: cannot open the editor of '{mPluginName}' — {reason ?? "the plugin refused"}");
+            // 把桥进程的 stderr 一起带上：插件自己的断言（比如 DPF 的
+            // "Failed to create NanoVG context"）就在那里 —— 没有它，"打不开"等于没说。
+            string detail = mInsert.BridgeError is { Length: > 0 } bridge ? " | " + bridge : string.Empty;
+            Log.Warning($"insert: cannot open the editor of '{mPluginName}' — {reason ?? "the plugin refused"}{detail}");
             return;
         }
 
         if (children == 0)
         {
+            string detail = mInsert.BridgeError is { Length: > 0 } bridge ? " | " + bridge : string.Empty;
             Log.Warning($"insert: '{mPluginName}' created no GUI "
-                      + "(the bridge window is empty; usually a missing runtime dependency)");
+                      + "(the bridge window is empty; usually a missing runtime dependency)" + detail);
             return;
         }
 
@@ -70,3 +74,5 @@ public sealed class Vst2EditorShell : IInsertEditorWindow
 
     public void Show() { }
 }
+
+

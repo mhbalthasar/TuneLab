@@ -75,11 +75,47 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
 
         StartPump();
 
+        LogOpenGlOnce();
+
         // 窗口可能刚建好还没显示，所以**第一次泵消息时**再取差集并置顶（见 StartPump）。
         mWindowBefore = before;
         TryRaise();
 
         return true;
+    }
+
+    // 把"这台机器的 OpenGL 够不够用"写进日志（只写一次）。
+    //
+    // 【为什么要有这一条】DPF / NanoVG 的插件（ZamDynamicEQ、Dragonfly 系列）界面必须走
+    // OpenGL 1.3+。Windows 自带的软件渲染器只到 1.1，于是在虚拟机/远程桌面上它们的编辑器
+    // 会画成白色块，而插件的断言打在它自己的 stderr 上 —— 宿主读不到。
+    // 开一次 GL 上下文读 GL_VERSION，就能把"是插件坏了"和"这台机器没 GL"分开。
+    static bool sOpenGlLogged;
+
+    static void LogOpenGlOnce()
+    {
+        if (sOpenGlLogged)
+            return;
+
+        sOpenGlLogged = true;
+
+        string? version = OpenGlProbe.Version;
+
+        if (version == null)
+        {
+            HostLog.Warning("insert: could not create an OpenGL context; "
+                          + "editors that need OpenGL (DPF/NanoVG) may render blank");
+            return;
+        }
+
+        if (!OpenGlProbe.SupportsAtLeast13)
+        {
+            HostLog.Warning($"insert: OpenGL {version} — editors that need OpenGL 1.3+ "
+                          + "(DPF/NanoVG, e.g. ZamDynamicEQ / Dragonfly) will render blank on this machine");
+            return;
+        }
+
+        HostLog.Info($"insert: OpenGL {version}");
     }
 
     // 把插件窗口带到前台并置顶。窗口是插件建的，可能要晚几十毫秒才可见，
@@ -181,6 +217,8 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
         // 壳没有窗口；真正开窗在 Create 里的 TryOpen（见 InsertEditorHost.Show）。
     }
 }
+
+
 
 
 
