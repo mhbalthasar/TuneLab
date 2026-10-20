@@ -774,6 +774,10 @@ VST3 的 IEditController、VST2 的 getParameter 一直都在。所以「界面�
 每个参数一行 = 名字 + 滑杆 + 数值（VST3 还多一个「↺ 回默认」）。思路与 JSFX 的
 非 @gfx 渲染一致 —— 不碰插件的窗口，只读写它的参数。
 
+- **控件**：与侧栏同款 —— `TuneLab.GUI.Components.Slider`（默认值区间高亮、双击回默认）
+  与 `DraggableNumberBox`（拖动擦写、双击键入）。`TuneLab.GUI.csproj` 本来就对
+  `TuneLab` 开了 `InternalsVisibleTo`，所以宿主直接用，不另画一套。
+- 行高 30、滑杆 24：Avalonia 原生 Slider 压到 20 会把拇指和轨道裁掉（这是早先那版的坑）。
 - 参数来源：VST3 `Parameters`（本地调用）；VST2 `GetParameters()`（过桥，一次往返）。
 - 刷新：VST3 200ms、VST2 1.5s（过桥别太勤）。**正在拖的那一根不覆盖**（`Dragging`），
   轮询回填时置 `Applying` 以免把同一个值再写回插件（否则每秒几十次无意义往返）。
@@ -1165,6 +1169,7 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

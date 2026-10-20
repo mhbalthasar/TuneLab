@@ -31,7 +31,11 @@ internal static class MixerMetrics
     // 浮窗（send / FX / output 菜单）。
     public const double PopupWidth = 380;
     public const double PopupRowHeight = 30;
+
+    // 插入效果浮窗的行更高：一行里有旁通/界面/删除三个键，挤在 30 里会贴边。
+    public const double FxRowHeight = 40;
     public const double PopupHeaderHeight = 30;
     public const double PopupPadding = 10;
 }
+
 

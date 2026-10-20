@@ -9,19 +9,25 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.MixerEngine;
+using TuneLab.GUI.Components;
+using Slider = TuneLab.GUI.Components.Slider;
 using HostLog = TuneLab.Foundation.Log;
 
 namespace TuneLab.Audio;
 
-// TuneLab 接管的参数面板：**不依赖插件 GUI**，把插件暴露的参数列成滑杆。
+// 参数面板：**不依赖插件 GUI**，把插件暴露的参数列成滑杆。
 //
 // 【为什么要有它】插件 GUI 可能根本画不出来 —— 缺运行时依赖、没有可用的 OpenGL
 // （虚拟机上的 DPF/NanoVG 就是这样，见 DESIGN §5.7.11），或者插件本身就没做界面。
 // 那时参数并不是取不到：VST3 的 IEditController / VST2 的 getParameter 一直都在。
 // 这个窗口就是"用宿主自己的控件把参数摆出来"，思路与 JSFX 的非 @gfx 渲染一致。
 //
-// 【刷新】插件 GUI 改参数时我们要跟着变，所以定时读一遍。但**正在拖的那一根不覆盖**，
-// 否则手指还没松开值就被拉回去了。VST2 要过桥，刷新频率放低（1.5s），VST3 是本地调用（200ms）。
+// 【控件】用的是 TuneLab.GUI 里侧栏同款：Slider（带默认值区间高亮、双击回默认）
+// 与 DraggableNumberBox（拖动擦写、双击键入）。TuneLab.GUI 对 TuneLab 有
+// InternalsVisibleTo，所以宿主直接用，不另画一套。
+//
+// 【刷新】插件 GUI 改参数时我们要跟着变，所以定时读一遍。正在拖的那一行不覆盖
+// （`Dragging`），否则手指还没松开值就被拉回去了。VST2 要过桥，刷新频率放低。
 public sealed class InsertParameterWindow : Window
 {
     sealed record Parameter(int Id, string Name, double Min, double Max, double Value, double? Default);
@@ -35,7 +41,7 @@ public sealed class InsertParameterWindow : Window
 
     readonly ParameterSource mSource;
     readonly string mHeaderText;
-    readonly StackPanel mRows = new() { Spacing = 4 };
+    readonly StackPanel mRows = new() { Spacing = 2 };
     readonly TextBlock mEmpty = new();
     readonly List<Row> mRowViews = [];
 
@@ -45,12 +51,8 @@ public sealed class InsertParameterWindow : Window
     {
         public required int Id { get; init; }
         public required Slider Slider { get; init; }
-        public required TextBlock ValueText { get; init; }
+        public required DraggableNumberBox Box { get; init; }
         public bool Dragging { get; set; }
-
-        // 轮询回填时置位：否则 Value 的 setter 会把同一个值再写回插件，
-        // 每秒几十次无意义往返（VST2 还要过桥）。
-        public bool Applying { get; set; }
     }
 
     InsertParameterWindow(string title, ParameterSource source)
@@ -60,9 +62,10 @@ public sealed class InsertParameterWindow : Window
         // 抬头只说"哪条轨道的哪个 FX"，别堆功能说明。
         Title = title;
         mHeaderText = title;
-        Width = 620;
-        Height = 520;
-        MinWidth = 420;
+
+        Width = 660;
+        Height = 540;
+        MinWidth = 460;
         MinHeight = 240;
         Background = new SolidColorBrush(Color.FromRgb(26, 26, 30));
 
@@ -89,7 +92,6 @@ public sealed class InsertParameterWindow : Window
                     // VST3 的参数改动要等一次 process() 才被处理器消费。播放中音频线程
                     // 每块都在跑，自然就生效；停止时没人跑，改动会一直排队、读回来还是旧值
                     // （用户报的"调完几秒后自动变回去"）。所以停止时补一块静音。
-                    // 只在"没在播放"时补：播放中碰插件会和音频线程抢，得不偿失。
                     if (!AudioEngine.IsPlaying)
                         vst3.FlushParameterChanges();
                 },
@@ -184,6 +186,8 @@ public sealed class InsertParameterWindow : Window
         // 插件可能给出 min == max（坏数据）或者 NaN：退回 0..1，至少能拖。
         double min = double.IsFinite(parameter.Min) ? parameter.Min : 0;
         double max = double.IsFinite(parameter.Max) && parameter.Max > parameter.Min ? parameter.Max : 1;
+        double initial = Math.Clamp(double.IsFinite(parameter.Value) ? parameter.Value : min, min, max);
+        double defaultValue = parameter.Default is { } d && double.IsFinite(d) ? Math.Clamp(d, min, max) : initial;
 
         var name = new TextBlock
         {
@@ -192,87 +196,65 @@ public sealed class InsertParameterWindow : Window
             Foreground = new SolidColorBrush(Color.FromRgb(208, 208, 214)),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(2, 0, 8, 0),
         };
 
-        var value = new TextBlock
-        {
-            Text = Format(parameter.Value),
-            FontSize = 11,
-            Width = 74,
-            TextAlignment = TextAlignment.Right,
-            FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
-            Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 188)),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        // 高度给足：Avalonia 的 Slider 自带 20px 的滑块，压到 20 会把轨道和拇指裁掉
-        // （用户报"sliderbar 高度明显有问题"就是这个）。26 刚好容下拇指 + 轨道。
+        // 与侧栏同款：默认值区间高亮、双击回默认。
         var slider = new Slider
         {
-            Minimum = min,
-            Maximum = max,
-            Value = Math.Clamp(parameter.Value, min, max),
+            Direction = SliderDirection.LeftToRight,
+            Height = 24,
             VerticalAlignment = VerticalAlignment.Center,
-            Height = 26,
             Margin = new Thickness(0, 0, 10, 0),
         };
+        slider.SetRange(min, max);
+        slider.DefaultValue = defaultValue;
+        slider.Display(initial);
 
-        var row = new Row { Id = parameter.Id, Slider = slider, ValueText = value };
-
-        slider.PropertyChanged += (_, change) =>
+        // 数值框：拖动擦写、双击键入精确值。
+        var box = new DraggableNumberBox
         {
-            if (change.Property != RangeBase.ValueProperty || row.Applying)
-                return;
-
-            // 用户拖的时候别再被轮询覆盖（Dragging 在指针按下/松开时切换）。
-            if (row.Dragging)
-                value.Text = Format(slider.Value);
-
-            mSource.Write(parameter.Id, slider.Value);
-            value.Text = Format(slider.Value);
+            Width = 78,
+            Height = 24,
+            MinValue = min,
+            MaxValue = max,
+            DefaultValue = defaultValue,
+            NumberFormat = TuneLab.SDK.NumberFormat.Decimals(3),
+            VerticalAlignment = VerticalAlignment.Center,
         };
+        box.Display(initial);
 
-        slider.PointerPressed += (_, _) => row.Dragging = true;
-        slider.PointerReleased += (_, _) => row.Dragging = false;
+        var row = new Row { Id = parameter.Id, Slider = slider, Box = box };
 
-        // 每行 30：与 FX 浮窗的行高同一口径，滑杆不会贴到上下边框。
+        slider.ValueWillChange.Subscribe(() => row.Dragging = true);
+        slider.ValueCommitted.Subscribe(() => row.Dragging = false);
+
+        slider.ValueChanged.Subscribe(() =>
+        {
+            double value = slider.Value;
+            box.Display(value);
+            mSource.Write(parameter.Id, value);
+        });
+
+        box.ValueChanged.Subscribe(() =>
+        {
+            double value = box.Value;
+            slider.Display(value);
+            mSource.Write(parameter.Id, value);
+        });
+
         var cell = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("210,*,74"),
+            ColumnDefinitions = new ColumnDefinitions("210,*,86"),
             Height = 30,
         };
+
         Grid.SetColumn(name, 0);
         Grid.SetColumn(slider, 1);
-        Grid.SetColumn(value, 2);
+        Grid.SetColumn(box, 2);
         cell.Children.Add(name);
         cell.Children.Add(slider);
-        cell.Children.Add(value);
-
-        if (parameter.Default is { } defaultValue)
-        {
-            var reset = new Button
-            {
-                Content = "↺",
-                FontSize = 10,
-                Width = 22,
-                Height = 18,
-                Padding = new Thickness(0),
-                Margin = new Thickness(6, 0, 0, 0),
-                Background = Brushes.Transparent,
-                Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 168)),
-                BorderThickness = default,
-            };
-
-            reset.Click += (_, _) =>
-            {
-                double target = Math.Clamp(defaultValue, min, max);
-                slider.Value = target;
-            };
-
-            cell.ColumnDefinitions = new ColumnDefinitions("220,*,74,28");
-            Grid.SetColumn(reset, 3);
-            cell.Children.Add(reset);
-        }
+        cell.Children.Add(box);
 
         mRowViews.Add(row);
         return cell;
@@ -317,38 +299,13 @@ public sealed class InsertParameterWindow : Window
             if (!double.IsFinite(current))
                 continue;
 
-            row.ValueText.Text = Format(current);
-
             if (row.Dragging)
                 continue;
 
-            row.Applying = true;
-            try
-            {
-                row.Slider.Value = Math.Clamp(current, row.Slider.Minimum, row.Slider.Maximum);
-            }
-            finally
-            {
-                row.Applying = false;
-            }
+            // Display 只刷新显示、不触发 ValueChanged —— 否则回填会被当成用户改动写回插件。
+            row.Slider.Display(Math.Clamp(current, row.Slider.MinValue, row.Slider.MaxValue));
+            row.Box.Display(current);
         }
     }
-
-    static string Format(double value)
-    {
-        if (!double.IsFinite(value))
-            return "—";
-
-        return Math.Abs(value) >= 1000
-            ? value.ToString("0")
-            : value.ToString("0.###");
-    }
 }
-
-
-
-
-
-
-
 
