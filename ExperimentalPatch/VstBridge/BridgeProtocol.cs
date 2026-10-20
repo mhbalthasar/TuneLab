@@ -149,6 +149,11 @@ public sealed class LoadPluginResultMessage
 
     [JsonPropertyName("outputChannels")]
     public int OutputChannels { get; init; }
+
+    // AEffect.flags 里的 effFlagsIsSynth（乐器）。扫描时用它把乐器从插入清单里剔掉 ——
+    // VST2 没有静态元数据，问插件自己是唯一可靠的办法（过桥问，不在宿主进程里直载）。
+    [JsonPropertyName("isSynth")]
+    public bool IsSynth { get; init; }
 }
 
 public sealed class UnloadPluginMessage

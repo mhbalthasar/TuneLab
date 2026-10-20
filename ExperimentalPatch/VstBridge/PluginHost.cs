@@ -39,6 +39,9 @@ internal sealed class PluginHost
     const int EffGetEffectName = 45;
     const int EffGetVendorString = 47;
 
+    // AEffect.flags 里的乐器位（VST2 的 effFlagsIsSynth）。
+    const int EffFlagsIsSynth = 1 << 8;
+
     readonly Dictionary<int, Slot> mSlots = [];
 
     // 共享音频环（DESIGN.md §5.3 之后的修订：音频走共享内存，指令走命名管道）。
@@ -54,7 +57,7 @@ internal sealed class PluginHost
         mOut = output;
     }
 
-    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples) Load(
+    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth) Load(
         LoadPluginMessage request, out int inputChannels, out int outputChannels)
     {
         inputChannels = 0;
@@ -67,7 +70,7 @@ internal sealed class PluginHost
 
         if (!File.Exists(request.Path))
         {
-            return (false, "plugin file not found", null, null, 0);
+            return (false, "plugin file not found", null, null, 0, false);
         }
 
         IntPtr library;
@@ -79,13 +82,13 @@ internal sealed class PluginHost
         {
             // 最常见的原因：位数不匹配（桥是 32 位进程，装 64 位 dll 会报
             // ERROR_BAD_EXE_FORMAT），或者缺少依赖 dll。
-            return (false, "cannot load the plugin library: " + ex.Message, null, null, 0);
+            return (false, "cannot load the plugin library: " + ex.Message, null, null, 0, false);
         }
 
         if (!NativeLibrary.TryGetExport(library, "VSTPluginMain", out IntPtr entry))
         {
             NativeLibrary.Free(library);
-            return (false, "the file is not a VST2 plugin (no VSTPluginMain export)", null, null, 0);
+            return (false, "the file is not a VST2 plugin (no VSTPluginMain export)", null, null, 0, false);
         }
 
         // 插件在 VSTPluginMain 里就会问宿主版本 / 采样率 / 块长（见 HostCallback），
@@ -106,13 +109,13 @@ internal sealed class PluginHost
         if (effect == IntPtr.Zero)
         {
             NativeLibrary.Free(library);
-            return (false, "the plugin refused to create its AEffect", null, null, 0);
+            return (false, "the plugin refused to create its AEffect", null, null, 0, false);
         }
 
         if (Marshal.ReadInt32(effect, 0) != VstMagic)
         {
             NativeLibrary.Free(library);
-            return (false, "the returned pointer is not a VST2 AEffect", null, null, 0);
+            return (false, "the returned pointer is not a VST2 AEffect", null, null, 0, false);
         }
 
         // AEffect 的布局随**指针宽度**变化：x86 桥里指针 4 字节，x64 里 8 字节。
@@ -122,6 +125,9 @@ internal sealed class PluginHost
         int numParams = Marshal.ReadInt32(effect, layout.NumParams);
         int numInputs = Marshal.ReadInt32(effect, layout.NumInputs);
         int numOutputs = Marshal.ReadInt32(effect, layout.NumOutputs);
+
+        // effFlagsIsSynth = 1 << 8：乐器。扫描时用它把乐器从插入清单里剔掉。
+        bool isSynth = (Marshal.ReadInt32(effect, layout.Flags) & EffFlagsIsSynth) != 0;
 
         inputChannels = numInputs;
         outputChannels = numOutputs;
@@ -156,7 +162,7 @@ internal sealed class PluginHost
         {
             ReleaseSlot(slot, closeEffect: true);
             NativeLibrary.Free(library);
-            return (false, "the plugin exposes no audio processing entry point", null, null, 0);
+            return (false, "the plugin exposes no audio processing entry point", null, null, 0, false);
         }
 
         slot.ProcessReplacing = (ProcessProc)Marshal.GetDelegateForFunctionPointer(
@@ -192,7 +198,7 @@ internal sealed class PluginHost
 
         mSlots[request.Slot] = slot;
 
-        return (true, null, name, vendor, latency);
+        return (true, null, name, vendor, latency, isSynth);
     }
 
     public bool Unload(int slotNumber)
@@ -575,11 +581,12 @@ internal sealed class PluginHost
         public readonly int NumParams;
         public readonly int NumInputs;
         public readonly int NumOutputs;
+        public readonly int Flags;
         public readonly int InitialDelay;
         public readonly int ProcessReplacing;
 
         AEffectLayout(int dispatcher, int process, int setParameter, int getParameter,
-            int numParams, int numInputs, int numOutputs, int initialDelay, int processReplacing)
+            int numParams, int numInputs, int numOutputs, int flags, int initialDelay, int processReplacing)
         {
             Dispatcher = dispatcher;
             Process = process;
@@ -588,6 +595,7 @@ internal sealed class PluginHost
             NumParams = numParams;
             NumInputs = numInputs;
             NumOutputs = numOutputs;
+            Flags = flags;
             InitialDelay = initialDelay;
             ProcessReplacing = processReplacing;
         }
@@ -620,7 +628,7 @@ internal sealed class PluginHost
                 initialDelay + 4 * 4 + pointerSize * 2 + 4 + 4, pointerSize);
 
             return new AEffectLayout(dispatcher, process, setParameter, getParameter,
-                numParams, numInputs, numOutputs, initialDelay, processReplacing);
+                numParams, numInputs, numOutputs, flags, initialDelay, processReplacing);
         }
     }
 

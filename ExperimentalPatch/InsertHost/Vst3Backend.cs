@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using OwnVST3Host;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using VstInsert = TuneLab.ExperimentalPatch.InsertHost.Vst3Insert;
@@ -82,7 +84,8 @@ public sealed class Vst3Backend : IInsertBackend
         return File.Exists(candidate) ? NativeLibrary.Load(candidate) : IntPtr.Zero;
     }
 
-    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null, Action<int, int, string>? onDirectory = null)
+    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null,
+        Action<int, int, string>? onDirectory = null, bool probeInstruments = true, Action<string>? onDetail = null)
     {
         if (NativePath == null)
             return [];
@@ -92,7 +95,7 @@ public sealed class Vst3Backend : IInsertBackend
         // （编辑器设置里那份），所以这里自己走一遍目录枚举，再用
         // PluginScanner.ResolveAsync 把 bundle 补成完整描述（名字 / 厂商 / 声道数）。
         if (directories != null && directories.Count > 0)
-            return ListFromDirectories(directories, onDirectory);
+            return ListFromDirectories(directories, onDirectory, probeInstruments, onDetail);
 
         try
         {
@@ -122,6 +125,7 @@ public sealed class Vst3Backend : IInsertBackend
                     Vendor = plugin.Vendor,
                     Category = plugin.Category,
                     Locator = plugin.Identifier,
+                    IsInstrument = IsInstrumentCategory(plugin.Category),
                 });
             }
 
@@ -140,15 +144,28 @@ public sealed class Vst3Backend : IInsertBackend
             ? plugin.Name
             : "vst3:" + plugin.Identifier;
 
+    // VST3 的类别串（PClassInfo 的 category / subcategories）。乐器必带 Instrument
+    // （形如 "Instrument|Synth"），效果器是 "Fx|..."。这条只用于**不支持目录清单**的
+    // 那条扫描路径（上游扫出来的 PluginDescriptor 自带类别，不必再加载插件）。
+    static bool IsInstrumentCategory(string? category)
+        => !string.IsNullOrEmpty(category)
+           && (category.Contains("Instrument", StringComparison.OrdinalIgnoreCase)
+               || category.Contains("Synth", StringComparison.OrdinalIgnoreCase));
+
     // 按用户配的目录清单扫。
     //
     // 两个选择说明：
     //   ① 自己枚举 .vst3，而不是让上游扫 —— 上游那个不接受目录参数（见上）。
-    //   ② 用 bundle 名做 PluginId，而不是 classId —— 拿 classId 要把插件 load 一遍
-    //      （几十毫秒一个，几百个就是十秒级，正好是"打开菜单卡一下"的来源）。
-    //      bundle 名是 VST3 平台规定的，同一台机器上稳定；换机器重新扫就对上了。
+    //   ② 用 bundle 名做 PluginId，而不是 classId —— 拿 classId 要把插件 load 一遍，
+    //      而 bundle 名在**同一台机器**上稳定，换机器重新扫就对上了。
     //      ⚠️ 代价：两个不同插件同名时会撞。取舍记在这里，别以后误以为是 bug。
-    static IReadOnlyList<InsertPluginInfo> ListFromDirectories(IReadOnlyList<string> directories, Action<int, int, string>? onDirectory)
+    //
+    // 【probeInstruments】用来判断"是不是乐器"。扫描时**不加载插件**，读二进制里的类别标记
+    // （见 LooksLikeInstrument 的注释：加载会 abort 进程，也有插件 20 秒不返回）。
+    // 代价是 DPF 系乐器的子类别是运行时拼的、标记里没有 —— 那些靠 Create 时的真实加载补记
+    // （sKnownInstruments），用户点错一次之后就不再出现。
+    IReadOnlyList<InsertPluginInfo> ListFromDirectories(IReadOnlyList<string> directories,
+        Action<int, int, string>? onDirectory, bool probeInstruments, Action<string>? onDetail)
     {
         var list = new List<InsertPluginInfo>();
 
@@ -165,21 +182,105 @@ public sealed class Vst3Backend : IInsertBackend
             foreach (string bundle in Directory.EnumerateFiles(directory, "*.vst3", SearchOption.AllDirectories))
             {
                 bool is32Bit = bundle.Contains(@"\x86-win\") || bundle.Contains(@"/x86-win/");
+
                 string name = Path.GetFileNameWithoutExtension(bundle);
+
+                // 判乐器：先看本进程里是否**真实加载过**（更可靠），否则读二进制的类别标记（不加载）。
+                // 见 LooksLikeInstrument / sKnownInstruments 的注释。
+                bool isInstrument = false;
+
+                if (probeInstruments)
+                {
+                    onDetail?.Invoke(name);
+
+                    isInstrument = sKnownInstruments.TryGetValue(bundle, out bool known)
+                        ? known
+                        : LooksLikeInstrument(bundle);
+                }
 
                 list.Add(new InsertPluginInfo
                 {
                     Format = "VST3",
-                    PluginId = "vst3:" + name,
+                    PluginId = "vst3:" + Path.GetFileNameWithoutExtension(bundle),
                     Name = name,
                     Locator = bundle,
                     Category = is32Bit ? "32-bit (needs the bridge)" : string.Empty,
+                    IsInstrument = isInstrument,
                 });
             }
         }
 
         return list;
     }
+
+    // 探一个插件是乐器还是效果器 —— **不加载它**，只读 bundle 里的二进制。
+    //
+    // 【为什么不加载】试过：扫描时对每个 bundle 走 LoadPlugin → Initialize → 问 IsInstrument。
+    // 结果是灾难性的，两条都实测：
+    //   · 整个进程被带走 —— 某个 DPF 插件的 assert 直接 abort，宿主没有任何机会救（真机 66 个一起扫时复现）；
+    //   · 加载本身没有上限 —— 逐个隔离跑时 66 个里有 2 个 20 秒都没返回（同样会卡住扫描）。
+    // 扫描是"随手点一下"的动作，不能有这两种代价。VST2 那边之所以敢探，是因为它跑在**桥进程**里，
+    // 崩了只是桥崩；VST3 是进程内加载（§5.4），代价直接落在宿主身上。
+    //
+    // 【标记准不准】VST3 的类别是类信息里的**子类别字符串**，编译器把它作为明文常量放进二进制
+    // （"Instrument|Synth" / "Fx|Delay"）。开发机上 64 个 64 位插件与逐个真实加载对过：63 个一致，
+    // 差的那一个（Surge XT，类别确实是 Instrument）反而是标记更对 —— native 的 IsInstrument 判它 false。
+    // 已知漏判：DPF 系（Cardinal）的子类别是运行时拼的，二进制里没有这个字面量。
+    //
+    // 【宁可漏判，不可误判】判成乐器的插件会从菜单里消失。误判一个效果器（用户会以为"插件没扫到"）
+    // 比漏判一个合成器糟得多，所以只有在"有 Instrument 标记、且**没有** Fx 标记"时才判乐器。
+    // 漏掉的由下面那道真实加载兜住（见 sKnownInstruments）。
+    internal static bool LooksLikeInstrument(string file)
+    {
+        try
+        {
+            return ContainsMarker(file, "Instrument|") && !ContainsMarker(file, "Fx|");
+        }
+        catch (Exception)
+        {
+            // 读不动（占用 / 权限）就当"不知道" —— 列出来。
+            return false;
+        }
+    }
+
+    // 在二进制里找一段 ASCII 或 UTF-16LE 的字面量，分块读（插件有好几百 MB 的，不能整个读进内存）。
+    static bool ContainsMarker(string file, string needle)
+    {
+        byte[] ascii = Encoding.ASCII.GetBytes(needle);
+        byte[] utf16 = Encoding.Unicode.GetBytes(needle);
+
+        int overlap = Math.Max(ascii.Length, utf16.Length) - 1;
+        byte[] buffer = new byte[(1 << 20) + overlap];
+
+        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16);
+
+        int carry = 0;
+
+        while (true)
+        {
+            int read = stream.Read(buffer, carry, buffer.Length - carry);
+            if (read <= 0)
+                return false;
+
+            var chunk = buffer.AsSpan(0, carry + read);
+
+            if (chunk.IndexOf(ascii) >= 0 || chunk.IndexOf(utf16) >= 0)
+                return true;
+
+            // 留下尾巴：标记可能正好跨在两块之间。
+            carry = Math.Min(overlap, chunk.Length);
+            chunk.Slice(chunk.Length - carry).CopyTo(buffer);
+        }
+    }
+
+    // 真正加载过的插件给出的答案，优先于上面的静态标记。
+    //
+    // 为什么需要它：静态标记漏判 DPF 系的乐器（Cardinal Synth 就是这样）。用户第一次从菜单里
+    // 选中它时，Create 会真实加载、如实拒绝（"this plugin is an instrument"），并在这里记一笔 ——
+    // 下一次扫描它就从菜单里消失了。不落盘：这是"本进程里已经证实过的事"，
+    // 重启后由静态标记兜底，代价只是可能再点错一次。
+    static readonly ConcurrentDictionary<string, bool> sKnownInstruments = new(StringComparer.OrdinalIgnoreCase);
+
 
     public IMixInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
     {
@@ -238,10 +339,16 @@ public sealed class Vst3Backend : IInsertBackend
             //     （同一个函数指针），单独用它会把每个插件都判成乐器。
             if (wrapper.IsInstrument)
             {
+                // 记一笔：下次扫描就不会再把它列出来了（静态标记漏掉 DPF 系乐器，见 sKnownInstruments）。
+                sKnownInstruments[plugin.Locator] = true;
+
                 reason = "this plugin is an instrument; inserts need an effect";
                 wrapper.Dispose();
                 return null;
             }
+
+            // 真实加载过的答案优先于静态标记。
+            sKnownInstruments[plugin.Locator] = false;
 
             return new VstInsert(plugin, wrapper, sampleRate, block, settings.Bypass);
         }
@@ -255,6 +362,7 @@ public sealed class Vst3Backend : IInsertBackend
 
     // 重新定位：用户在别的机器上打开工程，插件扫描结果变了。
     // PluginId 是软的（路径会变），所以这里就是"按 PluginId 再扫一次"。
+    // probeInstruments: false —— 这里只要 Locator，不为"是不是乐器"白加载每个插件。
     public InsertPluginInfo? Resolve(string pluginId)
-        => ListPlugins().FirstOrDefault(p => p.PluginId == pluginId);
+        => ListPlugins(probeInstruments: false).FirstOrDefault(p => p.PluginId == pluginId);
 }

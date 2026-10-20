@@ -25,6 +25,14 @@ internal sealed class MixerGraphCompiler
 
     public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks, IReadOnlyCollection<AuxBus> auxes)
     {
+        // 插件的**装配参数**必须跟着当前图走，且每次编译都刷一遍：
+        //   · 块长：插件被喂的块长必须 ≥ 引擎实际交出来的块长。早先这里没人设，
+        //     工厂停在默认 512，而引擎按 1024（设备缓冲）交块 —— 于是每块只处理了前 512 帧、
+        //     后 512 帧原样直通。听感就是"音频线接触不良"那种爆音（每 10ms 一次硬接缝）。
+        //   · 采样率：早先也停在默认 48000。工程是 44.1k 时插件按 48k 跑，音高与时值全错。
+        sInsertFactory.SampleRate = graph.SampleRate;
+        sInsertFactory.MaxBlockSize = Mixer.DefaultMaxBlockSize;
+
         var trackList = tracks.ToList();
         var auxList = auxes.ToList();
 

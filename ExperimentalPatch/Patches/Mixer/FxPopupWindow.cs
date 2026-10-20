@@ -153,9 +153,9 @@ public sealed class FxPopupWindow : Window
     // （Voxengo / Waves / …）本来就是人记插件的方式。空 / 全部不可用时直接说明原因，
     // 而不是给一个点了没反应的按钮。
     //
-    // ⚠️ VST2 的厂商要靠**加载插件**才问得到，而扫描不加载（见 Vst2Backend 顶部注释），
-    // 所以 VST2 的清单只有文件名、厂商是空的 —— 那些插件全部归到「（未知厂商）」，
-    // 三级菜单在 VST2 下退化成两级。要真厂商得把扫描也搬进桥进程，那是另一件事。
+    // 厂商与"是不是乐器"都来自**扫描时的探测**（VST2 过桥加载问一句，VST3 问 native 的
+    // IsInstrument，见两个 Backend 的注释）。所以这里只读缓存，不加载任何插件 ——
+    // 打开菜单必须是瞬间的。
     void ShowAddMenu(Control anchor)
     {
         var plugins = mHost.InsertPlugins?.CachedPlugins ?? [];
@@ -164,7 +164,11 @@ public sealed class FxPopupWindow : Window
 
         foreach (var format in mFormats)
         {
-            var candidates = plugins.Where(p => p.Format == format.Name).ToList();
+            // 乐器不进插入清单：插入点是"处理已经存在的音频"，乐器在这里没有意义
+            // （它要 MIDI 输入、要自己产声），插进来只会白占一条链、听不到任何声音。
+            var candidates = plugins
+                .Where(p => p.Format == format.Name && !p.IsInstrument)
+                .ToList();
 
             // 格式自己就是第一级（子菜单），不可用 / 空的时候才退化成一个禁用的叶子。
             if (!format.IsAvailable)
@@ -175,8 +179,8 @@ public sealed class FxPopupWindow : Window
 
             if (candidates.Count == 0)
             {
-                menu.Items.Add(DisabledItem($"{format.Name} — " + L("没有扫描到，去「设置 → 插件扫描」扫一次",
-                    "nothing scanned yet (Settings → Plugin scan)")));
+                menu.Items.Add(DisabledItem($"{format.Name} — " + L("没有扫描到效果器，去「设置 → 插件扫描」扫一次",
+                    "no effects scanned yet (Settings → Plugin scan)")));
                 continue;
             }
 

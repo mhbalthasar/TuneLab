@@ -113,6 +113,7 @@ internal sealed class BridgeSession : IDisposable
             LatencySamples = result.LatencySamples,
             InputChannels = inputChannels,
             OutputChannels = outputChannels,
+            IsSynth = result.IsSynth,
         }));
     }
 

@@ -35,7 +35,11 @@ public interface IInsertPluginSettings
 // 进度条也只会疯抖 —— 人看不出"走到哪儿了"。目录是"几条到几十条"，刚好够用。
 // DoneDirectories 是**已经走完**的数量，Directory 是**正在扫**的那条（两者不同步是故意的：
 // 前者画进度条，后者让用户看见卡在哪个目录上）。
-public sealed record InsertScanProgress(int DoneDirectories, int TotalDirectories, string Directory);
+//
+// Detail 是**目录内**正在做的那一步（当前是"正在检查哪个插件"）：扫描为了判断类型要逐个加载插件，
+// 一个大目录里能停十几秒，只写目录名会让人以为界面死了。它不参与进度条 ——
+// 分式仍按目录算，Detail 只是那行文字的尾巴。
+public sealed record InsertScanProgress(int DoneDirectories, int TotalDirectories, string Directory, string? Detail = null);
 
 // 一个被扫到的插件。宿主用它喂混音台的"添加效果"菜单。
 public sealed class InsertPluginEntry
@@ -51,6 +55,13 @@ public sealed class InsertPluginEntry
     public string Vendor { get; init; } = string.Empty;
 
     public string Category { get; init; } = string.Empty;
+
+    // 乐器（VST3 Instrument / VST2 effFlagsIsSynth）。
+    //
+    // 混音台的插入槽里只该出现效果器：乐器插在轨道上不会去听 MIDI，只会把
+    // 一整块静音/噪声塞进总线。所以「添加效果」菜单按它过滤掉乐器。
+    // 扫描时探到才算数（探不动就留 false —— 宁可列出来，也别让能用的插件消失）。
+    public bool IsInstrument { get; init; }
 
     // false = 这个插件当前不可用（典型：32 位插件而我们没有起桥）。
     // 界面上仍然列出来（用户能看到"装了但用不了"），但禁用 + 给原因。

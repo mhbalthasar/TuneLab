@@ -30,9 +30,12 @@ internal sealed class InsertInstanceFactory
     readonly Vst2Backend mVst2 = new();
 
     // 宿主当前的采样率 / 块长。插件的 Initialize 要它们，所以必须在建实例前知道。
+    // 由 MixerGraphCompiler.Compile 每次编译时按当前图刷新（见那里的注释：这两个值曾长期停在默认值上，
+    // 造成"每块只处理一半"的爆音与"44.1k 工程用 48k 插件"的音高错误）。
     public double SampleRate { get; set; } = 48000;
 
-    public int MaxBlockSize { get; set; } = 512;
+    // 声明给插件的最大块长。要与引擎的块长上限一致（Mixer.DefaultMaxBlockSize）。
+    public int MaxBlockSize { get; set; } = Mixer.DefaultMaxBlockSize;
 
     // 用户配的 VST3 扫描路径（宿主启动时从 InsertPluginSettings 注入）。
     // 为什么不让工厂自己去读设置：设置是"本机配置"，工厂该拿现成的值，
@@ -188,7 +191,10 @@ internal sealed class InsertInstanceFactory
             ? Vst2Paths
             : Vst3Paths;
 
-        foreach (var plugin in backend.ListPlugins(paths))
+        // probeInstruments: false —— 这里只要 Locator。true 会把每个插件都加载一遍，
+        // 而这段代码在**每次编译音频图**时都会跑（挂一个效果器就编译一次），
+        // 让它去加载几百个插件等于把 UI 冻住好几秒。
+        foreach (var plugin in backend.ListPlugins(paths, probeInstruments: false))
         {
             if (plugin.PluginId == pluginId)
                 return plugin;

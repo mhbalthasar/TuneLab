@@ -408,19 +408,23 @@ internal sealed class VstBridgeClient : IDisposable
     // 而命名管道那条路上同样的等待是不可控的（见文件头的说明）。
     public bool SendProcess(int slot, float[][] inPlanes, float[][] outPlanes, int channels, int frames, bool bypass)
     {
+        // 桥已经确定赶不上了：直接直通，不再每块白等 20ms（见 FailAudioBlock）。
+        if (mAudioStalled)
+            return false;
+
         if (mInput == null || mOutput == null)
             return false;
 
         // 整段（发块 + 等回复 + 取输出）都在这把锁里：
         // 否则 UI 线程正好在改参数时，两个回复会串台。
         if (!mRoundTrip.Wait(BlockWaitMs))
-            return false;
+            return FailAudioBlock();
 
         try
         {
             // 1) 把输入推进宿主→桥的环，然后通知桥"有一块等你"。
             if (!mInput.TryPublish(slot, inPlanes, channels, frames, BlockWaitMs))
-                return false;
+                return FailAudioBlock();
 
             if (!SendControlBlocking(JsonSerializer.Serialize(new ProcessRequest
                 {
@@ -430,22 +434,23 @@ internal sealed class VstBridgeClient : IDisposable
                     Bypass = bypass,
                 })))
             {
-                return false;
+                return FailAudioBlock();
             }
 
             // 2) 等桥的结果。桥处理完会把结果推进桥→宿主的环，然后回一个短回执。
             string? reply = ReadControlBlocking();
             if (reply == null)
-                return false;
+                return FailAudioBlock();
 
             if (!mOutput.TryRead(BlockWaitMs, out _, out var planes, out int outChannels, out int outFrames))
-                return false;
+                return FailAudioBlock();
 
             try
             {
                 for (int ch = 0; ch < Math.Min(channels, outChannels); ch++)
                     Array.Copy(planes[ch], outPlanes[ch], Math.Min(frames, outFrames));
 
+                mAudioFailures = 0;
                 return true;
             }
             finally
@@ -458,6 +463,28 @@ internal sealed class VstBridgeClient : IDisposable
             mRoundTrip.Release();
         }
     }
+
+    // 一次音频块失败：连续失败到阈值就把桥的音频路**彻底停掉**（之后一律直通）。
+    //
+    // 为什么要停而不是一直重试：桥卡死（插件死循环 / 进程被挂起）时每块都要白等 20ms，
+    // 而 SDL 的缓冲只有 21ms —— 那会把音频拖成断续爆音，比"这个插件在你这台机器上不生效"糟得多。
+    // 停掉之后旁通/移除这个效果器即可，混音台其余部分照常。
+    bool FailAudioBlock()
+    {
+        if (++mAudioFailures >= AudioFailureLimit)
+            mAudioStalled = true;
+
+        return false;
+    }
+
+    volatile bool mAudioStalled;
+    int mAudioFailures;
+
+    // 连续多少块失败就认定桥赶不上了：20ms/块 × 50 ≈ 连续 1 秒都拿不到结果。
+    const int AudioFailureLimit = 50;
+
+    /// <summary>桥的音频路是否已停用（连续失败过多）。宿主可据此提示用户。</summary>
+    public bool AudioStalled => mAudioStalled;
 
     /// <summary>宿主主动关闭桥（例如关闭混音台窗口）。</summary>
     public void KillBridge()
@@ -491,6 +518,12 @@ internal sealed class VstBridgeClient : IDisposable
         mOutput?.Dispose();
         mInput = null;
         mOutput = null;
+
+        // 音频路的失败计数也清零：桥是新的，之前那串"赶不上"不能算到它头上。
+        // （不清的话，一次超时杀桥之后 mAudioStalled 会一直为 true —— 桥重启了、
+        //  插件也重新装上了，音频却还是永远直通。）
+        mAudioFailures = 0;
+        mAudioStalled = false;
     }
 
     public void Dispose()
@@ -544,7 +577,11 @@ internal sealed class VstBridgeClient : IDisposable
 
         byte[] bytes = Encoding.UTF8.GetBytes(json);
 
-        mWriteLock.Wait();
+        // 有上限地等这把锁：它由 UI 线程与音频线程共用，而 UI 线程可能在写一份很大的状态
+        // （采样的 state 是 MB 级）。拿不到就放弃这一块（直通），绝不让音频线程无限等。
+        if (!mWriteLock.Wait(BlockWaitMs))
+            return false;
+
         try
         {
             mPipe.Write(BitConverter.GetBytes(bytes.Length));

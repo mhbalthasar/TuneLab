@@ -58,7 +58,7 @@ public class Vst3IntegrationTests
         var backend = new Vst3Backend();
         Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
 
-        List<InsertPluginInfo> found = backend.ListPlugins(Vst3Directories().ToList()).ToList();
+        List<InsertPluginInfo> found = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false).ToList();
 
         // 扫到的东西必须**在我们指定的目录里**（不是系统里恰好装着的）：
         // 否则"用户加了一个扫描路径"这个功能就是假的。
@@ -79,7 +79,7 @@ public class Vst3IntegrationTests
         var backend = new Vst3Backend();
         Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
 
-        var plugins = backend.ListPlugins(Vst3Directories().ToList());
+        var plugins = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false);
         var plugin = plugins.FirstOrDefault(p => p.Name.Contains(nameFragment, StringComparison.OrdinalIgnoreCase));
 
         Skip.If(plugin == null, $"plugin '{nameFragment}' is not installed");
@@ -147,7 +147,7 @@ public class Vst3IntegrationTests
         var backend = new Vst3Backend();
         Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
 
-        var plugin = backend.ListPlugins(Vst3Directories().ToList())
+        var plugin = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false)
             .FirstOrDefault(p => p.Name.Contains("Latency Delay", StringComparison.OrdinalIgnoreCase));
 
         Skip.If(plugin == null, "'Latency Delay' is not installed");
@@ -173,7 +173,7 @@ public class Vst3IntegrationTests
         //
         // 注意这里**不能**拿 Surge XT 当靶子：它报 isInstrument=False / 2 in / 2 out，
         // 在 VST3 层面就声明自己是效果器（那个 bundle 同时含效果器与合成器）。
-        var instrument = backend.ListPlugins(Vst3Directories().ToList())
+        var instrument = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false)
             .FirstOrDefault(p => p.Name.Contains("Cardinal", StringComparison.OrdinalIgnoreCase)
                               && p.Name.Contains("Synth", StringComparison.OrdinalIgnoreCase));
 

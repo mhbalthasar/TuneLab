@@ -68,8 +68,19 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         if (mDisposed || mBypassed || count <= 0)
             return;
 
-        int n = Math.Min(count, mBlockSize);
+        // 整块都要过插件：逐段处理（每段 ≤ mBlockSize）。早先只处理 Math.Min(count, mBlockSize)
+        // 那一小段就返回，块比声明值大时后半块原样直通 —— 每 10ms 一次硬接缝合成的爆音。
+        for (int done = 0; done < count; done += mBlockSize)
+        {
+            int n = Math.Min(mBlockSize, count - done);
 
+            if (!ProcessChunk(buffer, offset + done * 2, n))
+                return;   // 桥超时 / 死了：剩下的部分保持直通
+        }
+    }
+
+    bool ProcessChunk(Span<float> buffer, int offset, int n)
+    {
         // 交织 → 平面。
         for (int ch = 0; ch < mChannels; ch++)
         {
@@ -94,14 +105,19 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         // 失败 = 这一块直通（buffer 原样不动）。桥死了的话下一块也失败，
         // 上层看到持续失败会把这个槽位旁通掉。
         if (!ok)
-            return;
+            return false;
 
-        // 平面 → 交织。
+        // 平面 → 交织。NaN / ±Inf 就地清零（见 Vst3Insert 里同一处注释）。
         for (int i = 0; i < n; i++)
         {
-            buffer[offset + i * 2] = mOutPlanes[0][i];
-            buffer[offset + i * 2 + 1] = mChannels > 1 ? mOutPlanes[1][i] : mOutPlanes[0][i];
+            float left = mOutPlanes[0][i];
+            float right = mChannels > 1 ? mOutPlanes[1][i] : mOutPlanes[0][i];
+
+            buffer[offset + i * 2] = float.IsFinite(left) ? left : 0f;
+            buffer[offset + i * 2 + 1] = float.IsFinite(right) ? right : 0f;
         }
+
+        return true;
     }
 
     // ── 状态与参数（只在 UI 线程用）──
@@ -148,6 +164,10 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
             return null;
         }
 
+        // 声明给插件的块长**不能超过共享环一块能装下的帧数**：超了 TryPublish 直接失败、
+        // 那一块就白直通了（又一个"看着在跑其实没处理"的坑）。Process 里还会按这个值分段。
+        int blockSize = Math.Clamp(settings.MaxBlockSize, 32, SharedAudioLayout.MaxBlockFrames);
+
         var client = VstBridgeClient.ForBitness(bitness);
         client.ClearBridgeError();
 
@@ -161,7 +181,7 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         }
 
         int slotId = client.AllocateSlot();
-        var loaded = client.LoadBlocking(slotId, plugin.Locator, settings.SampleRate, settings.MaxBlockSize,
+        var loaded = client.LoadBlocking(slotId, plugin.Locator, settings.SampleRate, blockSize,
             settings.Bypass);
 
         if (loaded == null)
@@ -176,6 +196,15 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
             return null;
         }
 
+        // 乐器（effFlagsIsSynth）：插入点是"处理已经存在的音频"，乐器在这里没有意义 ——
+        // 它要 MIDI 输入、要自己产声。菜单已经按扫描结果过滤掉了，这一道是防"缓存过期 / 手改工程"。
+        if (loaded.IsSynth)
+        {
+            client.UnloadBlocking(slotId);
+            reason = "this plugin is an instrument; inserts need an effect";
+            return null;
+        }
+
         // 0 进 0 出 = 纯 MIDI 工具，装进来也处理不了音频。
         if (loaded.InputChannels <= 0 || loaded.OutputChannels <= 0)
         {
@@ -184,7 +213,7 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
             return null;
         }
 
-        return new Vst2Insert(plugin, client, slotId, settings.MaxBlockSize,
+        return new Vst2Insert(plugin, client, slotId, blockSize,
             loaded.LatencySamples, settings.Bypass);
     }
 }

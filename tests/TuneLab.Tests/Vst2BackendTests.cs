@@ -93,7 +93,10 @@ public class Vst2BackendTests
             File.WriteAllBytes(Path.Combine(directory, "thirtytwo.dll"), BuildPe(0x014C));
 
             var backend = new Vst2Backend();
-            var plugins = backend.ListPlugins([directory]);
+
+            // 不探测类型：这里的 "dll" 是刚拼出来的假 PE，让桥去加载它们只是白起两个桥进程。
+            // 探测那条路见 Vst2Backend.Probe 的注释（真插件才走）。
+            var plugins = backend.ListPlugins([directory], probeInstruments: false);
 
             // 顺序按文件系统枚举，别依赖它：按名字查。
             var byName = new Dictionary<string, InsertPluginInfo>(StringComparer.OrdinalIgnoreCase);

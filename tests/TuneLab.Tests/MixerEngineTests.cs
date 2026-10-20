@@ -177,6 +177,54 @@ public class MixerEngineTests
     }
 
     [Fact]
+    public void Insert_SeesEveryFrameOfAnEngineSizedBlock()
+    {
+        // 引擎（SDL）按**设备缓冲**交块（AudioEngine.BufferSize = 1024 帧），
+        // 而插入插件时我们告诉它的块长必须盖得住这个数。早先工厂里那个值停在 512，
+        // 于是 VST 插入每块只处理前 512 帧、后 512 帧原样直通 ——
+        // 每 10ms 一次硬接缝，听感就是"音频线接触不良"那种爆音。
+        // 这里钉住两件事：默认块长 ≥ 一个引擎块；混音台整块交给插入，不切、不截断。
+        Assert.True(Mixer.DefaultMaxBlockSize >= 1024,
+            "the mixer must handle at least one engine block (1024 frames) without chunking");
+
+        const int frames = 1024;
+        const int offset = 3;   // 输出缓冲的起点故意非零：插入看的必须是节点缓冲，不是它
+
+        var insert = new RecordingInsert();
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState { Volume = 1 });
+        var node = builder.AddNode("track-0", MixNodeKind.Track, new TestState { Volume = 1 },
+            new ArraySource(MakeSamples(frames, 31)), inserts: [insert]);
+        builder.Connect(node, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[offset + frames * 2];
+        mixer.Render(0, frames, buffer, offset);
+
+        // 一次调用、覆盖整块：任何"只处理一部分就返回"的实现都会在这里露出来。
+        var call = Assert.Single(insert.Calls);
+        Assert.Equal(0, call.Offset);
+        Assert.Equal(frames, call.Count);
+    }
+
+    // 只记录被叫到的位置与长度，什么也不改 —— 这条测试看的是"交了多少"，不是音质。
+    sealed class RecordingInsert : IMixInsert
+    {
+        public List<(int Offset, int Count)> Calls { get; } = [];
+
+        public string Name => "recording";
+
+        public bool IsBypassed => false;
+
+        public int LatencySamples => 0;
+
+        public void Process(Span<float> buffer, int offset, int count) => Calls.Add((offset, count));
+    }
+
+    [Fact]
     public void SilentTrack_ProducesSilence()
     {
         const int frames = 64;

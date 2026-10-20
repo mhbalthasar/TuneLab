@@ -131,10 +131,20 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
         // 进度条跨两个格式累计：两个后端各自只会报"我在自己这份清单里走到第几条"，
         // 全局的偏移量只有这里知道。
-        int total = vst3Paths.Count + vst2Paths.Count;
+        int total = Math.Max(vst3Paths.Count + vst2Paths.Count, 1);
+
+        // 目录内的"正在检查 xxx"要知道当前是哪个目录、全局走到第几条 —— 后端报细节时只给插件名，
+        // 这两个值由下面两个 lambda 边扫边更新。
+        string currentDirectory = string.Empty;
+        int currentDone = 0;
 
         entries.AddRange(sVst3Backend.ListPlugins(vst3Paths, (index, _, directory) =>
-            progress?.Report(new InsertScanProgress(index, Math.Max(total, 1), directory)))
+            {
+                currentDirectory = directory;
+                currentDone = index;
+                progress?.Report(new InsertScanProgress(index, total, directory));
+            },
+            onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
             .Select(p => new InsertPluginEntry
             {
                 Format = p.Format,
@@ -142,13 +152,19 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 Name = p.Name,
                 Vendor = p.Vendor,
                 Category = p.Category,
+                IsInstrument = p.IsInstrument,
                 Locator = p.Locator,
             }));
 
         // VST2 一律过桥（Vst2Backend / VstBridge），x86 与 x64 都支持；
         // 桥的可执行文件缺失时 Create 会给原因，扫描这里只负责"列出来"。
         entries.AddRange(sVst2Backend.ListPlugins(vst2Paths, (index, _, directory) =>
-            progress?.Report(new InsertScanProgress(vst3Paths.Count + index, Math.Max(total, 1), directory)))
+            {
+                currentDirectory = directory;
+                currentDone = vst3Paths.Count + index;
+                progress?.Report(new InsertScanProgress(vst3Paths.Count + index, total, directory));
+            },
+            onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
             .Select(p => new InsertPluginEntry
             {
                 Format = p.Format,
@@ -156,6 +172,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 Name = p.Name,
                 Vendor = p.Vendor,
                 Category = p.Category,
+                IsInstrument = p.IsInstrument,
                 Locator = p.Locator,
             }));
 
@@ -179,6 +196,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         Name = cached.Name,
         Vendor = cached.Vendor,
         Category = cached.Category,
+        IsInstrument = cached.IsInstrument,
         IsAvailable = cached.IsAvailable,
         UnavailableReason = cached.UnavailableReason,
         Locator = cached.Locator,
@@ -191,6 +209,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         Name = entry.Name,
         Vendor = entry.Vendor,
         Category = entry.Category,
+        IsInstrument = entry.IsInstrument,
         IsAvailable = entry.IsAvailable,
         UnavailableReason = entry.UnavailableReason,
         Locator = entry.Locator,
@@ -266,6 +285,10 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         public string Name { get; set; } = string.Empty;
         public string Vendor { get; set; } = string.Empty;
         public string Category { get; set; } = string.Empty;
+
+        // 乐器（VST3 Instrument / VST2 effFlagsIsSynth）。菜单按它过滤，见 InsertPluginEntry.IsInstrument。
+        public bool IsInstrument { get; set; }
+
         public bool IsAvailable { get; set; } = true;
         public string? UnavailableReason { get; set; }
         public string Locator { get; set; } = string.Empty;

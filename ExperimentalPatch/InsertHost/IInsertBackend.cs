@@ -30,7 +30,16 @@ public interface IInsertBackend
     //
     // onDirectory：**每进入一个目录之前**回调一次（参数 = 本次调用内的序号、本次的目录数、目录本身）。
     // 只为给"立即扫描"画进度条：跨格式的累计由宿主自己算（它知道两个格式各有多少条）。
-    IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null, Action<int, int, string>? onDirectory = null);
+    //
+    // probeInstruments：要不要判断"这个插件是不是乐器"（扫描时 = true，「添加效果」菜单据此藏掉乐器）。
+    // 怎么判由各后端自己定：VST2 过桥加载一次（VST2 没有静态元数据，问插件自己是唯一可靠的办法）；
+    // VST3 读二进制里的类别标记，**不加载**（进程内加载会把宿主带走，见 Vst3Backend 的注释）。
+    // 纯粹为了找 Locator 的调用方（例如按 pluginId 反查路径）传 false，别为它白跑一遍。
+    //
+    // onDetail：探测过程中的"正在检查 xxx"（参数是插件显示名）。不参与进度条，
+    // 只为了让界面在"一个大目录里逐个过插件"的那几秒里看得出还活着。
+    IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null,
+        Action<int, int, string>? onDirectory = null, bool probeInstruments = true, Action<string>? onDetail = null);
 
     // 创建一个挂上图的实例。失败返回 null（并把原因写进 reason）——绝不是抛异常，
     // 调用方（宿主）据此把 UI 上的那个槽位标红 + 旁通（DESIGN.md §5.6）。
@@ -49,6 +58,10 @@ public sealed class InsertPluginInfo
     public required string Name { get; init; }
     public string Vendor { get; init; } = string.Empty;
     public string Category { get; init; } = string.Empty;
+
+    // 乐器（VST3 Instrument / VST2 effFlagsIsSynth）。见 InsertPluginEntry.IsInstrument：
+    // 混合台的插入槽只收效果器，扫描时探到乐器就标这里，菜单据此过滤。
+    public bool IsInstrument { get; init; }
 
     // 后端私有的定位信息：VST3 的 bundle 路径（LoadPlugin 要的）。
     // 不进落盘载荷：工程可能换机器，路径会变；按 PluginId 重新扫。

@@ -65,8 +65,20 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         if (mDisposed || mBypassed || count <= 0)
             return;
 
-        int n = Math.Min(count, mBlockSize);
+        // 整块都要过插件：逐段（每段 ≤ mBlockSize，也就是插件被 Initialize 时声明的块长）处理。
+        // 早先是 `n = Math.Min(count, mBlockSize)` 就返回 —— 块比声明值大时**后半块原样直通**，
+        // 每 10ms 一次硬接缝，听感就是爆音。声明块长现在与引擎一致，这个循环是第二道保险。
+        for (int done = 0; done < count; done += mBlockSize)
+        {
+            int n = Math.Min(mBlockSize, count - done);
 
+            if (!ProcessChunk(buffer, offset + done * 2, n))
+                return;   // 插件失效：剩下的部分保持直通
+        }
+    }
+
+    bool ProcessChunk(Span<float> buffer, int offset, int n)
+    {
         // 交织 → 平面。
         for (int ch = 0; ch < mChannels; ch++)
         {
@@ -93,15 +105,22 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         if (!ok)
         {
             // 失败 = 保持原样（直通）。宿主可以在上层看到持续失败后决定摘掉这个插件。
-            return;
+            return false;
         }
 
         // 平面 → 交织（取前两个声道，多余的声道不往立体声总线里塞）。
         for (int i = 0; i < n; i++)
         {
-            buffer[offset + i * 2] = mOutPlanes[0][i];
-            buffer[offset + i * 2 + 1] = mChannels > 1 ? mOutPlanes[1][i] : mOutPlanes[0][i];
+            float left = mOutPlanes[0][i];
+            float right = mChannels > 1 ? mOutPlanes[1][i] : mOutPlanes[0][i];
+
+            // NaN / ±Inf 就地清零：这类值一旦进了总线，整条链（含限幅器 —— NaN 的比较恒为 false）
+            // 都拦不住，最终送到声卡就是一串爆音或整段静音。代价是一帧两次比较。
+            buffer[offset + i * 2] = float.IsFinite(left) ? left : 0f;
+            buffer[offset + i * 2 + 1] = float.IsFinite(right) ? right : 0f;
         }
+
+        return true;
     }
 
     // ── 插件自身的状态与参数（全部只在 UI 线程用）──

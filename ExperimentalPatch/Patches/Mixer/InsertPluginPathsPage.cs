@@ -50,8 +50,10 @@ public sealed class InsertPluginPathsPage : UserControl
         var intro = new TextBlock
         {
             Text = L(
-                "混音台的插入效果从这里找插件。改完路径点「立即扫描」，扫描结果会缓存下来供「添加效果」菜单使用。",
-                "The mixer finds insert plugins here. After editing paths, click Scan now — results are cached for the Add effect menu."),
+                "混音台的插入效果从这里找插件。改完路径点「立即扫描」，扫描结果会缓存下来供「添加效果」菜单使用。"
+                + "扫描会逐个加载插件来判断它是效果器还是乐器（乐器不进混音台），所以需要几秒。",
+                "The mixer finds insert plugins here. After editing paths, click Scan now — results are cached for the Add effect menu. "
+                + "Scanning loads each plugin once to tell effects from instruments (instruments are not offered to the mixer), so it takes a few seconds."),
             FontSize = 10.5,
             Foreground = Palette.Brush(Palette.TextLabel, 0.9),
             TextWrapping = TextWrapping.Wrap,
@@ -153,36 +155,35 @@ public sealed class InsertPluginPathsPage : UserControl
         var add = new ChromeButton { Text = L("+ 添加路径", "+ Add path"), Width = 84, Height = 20 };
         add.Click += () => Browse(format, paths);
 
-        // 手工往 StackPanel 里加行，不用 DataTemplate：我们的行要能"即时增删"，
-        // 而 ItemsControl 的回收语义在这里只会添乱（删一行时它可能还在渲染上一个）。
+        // 行直接手工堆进 StackPanel，不用 ItemsControl/DataTemplate：这里是"清单"而不是"缓存"，
+        // 几十条的量级，整体重建最省心。
+        //
+        // 【为什么是"重建"而不是增量增删】早先是增量同步：CollectionChanged 里按 Tag 找回那一行删掉。
+        // 那个写法有个致命细节 —— 行是 Grid，而 Tag 打在里面的 TextBlock 上，于是**永远匹配不上**：
+        // 删不掉旧行、✕ 也只从 Grid 里摘掉一个子控件（看着像删了，其实行还在）。
+        // 于是每调一次 Reload（扫描完就会调）列表就多一份重复。
+        // 整体重建没有这个类别的问题：内容与集合永远一致。
         var list = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
 
-        foreach (var entry in paths.ToArray())
-            list.Children.Add(BuildPathRow(entry, paths, list));
-
-        // 之后增删跟着同步：这是"清单"而不是"缓存"，UI 就是它。
-        paths.CollectionChanged += (_, e) =>
+        void RebuildRows()
         {
-            if (e.NewItems != null)
-                foreach (PathEntry added in e.NewItems)
-                    list.Children.Add(BuildPathRow(added, paths, list));
+            list.Children.Clear();
 
-            if (e.OldItems == null)
-                return;
-
-            // O(n) 找到那一行删掉。路径清单是十进制的规模，不值得上字典。
-            foreach (PathEntry removed in e.OldItems)
+            foreach (var entry in paths.ToArray())
             {
-                for (int i = list.Children.Count - 1; i >= 0; i--)
+                var captured = entry;
+                list.Children.Add(BuildPathRow(captured, () =>
                 {
-                    if (list.Children[i] is not Control { Tag: PathEntry tag } || !ReferenceEquals(tag, removed))
-                        continue;
-
-                    list.Children.RemoveAt(i);
-                    break;
-                }
+                    // 删一条路径立刻落盘：否则界面说删了、扫描仍按旧的清单走
+                    // （扫描读的是文件里那份，见 Scan 的注释）。
+                    paths.Remove(captured);
+                    Save(format, paths);
+                }));
             }
-        };
+        }
+
+        RebuildRows();
+        paths.CollectionChanged += (_, _) => RebuildRows();
 
         var body = new StackPanel();
         body.Children.Add(header);
@@ -194,7 +195,8 @@ public sealed class InsertPluginPathsPage : UserControl
     }
 
     // 一行：路径 + ✕。路径不存在时用警示色标出来（用户打错字 / 卸载了插件是常态）。
-    static Control BuildPathRow(PathEntry entry, ObservableCollection<PathEntry> owner, Panel parent)
+    // ✕ 只从集合里去掉那条 —— 行本身由 RebuildRows 收拾（别再自己动视觉树，早先那样做只会漏行）。
+    static Control BuildPathRow(PathEntry entry, Action onRemove)
     {
         var text = new TextBlock
         {
@@ -204,15 +206,10 @@ public sealed class InsertPluginPathsPage : UserControl
             Foreground = Palette.Brush(entry.Exists ? Palette.TextNormal : Palette.CloseHover),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            Tag = entry,
         };
 
         var remove = new ChromeButton { Text = "✕", Width = 18, Height = 18, HoverColor = Palette.CloseHover };
-        remove.Click += () =>
-        {
-            owner.Remove(entry);
-            parent.Children.Remove(text);
-        };
+        remove.Click += onRemove;
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,18"), Height = 22 };
         Grid.SetColumn(text, 0);
@@ -377,8 +374,12 @@ public sealed class InsertPluginPathsPage : UserControl
             mProgress.Value = p.TotalDirectories <= 0 ? 0 : (double)p.DoneDirectories / p.TotalDirectories;
 
             mStatus.Text = L(
-                $"正在扫描 {p.DoneDirectories + 1}/{p.TotalDirectories}：{p.Directory}",
-                $"Scanning {p.DoneDirectories + 1}/{p.TotalDirectories}: {p.Directory}");
+                p.Detail == null
+                    ? $"正在扫描 {p.DoneDirectories + 1}/{p.TotalDirectories}：{p.Directory}"
+                    : $"正在扫描 {p.DoneDirectories + 1}/{p.TotalDirectories}：{p.Directory} — 检查 {p.Detail}",
+                p.Detail == null
+                    ? $"Scanning {p.DoneDirectories + 1}/{p.TotalDirectories}: {p.Directory}"
+                    : $"Scanning {p.DoneDirectories + 1}/{p.TotalDirectories}: {p.Directory} — checking {p.Detail}");
         });
 
         try
