@@ -13,5 +13,10 @@ public interface IMixSource
 {
     // 把 [position, position + count) 的立体声样本按给定左右增益**累加**进 buffer（交织、2 声道）。
     // buffer 的写起点是 offset（以 float 计）。
+    //
+    // position 是**绝对**样本位置。混音台挂上有延迟的插件时，引擎传进来的 position
+    // 已经预先往后拨了一段（= 图里所有链的最长延迟，DESIGN.md §3.11），所以实现方
+    // **只管按 position 读**，不要自己再减：源侧读到哪就是哪，补偿只发生一次
+    // （在 Mixer.RenderChunk 里，那一处）。
     void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain);
 }

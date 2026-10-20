@@ -33,6 +33,11 @@ internal sealed class InsertInstanceFactory
 
     public int MaxBlockSize { get; set; } = 512;
 
+    // 用户配的 VST3 扫描路径（宿主启动时从 InsertPluginSettings 注入）。
+    // 为什么不让工厂自己去读设置：设置是"本机配置"，工厂该拿现成的值，
+    // 而不是反过来去翻配置文件 —— 那样单测就没法固定输入了。
+    public IReadOnlyList<string> Vst3Paths { get; set; } = InsertPluginSettings.DefaultVst3Paths;
+
     // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于原生库在不在。
     public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3 };
 
@@ -156,9 +161,9 @@ internal sealed class InsertInstanceFactory
 
     // 按 PluginId 在扫描缓存里找。缓存可能比工程旧（用户卸了插件）——
     // 找不到就如实说"找不到了"，不猜一个相似的。
-    static InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId)
+    InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId)
     {
-        foreach (var plugin in backend.ListPlugins())
+        foreach (var plugin in backend.ListPlugins(Vst3Paths))
         {
             if (plugin.PluginId == pluginId)
                 return plugin;

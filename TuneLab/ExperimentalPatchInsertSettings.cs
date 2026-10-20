@@ -28,13 +28,19 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     public static string SettingsPath => Path.Combine(DataFolder(), FileName);
 
     // 默认就扫这两个位置：VST3 的标准安装目录。用户自己加更多。
-    public static IReadOnlyList<string> DefaultVst3Paths => OperatingSystem.IsWindows()
-        ? new[]
+    public static IReadOnlyList<string> DefaultVst3Paths
+    {
+        get
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Common Files", "VST3"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Common Files", "VST3"),
+            var list = new List<string>();
+
+            // 然后再加 VST3 的标准安装位置（Windows）。用户自己加的路从这里进来。
+            list.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Common Files", "VST3"));
+            list.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Common Files", "VST3"));
+
+            return list;
         }
-        : Array.Empty<string>();
+    }
 
     public static IReadOnlyList<string> DefaultVst2Paths => OperatingSystem.IsWindows()
         ? new[]
@@ -100,11 +106,29 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
         var entries = new List<InsertPluginEntry>();
 
-        entries.AddRange(ScanVst3(state.Vst3Paths ?? DefaultVst3Paths.ToList()));
+        // 扫哪 = 用户配的清单（EP-MIXER-12）。空清单 = 什么都不扫，不擅自去扫系统目录。
+        // 扫哪 = 用户配的清单（EP-MIXER-12）。空清单 = 什么都不扫，不擅自去扫系统目录。
+        entries.AddRange(sVst3Backend.ListPlugins(state.Vst3Paths ?? []).Select(p => new InsertPluginEntry
+        {
+            Format = p.Format,
+            PluginId = p.PluginId,
+            Name = p.Name,
+            Vendor = p.Vendor,
+            Category = p.Category,
+            Locator = p.Locator,
+        }));
 
         // VST2 的 32 位插件要过桥（Vst2Backend / VstBridge），这里先扫出来、标成
         // "当前进程用不了"。用户看得见自己装了，而不是"明明装了却搜不到"。
-        entries.AddRange(ScanVst2(state.Vst2Paths ?? DefaultVst2Paths.ToList()));
+        entries.AddRange(sVst2Backend.ListPlugins(state.Vst2Paths ?? []).Select(p => new InsertPluginEntry
+        {
+            Format = p.Format,
+            PluginId = p.PluginId,
+            Name = p.Name,
+            Vendor = p.Vendor,
+            Category = p.Category,
+            Locator = p.Locator,
+        }));
 
         state.Cache = entries.Select(ToCached).ToList();
         state.LastScanUtc = DateTime.UtcNow.ToString("u");
@@ -116,56 +140,8 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         return entries;
     }
 
-    static List<InsertPluginEntry> ScanVst3(IReadOnlyList<string> paths)
-    {
-        var list = new List<InsertPluginEntry>();
-
-        foreach (string directory in paths.Where(Directory.Exists))
-        {
-            foreach (string file in Directory.EnumerateFiles(directory, "*.vst3", SearchOption.AllDirectories))
-            {
-                bool is32Bit = file.Contains(@"\x86-win\") || file.Contains(@"/x86-win/");
-
-                list.Add(new InsertPluginEntry
-                {
-                    Format = "VST3",
-                    PluginId = "vst3:" + Path.GetFileNameWithoutExtension(file),
-                    Name = Path.GetFileNameWithoutExtension(file),
-                    Locator = file,
-                    // 32 位包在这个进程里加载不了；桥还没接 VST2，先如实标出来。
-                    IsAvailable = !is32Bit,
-                    UnavailableReason = is32Bit ? "32-bit (needs the VST2 bridge)" : null,
-                });
-            }
-        }
-
-        return list;
-    }
-
-    static List<InsertPluginEntry> ScanVst2(IReadOnlyList<string> paths)
-    {
-        var list = new List<InsertPluginEntry>();
-
-        foreach (string directory in paths.Where(Directory.Exists))
-        {
-            foreach (string file in Directory.EnumerateFiles(directory, "*.dll", SearchOption.AllDirectories))
-            {
-                // 是不是真 VST2 要看导出表（VSTPluginMain）。这里只按扩展名粗筛，
-                // 真正判断在加载时做（Vst2Backend.Create）。
-                list.Add(new InsertPluginEntry
-                {
-                    Format = "VST2",
-                    PluginId = "vst2:" + Path.GetFileNameWithoutExtension(file),
-                    Name = Path.GetFileNameWithoutExtension(file),
-                    Locator = file,
-                    IsAvailable = false,
-                    UnavailableReason = "VST2 hosting is not wired up yet",
-                });
-            }
-        }
-
-        return list;
-    }
+    static readonly Vst3Backend sVst3Backend = new();
+    static readonly Vst2Backend sVst2Backend = new();
 
     static InsertPluginEntry ToEntry(CachedPlugin cached) => new()
     {

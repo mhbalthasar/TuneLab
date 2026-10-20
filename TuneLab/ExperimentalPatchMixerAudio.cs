@@ -263,6 +263,8 @@ internal sealed class TrackMixSource : IMixSource
         mTrack = track;
     }
 
+    // 【为什么 seekOffset 已经不用管】引擎把偏移后的 position 传进来（Mixer.RenderChunk 里
+    // 那一处），源侧按收到的 position 直接读。补偿只发生一次 —— 在引擎里。
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mGraph.AddData(mTrack, position, position + count, true, buffer, offset, leftGain, rightGain);
 }

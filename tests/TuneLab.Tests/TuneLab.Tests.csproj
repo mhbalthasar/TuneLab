@@ -24,4 +24,12 @@
     <ProjectReference Include="..\..\TuneLab.Setup\TuneLab.Setup.csproj" />
   </ItemGroup>
 
+  <!-- 真 VST3 集成测试（Vst3IntegrationTests）要进程内加载原生宿主。
+       dll 由 InsertHost 构建出来；这里拷一份到测试输出目录，否则 Vst3Backend
+       会报"原生库缺失"而整组跳过 —— 那是部署漏拷，不是"机器没插件"。 -->
+  <ItemGroup>
+    <None Include="..\..\ExperimentalPatch\InsertHost\Native\win-x64\ownvst3.tlhost.dll"
+          CopyToOutputDirectory="PreserveNewest" Link="ownvst3.tlhost.dll" />
+  </ItemGroup>
+
 </Project>

@@ -35,6 +35,11 @@ public sealed class Mixer
 
     public bool LimiterEnabled { get; set; }
 
+    // 读取位置的补偿量（样本）：图里所有链的最长延迟 MaxLatencySamples。
+    // 挂在 Runtime 上而不是 MixSnapshot 上：它随快照一起换，但**读**它的频率是每块一次，
+    // 放在 Runtime 里音频线程少一次间接跳转。
+    public int SeekOffset => mRuntime?.SeekOffset ?? 0;
+
     public void SetSnapshot(MixSnapshot? snapshot)
     {
         mRuntime = snapshot == null ? null : new Runtime(snapshot, mMaxBlockSize);
@@ -112,7 +117,11 @@ public sealed class Mixer
                     // 与宿主旧路径同一公式、同一顺序：lv = v(1−p)、rv = v(1+p)。
                     float left = (float)(state.Volume * (1 - state.Pan));
                     float right = (float)(state.Volume * (1 + state.Pan));
-                    node.Source.AddData(position, count, target, targetOffset, left, right);
+
+                    // 提前播放的补偿（DESIGN.md §3.11）：延迟插件使 out[t] = source[t−X]，
+                    // 于是播放头走到 t 时听到的是 t−X 的内容。读 t+X 就把它拉回 t。
+                    // 偏移为 0（没有任何插件延迟）时与旧路径逐位相同 —— 退化的 bit 相同正是靠这个。
+                    node.Source.AddData(position + runtime.SeekOffset, count, target, targetOffset, left, right);
                 }
             }
             else if (node.Kind == MixNodeKind.Master)
@@ -245,9 +254,14 @@ public sealed class Mixer
         public readonly float[] PeakRight;
         public readonly Dictionary<string, int> Index;
 
+        // 读取位置的补偿量。与 Snapshot.MaxLatencySamples 同一来源，抄在这里是为了
+        // 每块的读取是一次字段访问而不是一次接口跳转。
+        public readonly int SeekOffset;
+
         public Runtime(MixSnapshot snapshot, int maxBlockSize)
         {
             Snapshot = snapshot;
+            SeekOffset = snapshot.MaxLatencySamples;
             Buffers = new float[snapshot.Nodes.Count][];
             DelayLines = new DelayLine?[snapshot.Nodes.Count][];
             PeakLeft = new float[snapshot.Nodes.Count];

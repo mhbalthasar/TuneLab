@@ -82,10 +82,17 @@ public sealed class Vst3Backend : IInsertBackend
         return File.Exists(candidate) ? NativeLibrary.Load(candidate) : IntPtr.Zero;
     }
 
-    public IReadOnlyList<InsertPluginInfo> ListPlugins()
+    public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null)
     {
         if (NativePath == null)
             return [];
+
+        // 上游的 PluginScanner 有个硬限制：ScanAsync **不接受目录参数**，
+        // 只扫它自己认定的标准位置。而"用户自定的扫描路径清单"是本功能的硬需求
+        // （编辑器设置里那份），所以这里自己走一遍目录枚举，再用
+        // PluginScanner.ResolveAsync 把 bundle 补成完整描述（名字 / 厂商 / 声道数）。
+        if (directories != null && directories.Count > 0)
+            return ListFromDirectories(directories);
 
         try
         {
@@ -129,6 +136,42 @@ public sealed class Vst3Backend : IInsertBackend
         => string.IsNullOrWhiteSpace(plugin.Identifier)
             ? plugin.Name
             : "vst3:" + plugin.Identifier;
+
+    // 按用户配的目录清单扫。
+    //
+    // 两个选择说明：
+    //   ① 自己枚举 .vst3，而不是让上游扫 —— 上游那个不接受目录参数（见上）。
+    //   ② 用 bundle 名做 PluginId，而不是 classId —— 拿 classId 要把插件 load 一遍
+    //      （几十毫秒一个，几百个就是十秒级，正好是"打开菜单卡一下"的来源）。
+    //      bundle 名是 VST3 平台规定的，同一台机器上稳定；换机器重新扫就对上了。
+    //      ⚠️ 代价：两个不同插件同名时会撞。取舍记在这里，别以后误以为是 bug。
+    static IReadOnlyList<InsertPluginInfo> ListFromDirectories(IReadOnlyList<string> directories)
+    {
+        var list = new List<InsertPluginInfo>();
+
+        foreach (string directory in directories)
+        {
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+                continue;
+
+            foreach (string bundle in Directory.EnumerateFiles(directory, "*.vst3", SearchOption.AllDirectories))
+            {
+                bool is32Bit = bundle.Contains(@"\x86-win\") || bundle.Contains(@"/x86-win/");
+                string name = Path.GetFileNameWithoutExtension(bundle);
+
+                list.Add(new InsertPluginInfo
+                {
+                    Format = "VST3",
+                    PluginId = "vst3:" + name,
+                    Name = name,
+                    Locator = bundle,
+                    Category = is32Bit ? "32-bit (needs the bridge)" : string.Empty,
+                });
+            }
+        }
+
+        return list;
+    }
 
     public IMixInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
     {
@@ -177,8 +220,14 @@ public sealed class Vst3Backend : IInsertBackend
                 return null;
             }
 
-            // 只看这个：是**效果器**才挂。乐器（IsInstrument）在这里毫无意义——
+            // 只看这个：是**效果器**才挂。乐器在这里毫无意义——
             // 它要收 MIDI、要自己产声音，而我们的插入点是"处理已经存在的音频"。
+            //
+            // 判据是 native 的 IsInstrument，不是自己的猜测。这里试过两个"更聪明"的
+            // 替代品，都错了，记下来免得再走一遍：
+            //   · ActualInputChannels <= 0 —— Surge XT 报 2 in / 2 out（它确实能当效果器用）；
+            //   · !IsEffect —— 上游 native 的 IsEffect getter 是从 IsInstrument 复制来的
+            //     （同一个函数指针），单独用它会把每个插件都判成乐器。
             if (wrapper.IsInstrument)
             {
                 reason = "this plugin is an instrument; inserts need an effect";

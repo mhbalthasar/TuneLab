@@ -290,5 +290,76 @@ public class InsertChainTests
         var backend = new Vst3Backend();
         Assert.Equal("VST3", ((IInsertBackend)backend).FormatName);
     }
+
+    // ── 提前播放：让输出坐标与播放头一致（DESIGN.md §3.11）──
+
+    [Fact]
+    public void SeekOffset_MovesTheReadPositionForward()
+    {
+        const int frames = 32;
+        const int delay = 8;
+
+        // 一条轨带 8 样本延迟的插入。输出要满足 out[t] == source[t]，
+        // 所以源必须在 t 被读一次，而插入会把它推到 t−8。引擎因此读 t+8。
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState());
+
+        // 源的第 n 个样本记下自己被读到的绝对位置（PositionRecordingSource）。
+        var source = new PositionRecordingSource(frames);
+
+        var track = builder.AddNode("track-0", MixNodeKind.Track, new TestState(), source,
+            [new GainInsert(1.0, delay)]);
+
+        builder.Connect(track, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        Assert.Equal(delay, mixer.SeekOffset);
+
+        var buffer = new float[frames * 2];
+        mixer.Render(0, frames, buffer, 0);
+
+        // 被读到的绝对位置 = 请求的 position + delay（补偿只发生一次，在引擎里）。
+        Assert.Equal(0 + delay, source.FirstReadPosition);
+    }
+
+    [Fact]
+    public void NoInserts_MeansNoSeekOffset()
+    {
+        const int frames = 16;
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState());
+        var source = new PositionRecordingSource(frames);
+
+        var track = builder.AddNode("track-0", MixNodeKind.Track, new TestState(), source);
+        builder.Connect(track, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        // 没有任何插件延迟时 **必须是 0** —— 退化图的逐位相同靠这个。
+        Assert.Equal(0, mixer.SeekOffset);
+    }
+}
+
+/// <summary>记下自己第一次被读时的绝对 position（用来验证补偿方向与量）。</summary>
+sealed class PositionRecordingSource(int frames) : IMixSource
+{
+    public int FirstReadPosition { get; private set; } = -1;
+    readonly float[] mData = new float[frames * 2];
+
+    public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
+    {
+        if (FirstReadPosition < 0)
+            FirstReadPosition = position;
+
+        for (int i = 0; i < count; i++)
+        {
+            buffer[offset + i * 2] += leftGain;
+            buffer[offset + i * 2 + 1] += rightGain;
+        }
+    }
 }
 

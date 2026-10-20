@@ -22,8 +22,11 @@ public interface IInsertBackend
     string? UnavailableReason { get; }
 
     // 本格式下当前可用的插件（扫描结果）。
+    //
+    // directories 非空 = 只扫这些目录（用户在设置里配的清单）。
+    // 为空 / null = 扫后端自己的默认位置。
     // 慢，但只在打开菜单 / 扫描时调；宿主负责缓存（见 InsertPluginCatalog）。
-    IReadOnlyList<InsertPluginInfo> ListPlugins();
+    IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null);
 
     // 创建一个挂上图的实例。失败返回 null（并把原因写进 reason）——绝不是抛异常，
     // 调用方（宿主）据此把 UI 上的那个槽位标红 + 旁通（DESIGN.md §5.6）。
