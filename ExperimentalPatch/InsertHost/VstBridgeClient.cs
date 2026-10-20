@@ -1,4 +1,5 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -24,7 +25,9 @@ using TuneLab.ExperimentalPatch.VstBridge;
 // —— 见 SendProcess 的说明。
 internal sealed class VstBridgeClient : IDisposable
 {
-    const string BridgeExecutableName = "TuneLab.ExperimentalPatch.VstBridge.exe";
+    // 桥的可执行文件名。两个位数各一份（同名会让部署时互相覆盖）。
+    const string BridgeExecutableName32 = "TuneLab.ExperimentalPatch.VstBridge.exe";
+    const string BridgeExecutableName64 = "TuneLab.ExperimentalPatch.VstBridge.x64.exe";
 
     Process? mProcess;
     JobHandle? mJob;
@@ -35,16 +38,71 @@ internal sealed class VstBridgeClient : IDisposable
     SharedAudioRing? mOutput;   // 桥 → 宿主
 
     readonly SemaphoreSlim mWriteLock = new(1, 1);
+
+    // 桥的 stderr（最近 64 行）。加载失败时把它拼进原因里 —— 否则
+    // "VST2 bridge could not be started" 对用户和我们都等于没说。
+    readonly List<string> mErrorLines = [];
+
+    public string? LastBridgeError
+    {
+        get
+        {
+            lock (mErrorLines)
+            {
+                if (LastStartError is { Length: > 0 })
+                    return mErrorLines.Count == 0
+                        ? LastStartError
+                        : LastStartError + " | " + string.Join(" | ", mErrorLines);
+
+                return mErrorLines.Count == 0 ? null : string.Join(" | ", mErrorLines);
+            }
+        }
+    }
+
+    public void ClearBridgeError()
+    {
+        lock (mErrorLines)
+            mErrorLines.Clear();
+
+        LastStartError = null;
+    }
+
+    // 启动阶段失败的原因（beyond the bridge's own stderr）。
+    public string? LastStartError { get; private set; }
+
+    // 一次"发一条指令 + 读一条回复"必须原子：管道是单条流，
+    // UI 线程改参数、音频线程发块，两条来回一交错就会把回复读错人。
+    readonly SemaphoreSlim mRoundTrip = new(1, 1);
+
+    readonly int mBitness;
     bool mDisposed;
 
     // 等一块音频的上限。20ms 是一个"宁可漏一块也不能让音频线程无限等"的取舍：
     // 桥卡死时（插件死循环）这一块直通，下一块照常发；记日志由调用方做。
     const int BlockWaitMs = 20;
 
-    public static VstBridgeClient Instance { get; } = new();
+    public VstBridgeClient(int bitness)
+    {
+        if (bitness != 32 && bitness != 64)
+            throw new ArgumentOutOfRangeException(nameof(bitness));
+
+        mBitness = bitness;
+    }
+
+    // **位数决定实例**：32 位插件只能进 x86 桥，64 位只能进 x64 桥。
+    // 两个进程互相独立 —— 一个被插件搞死，另一个照常服务别的插件。
+    public static VstBridgeClient ForBitness(int bitness) => bitness == 32 ? sX86 : sX64;
+
+    static readonly VstBridgeClient sX86 = new(32);
+    static readonly VstBridgeClient sX64 = new(64);
 
     // 桥是否在跑（且管道还连着）。
     public bool IsRunning => mPipe?.IsConnected == true;
+
+    // 桥里的槽位号（插件的装载位）。每个桥进程各有一套，从 1 开始。
+    int mNextSlot;
+
+    public int AllocateSlot() => System.Threading.Interlocked.Increment(ref mNextSlot);
 
     /// <summary>
     /// 确保桥进程活着。只有要加载 32 位插件时才该调它。
@@ -64,12 +122,13 @@ internal sealed class VstBridgeClient : IDisposable
             return false;
 
         // ── 2. 找桥的可执行文件。就在我们自己的 exe 旁边（一起发布）。
-        string bridge = FindBridgeExecutable();
+        string? bridge = FindBridgeExecutable(mBitness);
         if (bridge == null)
             return false;
 
         // ── 3. 启动。把作业句柄与管道名递给它。
-        string pipeName = BridgeProtocol.PipeName + "-" + Environment.ProcessId;
+        //     管道名带位数：两个桥可以同时活着，不能撞。
+        string pipeName = BridgeProtocol.PipeName + "-" + mBitness + "-" + Environment.ProcessId;
 
         // 共享音频段在启动**之前**建好：桥起来后会 Open 这两段，找不到直接退出。
         // 名字由管道名派生，两端永远不会对不上。
@@ -98,15 +157,49 @@ internal sealed class VstBridgeClient : IDisposable
         {
             FileName = bridge,
             // 桥是我们启动的私有实例，不共用一个固定的管道名 —— 两个 TuneLab 同时开会撞。
-            Arguments = $"--job {mJob.Handle.ToInt64()} --pipe {pipeName}",
+            Arguments = $"--pipe {pipeName}",
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
+
+            // 桥的诊断信息全在 stderr 上（"找不到共享段"、"作业加入失败"…）。
+            // 不接就没有任何办法知道它为什么没起来 —— 用户只会看到"插件加载失败"。
+            RedirectStandardError = true,
         };
 
         mProcess = Process.Start(start);
         if (mProcess == null)
             return false;
+
+        // 立刻把它收进作业。作业句柄不能靠命令行递给子进程（那是进程本地的句柄），
+        // 只能由我们在自己这边拿到子进程句柄再加进去。
+        //
+        // 【那一小段竞争】"启动 → 加入"之间我们若崩，桥就成了孤儿。窗口是微秒级，
+        // 而且是**我们崩**这种已经很难看的情形；比起"句柄传递处处不生效"，
+        // 这个取舍划算。加入失败就把刚起的进程杀掉，绝不留一个游离的桥。
+        if (mJob == null || !mJob.Assign(mProcess))
+        {
+            KillBridge();
+            LastStartError = $"assigning the bridge to the job object failed ({Marshal.GetLastWin32Error()})";
+            return false;
+        }
+
+        mProcess.ErrorDataReceived += (_, e) =>
+        {
+            if (string.IsNullOrEmpty(e.Data))
+                return;
+
+            lock (mErrorLines)
+            {
+                mErrorLines.Add(e.Data);
+
+                // 只留最近几十行：桥是长命进程，日志不能无限长。
+                if (mErrorLines.Count > 64)
+                    mErrorLines.RemoveAt(0);
+            }
+        };
+
+        mProcess.BeginErrorReadLine();
 
         // ── 4. 连上管道。桥最多等我们 30 秒，反过来也一样：
         //    连不上就把刚起的进程杀掉，别留一个没人要的桥。
@@ -117,14 +210,12 @@ internal sealed class VstBridgeClient : IDisposable
             await mPipe.ConnectAsync(3000, cancellation).ConfigureAwait(false);
 
             // 握手：确认桥还是我们以为的那个东西（位数、协议版本）。
-            await SendControlAsync(JsonSerializer.Serialize(new HelloMessage
+            string? ack = await ExchangeAsync(JsonSerializer.Serialize(new HelloMessage
             {
                 Version = BridgeProtocol.ProtocolVersion,
-                Bitness = Environment.Is64BitProcess ? 64 : 32,
+                Bitness = mBitness,
                 Formats = ["vst2"],
             }), cancellation).ConfigureAwait(false);
-
-            var ack = await ReadControlAsync(cancellation).ConfigureAwait(false);
             if (ack == null || !ack.Contains("\"ok\""))
             {
                 KillBridge();
@@ -140,11 +231,13 @@ internal sealed class VstBridgeClient : IDisposable
         }
     }
 
-    public async Task<bool> TryLoadAsync(int slot, string pluginPath, double sampleRate, int maxBlock, bool bypass,
-        CancellationToken cancellation = default)
+    // 加载插件并拿回它的元数据（名字/厂商/延迟/声道数）。
+    // 返回 null = 管道断了 / 桥没起来；Ok=false = 插件自己拒绝（原因在 Reason）。
+    public async Task<LoadPluginResultMessage?> TryLoadAsync(int slot, string pluginPath, double sampleRate,
+        int maxBlock, bool bypass, CancellationToken cancellation = default)
     {
         if (!IsRunning)
-            return false;
+            return null;
 
         var message = JsonSerializer.Serialize(new LoadPluginMessage
         {
@@ -157,15 +250,155 @@ internal sealed class VstBridgeClient : IDisposable
 
         try
         {
-            await SendControlAsync(message, cancellation).ConfigureAwait(false);
-            string? reply = await ReadControlAsync(cancellation).ConfigureAwait(false);
-            return reply != null && reply.Contains("\"ok\":true");
+            string? reply = await ExchangeAsync(message, cancellation).ConfigureAwait(false);
+            return reply == null ? null : JsonSerializer.Deserialize<LoadPluginResultMessage>(reply);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // ── 下面这些都是"一问一答"，消息类型见 BridgeProtocol ──
+
+    public async Task<bool> TryUnloadAsync(int slot, CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return false;
+
+        try
+        {
+            string? reply = await ExchangeAsync(
+                JsonSerializer.Serialize(new UnloadPluginMessage { Slot = slot }),
+                cancellation).ConfigureAwait(false);
+
+            return reply != null
+                && JsonSerializer.Deserialize<UnloadPluginResultMessage>(reply)?.Ok == true;
         }
         catch (Exception)
         {
             return false;
         }
     }
+
+    public async Task<byte[]?> TryGetStateAsync(int slot, CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return null;
+
+        try
+        {
+            string? reply = await ExchangeAsync(
+                JsonSerializer.Serialize(new GetStateMessage { Slot = slot }),
+                cancellation).ConfigureAwait(false);
+
+            if (reply == null)
+                return null;
+
+            var chunk = JsonSerializer.Deserialize<StateChunkMessage>(reply);
+            return chunk == null || string.IsNullOrEmpty(chunk.Base64)
+                ? null
+                : Convert.FromBase64String(chunk.Base64);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task<bool> TrySetStateAsync(int slot, byte[] data, CancellationToken cancellation = default)
+    {
+        if (!IsRunning || data.Length == 0)
+            return false;
+
+        try
+        {
+            string? reply = await ExchangeAsync(JsonSerializer.Serialize(new SetStateMessage
+            {
+                Slot = slot,
+                Base64 = Convert.ToBase64String(data),
+            }), cancellation).ConfigureAwait(false);
+
+            return reply != null
+                && JsonSerializer.Deserialize<SetStateResultMessage>(reply)?.Ok == true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    public async Task<IReadOnlyList<ParameterInfo>?> TryGetParametersAsync(int slot,
+        CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return null;
+
+        try
+        {
+            string? reply = await ExchangeAsync(
+                JsonSerializer.Serialize(new GetParametersMessage { Slot = slot }),
+                cancellation).ConfigureAwait(false);
+
+            if (reply == null)
+                return null;
+
+            return JsonSerializer.Deserialize<ParameterListMessage>(reply)?.Parameters;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task<bool> TrySetParameterAsync(int slot, long id, double value,
+        CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return false;
+
+        try
+        {
+            string? reply = await ExchangeAsync(JsonSerializer.Serialize(new SetParameterMessage
+            {
+                Slot = slot,
+                Id = id,
+                Value = value,
+            }), cancellation).ConfigureAwait(false);
+
+            return reply != null
+                && JsonSerializer.Deserialize<SetParameterResultMessage>(reply)?.Ok == true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    // ── UI 线程用的同步包装 ──
+    //
+    // 【为什么套一层 Task.Run】上面的 await 一旦直接 .GetAwaiter().GetResult() 在 UI 线程上，
+    // 会把 UI 线程自己卡死（await 的续体要回 UI 线程执行，而 UI 线程正等着）。
+    // Task.Run 把整条链甩到线程池，UI 线程空出来跑续体。
+    public bool EnsureStartedBlocking()
+        => RunBlocking(() => EnsureStartedAsync());
+
+    public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass)
+        => RunBlocking(() => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass));
+
+    public bool UnloadBlocking(int slot) => RunBlocking(() => TryUnloadAsync(slot));
+
+    public byte[]? GetStateBlocking(int slot) => RunBlocking(() => TryGetStateAsync(slot));
+
+    public bool SetStateBlocking(int slot, byte[] data) => RunBlocking(() => TrySetStateAsync(slot, data));
+
+    public IReadOnlyList<ParameterInfo>? GetParametersBlocking(int slot)
+        => RunBlocking(() => TryGetParametersAsync(slot));
+
+    public bool SetParameterBlocking(int slot, long id, double value)
+        => RunBlocking(() => TrySetParameterAsync(slot, id, value));
+
+    static T RunBlocking<T>(Func<Task<T>> action) => Task.Run(action).GetAwaiter().GetResult();
 
     // 音频路径。**不走 await**：它从音频线程调，那里不能等 Task。
     // 数据走共享内存（见 BridgeSharedMemory）：这一侧负责"写输入环、通知桥、等输出环"。
@@ -178,40 +411,51 @@ internal sealed class VstBridgeClient : IDisposable
         if (mInput == null || mOutput == null)
             return false;
 
-        // 1) 把输入推进宿主→桥的环，然后通知桥"有一块等你"。
-        if (!mInput.TryPublish(slot, inPlanes, channels, frames, BlockWaitMs))
-            return false;
-
-        if (!SendControlBlocking(JsonSerializer.Serialize(new ProcessRequest
-            {
-                Slot = slot,
-                Frames = frames,
-                Channels = channels,
-                Bypass = bypass,
-            })))
-        {
-            return false;
-        }
-
-        // 2) 等桥的结果。桥处理完会把结果推进桥→宿主的环，然后回一个短回执。
-        string? reply = ReadControlBlocking();
-        if (reply == null)
-            return false;
-
-        if (!mOutput.TryRead(BlockWaitMs, out int outSlot, out var planes, out int outChannels, out int outFrames))
+        // 整段（发块 + 等回复 + 取输出）都在这把锁里：
+        // 否则 UI 线程正好在改参数时，两个回复会串台。
+        if (!mRoundTrip.Wait(BlockWaitMs))
             return false;
 
         try
         {
-            // 平面 →交织由调用方（引擎）做；这里只把平面数据搬到它的缓冲上。
-            for (int ch = 0; ch < Math.Min(channels, outChannels); ch++)
-                Array.Copy(planes[ch], outPlanes[ch], Math.Min(frames, outFrames));
+            // 1) 把输入推进宿主→桥的环，然后通知桥"有一块等你"。
+            if (!mInput.TryPublish(slot, inPlanes, channels, frames, BlockWaitMs))
+                return false;
 
-            return true;
+            if (!SendControlBlocking(JsonSerializer.Serialize(new ProcessRequest
+                {
+                    Slot = slot,
+                    Frames = frames,
+                    Channels = channels,
+                    Bypass = bypass,
+                })))
+            {
+                return false;
+            }
+
+            // 2) 等桥的结果。桥处理完会把结果推进桥→宿主的环，然后回一个短回执。
+            string? reply = ReadControlBlocking();
+            if (reply == null)
+                return false;
+
+            if (!mOutput.TryRead(BlockWaitMs, out _, out var planes, out int outChannels, out int outFrames))
+                return false;
+
+            try
+            {
+                for (int ch = 0; ch < Math.Min(channels, outChannels); ch++)
+                    Array.Copy(planes[ch], outPlanes[ch], Math.Min(frames, outFrames));
+
+                return true;
+            }
+            finally
+            {
+                mOutput.Release();
+            }
         }
         finally
         {
-            mOutput.Release();
+            mRoundTrip.Release();
         }
     }
 
@@ -264,15 +508,31 @@ internal sealed class VstBridgeClient : IDisposable
 
     // ── 内部 ──
 
-    static string? FindBridgeExecutable()
+    static string? FindBridgeExecutable(int bitness)
     {
-        string beside = Path.Combine(AppContext.BaseDirectory, BridgeExecutableName);
-        if (File.Exists(beside))
-            return beside;
+        string name = bitness == 64 ? BridgeExecutableName64 : BridgeExecutableName32;
+        string rid = bitness == 64 ? "win-x64" : "win-x86";
 
-        // 部署上别处去了：让它跟着 TuneLab 的目录找。
-        string? nextTo = Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? string.Empty, BridgeExecutableName);
-        return File.Exists(nextTo) ? nextTo : null;
+        string baseDirectory = AppContext.BaseDirectory;
+
+        // 优先：按位数的子目录（自包含发布的正式布局）。
+        // 两个位数各自的运行时文件必须分开放 —— x86 与 x64 的 hostfxr.dll / coreclr.dll
+        // 同名不同架构，混在一个目录里必炸。
+        string[] candidates =
+        [
+            Path.Combine(baseDirectory, "bridge", rid, name),
+            Path.Combine(baseDirectory, name),
+            Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? string.Empty, "bridge", rid, name),
+            Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? string.Empty, name),
+        ];
+
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
     }
 
     // 同步发一条控制消息（音频线程用）。与 SendControlAsync 同一条管道，
@@ -299,6 +559,37 @@ internal sealed class VstBridgeClient : IDisposable
         finally
         {
             mWriteLock.Release();
+        }
+    }
+
+    // 所有"发一条、收一条"都走这里：拿到往返锁，保证回复不会被别的线程读走。
+    async Task<string?> ExchangeAsync(string json, CancellationToken cancellation)
+    {
+        await mRoundTrip.WaitAsync(cancellation).ConfigureAwait(false);
+        try
+        {
+            await SendControlAsync(json, cancellation).ConfigureAwait(false);
+            return await ReadControlAsync(cancellation).ConfigureAwait(false);
+        }
+        finally
+        {
+            mRoundTrip.Release();
+        }
+    }
+
+    // 同步版（音频线程）；拿不到锁就放弃这一块，让调用方直通。
+    string? ExchangeBlocking(string json)
+    {
+        if (!mRoundTrip.Wait(BlockWaitMs))
+            return null;
+
+        try
+        {
+            return SendControlBlocking(json) ? ReadControlBlocking() : null;
+        }
+        finally
+        {
+            mRoundTrip.Release();
         }
     }
 
@@ -427,6 +718,10 @@ internal sealed class JobHandle : IDisposable
 
     public IntPtr Handle => mHandle;
 
+    // 把一个刚启动的子进程收进作业。**必须在我们这边调**（见 VstBridgeClient 的说明）。
+    public bool Assign(System.Diagnostics.Process process)
+        => mHandle != IntPtr.Zero && Native.AssignProcessToJobObject(mHandle, process.Handle);
+
     public static JobHandle? Create()
     {
         IntPtr job = Native.CreateJobObject(IntPtr.Zero, null);
@@ -511,6 +806,13 @@ internal sealed class JobHandle : IDisposable
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         internal static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
 
+    // 把子进程加进作业。**必须由宿主在自己这边调**：作业句柄是进程本地的，
+    // 把它的数值当参数传给子进程，子进程拿到的只是"一个不存在的句柄"
+    // （ERROR_INVALID_HANDLE = 6）—— 第一版就是这么写的，桥一起来就退出。
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool SetInformationJobObject(IntPtr hJob, JOBOBJECTINFOCLASS infoClass,
@@ -521,3 +823,4 @@ internal sealed class JobHandle : IDisposable
         internal static extern bool CloseHandle(IntPtr handle);
     }
 }
+

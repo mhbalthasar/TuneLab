@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       VstBridge.x64 — 64 位 VST2 插件的宿主进程（与 ..\VstBridge 同一套源码）
+       ════════════════════════════════════════════════════════════════════════
+       为什么 64 位插件也要过桥：VST2 没有沙箱。实测 46 个 64 位 VST2 插件里有
+       一个在 effSetChunk 里直接 AccessViolation —— 进程内直载意味着整个 TuneLab
+       退出。桥进程崩了只是桥崩了，宿主可以把它标成失败并直通。
+
+       两个桥的差别只有位数与输出名：
+         · TuneLab.ExperimentalPatch.VstBridge.exe      （x86，老插件）
+         · TuneLab.ExperimentalPatch.VstBridge.x64.exe  （x64，本工程）
+       宿主侧 VstBridgeClient.ForBitness() 按插件位数选其中一个。
+
+       这个工程**不在 TuneLab.sln 里**：它和 x86 那个一样由发布脚本按平台单独构。
+       ════════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>TuneLab.ExperimentalPatch.VstBridge.x64</AssemblyName>
+    <RootNamespace>TuneLab.ExperimentalPatch.VstBridge</RootNamespace>
+    <Version>2.1.1</Version>
+
+    <!-- 源码在兄弟目录里：关掉默认通配，显式包含，免得多收一份 obj/。 -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\VstBridge\*.cs" />
+  </ItemGroup>
+
+</Project>

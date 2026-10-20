@@ -27,6 +27,7 @@ internal sealed class InsertInstanceFactory
 {
     readonly Dictionary<string, IMixInsert> mLive = [];
     readonly Vst3Backend mVst3 = new();
+    readonly Vst2Backend mVst2 = new();
 
     // 宿主当前的采样率 / 块长。插件的 Initialize 要它们，所以必须在建实例前知道。
     public double SampleRate { get; set; } = 48000;
@@ -38,8 +39,12 @@ internal sealed class InsertInstanceFactory
     // 而不是反过来去翻配置文件 —— 那样单测就没法固定输入了。
     public IReadOnlyList<string> Vst3Paths { get; set; } = InsertPluginSettings.DefaultVst3Paths;
 
-    // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于原生库在不在。
-    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3 };
+    // 用户配的 VST2 扫描路径（与 VST3 分开：老插件目录常常是另一棵树）。
+    public IReadOnlyList<string> Vst2Paths { get; set; } = InsertPluginSettings.DefaultVst2Paths;
+
+    // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于原生库在不在，
+    // VST2 取决于桥可执行文件在不在（Windows-only）。
+    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3, mVst2 };
 
     // 图侧（MixerGraphCompiler）与工程侧（MixerPersistence 落盘）共用**同一个**工厂：
     // 插件实例里存着用户的参数与 state，各建一份就会"图里在跑、落盘是空的"。
@@ -111,8 +116,18 @@ internal sealed class InsertInstanceFactory
 
         // 落盘的插件状态在这里灌回去。灌失败（版本不兼容、插件换了）不致命：
         // 插件照常用它的默认参数，只记一条日志。
-        if (insert is Vst3Insert vst && slot.State != null && slot.State.Length > 0 && !vst.LoadState(slot.State))
-            HostLog.Warning($"insert: plugin '{slot.Name.Value}' refused the saved state; using its defaults");
+        if (slot.State != null && slot.State.Length > 0)
+        {
+            bool loaded = insert switch
+            {
+                Vst3Insert vst => vst.LoadState(slot.State),
+                Vst2Insert vst2 => vst2.LoadState(slot.State),
+                _ => true,
+            };
+
+            if (!loaded)
+                HostLog.Warning($"insert: plugin '{slot.Name.Value}' refused the saved state; using its defaults");
+        }
 
         mLive[slot.Id] = insert;
         return insert;
@@ -121,9 +136,14 @@ internal sealed class InsertInstanceFactory
     /// <summary>把某个槽位的实例状态读出来（保存工程时调）。</summary>
     public byte[]? CaptureState(InsertSlot slot)
     {
-        if (mLive.TryGetValue(slot.Id, out var insert) && insert is Vst3Insert vst)
+        if (mLive.TryGetValue(slot.Id, out var insert))
         {
-            var state = vst.SaveState();
+            var state = insert switch
+            {
+                Vst3Insert vst => vst.SaveState(),
+                Vst2Insert vst2 => vst2.SaveState(),
+                _ => null,
+            };
 
             if (state != null && state.Length > 0)
                 return state;
@@ -163,7 +183,12 @@ internal sealed class InsertInstanceFactory
     // 找不到就如实说"找不到了"，不猜一个相似的。
     InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId)
     {
-        foreach (var plugin in backend.ListPlugins(Vst3Paths))
+        // 每个格式有自己的一份路径清单（VST2 与 VST3 的老插件目录通常不是同一棵树）。
+        var paths = string.Equals(backend.FormatName, Vst2Backend.FormatName, StringComparison.OrdinalIgnoreCase)
+            ? Vst2Paths
+            : Vst3Paths;
+
+        foreach (var plugin in backend.ListPlugins(paths))
         {
             if (plugin.PluginId == pluginId)
                 return plugin;

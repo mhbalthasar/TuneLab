@@ -271,27 +271,45 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 ```
 
   - 主进程保持 **AnyCPU**，发布时按 RID 出 x64 / arm64，与今天完全一致；
-  - 桥是独立 csproj，`PlatformTarget = x86`（另一个是 x64），**只在需要时由 VST2 加载器启动**；
-  - 32 位插件 → 起 x86 桥；64 位插件 → 起 x64 桥。
+  - 桥是两个独立 csproj：`VstBridge/`（x86）与 `VstBridge.X64/`（x64，源码同一份），
+    **只在需要时由 VST2 加载器启动**；
+  - 32 位插件 → 起 x86 桥；64 位插件 → 起 x64 桥（`PluginBitness` 读 PE 头决定）。
 - **为什么 VST2 一律走桥**（而不是"64 位就在进程内"）：
   ① 一套代码路径，行为一致；② VST2 是遗留格式，崩溃概率高于 VST3，隔离收益大；
   ③ 主工程不必引用任何与位数相关的原生库 → **AnyCPU 这条不变量不被破坏**。
+  - **实测依据（2026-10-20）**：46 个 64 位 VST2 里有 1 个（REAPER 的 ReaControlMIDI）
+    在 `effSetChunk` 里直接 AccessViolation。进程内直载 = 整个 TuneLab 退出；
+    过桥 = 只是那次调用失败。这条证据推翻了"64 位直载"的原方案。
 - **共享内存**：环形缓冲；块大小 / 采样率在握手时协商。桥的往返延迟（约一个块）计入 PDC（§3.5）。
   断线 / 超时 = 该插入 bypass + 标红，**不静默静音**。
-- **构建纪律**：桥是独立工程（`ExperimentalPatch/VstBridge/`），**只出 x86 一个平台**（32 位 VST2
-  与 x86 的 .vst3 包都归它）；`dotnet build TuneLab.sln` **不编它**（与 `MixerEngine` 同策略：
-  不出现在 sln 里，由宿主 ProjectReference 与发布脚本拉起）。
+- **构建纪律**：桥是独立工程，**不在 `TuneLab.sln` 里**（与 `MixerEngine` 同策略：
+  由发布脚本单独构）。部署布局固定为：
+
+  ```
+  <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.exe      （自包含：多数机器没有 x86 .NET 运行时）
+  <app>/bridge/win-x64/TuneLab.ExperimentalPatch.VstBridge.x64.exe
+  ```
+
+  两个位数的运行时文件必须分目录——`hostfxr.dll` / `coreclr.dll` 同名不同架构，混放必炸。
+  `VstBridgeClient.FindBridgeExecutable` 先找 `bridge/<rid>/`，再退回 exe 同级目录（开发期用）。
   **绝不给 `TuneLab.csproj` 加 `x86` 目标或 `PlatformTarget`**——那会把整个 AnyCPU 工程钉死在一个位数上。
 
 #### 5.3.1 桥的生命周期（2026-10-20 落地）
 
-- **只按需启动**：宿主侧唯一入口 `VstBridgeClient.EnsureStartedAsync()`，只有真的要加载 32 位插件时才调。
+- **只按需启动**：宿主侧唯一入口 `VstBridgeClient.EnsureStartedAsync()`，只有真的要加载 VST2 插件时才调。
 - **宿主单方面决定生死**：宿主先 `CreateJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，
-  再以 `--job <句柄>` 启动桥；桥自己 `AssignProcessToJobObject`。
+  启动桥之后**由宿主自己** `AssignProcessToJobObject(job, child)`。
+  - 作业句柄是**进程本地**的：把它的数值当命令行参数传给子进程，子进程拿到的只是一个
+    不存在的句柄（`ERROR_INVALID_HANDLE`）。第一版就是这么写的，桥一起来就退出。
   - 宿主**退出 / 崩溃 / 被任务管理器杀掉** → 作业句柄被关闭 → 内核杀桥。不需要桥配合、也不需要宿主反应。
   - 反过来**不成立**：桥绝不创建"能杀宿主"的作业。同步是单向的——桥不能独活，但也不能反过来决定宿主何时死。
+  - 已知窗口：`Process.Start` 与 `Assign` 之间宿主若崩，桥会成为孤儿（微秒级）。加入失败立即杀子进程。
 - **正常关闭**：宿主 `KillBridge()`（`Process.Kill(entireProcessTree: true)` + 放作业句柄）。
-- **宿主启动顺序**：作业必须在启动子进程**之前**建好，否则"崩在启动与加入之间"那一瞬桥就是孤儿。
+- **诊断**：桥的 stderr 由客户端接管（最近 64 行）。启动/加载失败时把它拼进原因里，
+  否则用户和我们都只看到一句 "bridge could not be started"。
+- **命令管道要串行**：一条管道上同时有音频线程的 Process 与 UI 线程的改参数/存 state，
+  "发一条 + 收一条"必须整体加锁（`mRoundTrip`）；否则回复会串台。
+  音频线程用 `Wait(BlockWaitMs)`，拿不到锁就放弃这块（直通），绝不无限等。
 
 #### 5.3.2 音频走共享内存，不走管道（2026-10-20 修订）
 
@@ -338,6 +356,39 @@ out[t] = source[(t + X) − X] = source[t]
 
 **方向说明**：`position + X`（读未来）而不是 `position − X`。后者会得到
 `out[t] = source[t − 2X]`，延迟翻倍。推导见 §3.11。
+
+#### 5.3.4 VST2 C ABI：三条踩出来的硬事实（2026-10-20 实测）
+
+桥里的 `VstBridge/PluginHost.cs` 是手写 P/Invoke。第一版"看着对"的代码把插件全部
+挡在门外（"the plugin refused to create its AEffect"），原因不是 SDK 复杂，是三处细节：
+
+1. **AEffect 的字段偏移随指针宽度变化**。x86 里 `dispatcher` 在 +4、`process` 在 +8；
+   x64 里是 +8 / +16，`numParams` 在 +44 而不是 +24。第一版把 x86 的数字写死，
+   x64 下每个字段都读错 —— 读到的是**别的指针的半个字**，调用即堆损坏（0xC0000374）。
+   现在由 `AEffectLayout.ForPointerSize(IntPtr.Size)` 按对齐规则算。
+2. **opcode 编号是 ABI，不能凭记忆写**。`effClose` = 1、`effSetProgram` = 2，
+   而 `effSetSampleRate` = 10、`effSetBlockSize` = 11、`effMainsChanged` = 12、
+   `effGetChunk` = 23、`effSetChunk` = 24、`effGetEffectName` = 45、`effGetVendorString` = 47。
+   第一版把"设置采样率"写成 1 —— 那是**关闭插件**。于是"打开 → 立刻关闭 → 继续拿它处理音频"，
+   症状是随机堆损坏，看起来像 ABI 或调用约定的问题。
+3. **Windows 上的调用约定是 `__cdecl`**（`VSTCALLBACK` 的定义），不是 stdcall。
+   x64 上两者没区别，所以 x86 桥才会暴露这个问题。
+   另外 `dispatcher` 的 `value` 参数与返回值是 `VstIntPtr`（指针宽），必须用 `IntPtr`：
+   写成 `int` 在 x64 上只传了半个参数。
+
+还有两条运行期事实：
+
+- **`audioMasterVersion` 必须回 2400**。一律回 0 时，一半插件（Voxengo / Dragonfly / ZamTube…）
+  在 `VSTPluginMain` 里直接返回 null，表现为"插件拒绝创建"。
+  `audioMasterGetTime` 也要给一块真实的 `VstTimeInfo`（有插件不判空直接解引用）。
+- **必须递满插件声明的声道数**。Voxengo 的插件声明 8 进 8 出；`processReplacing` 会按
+  自己的 `numInputs/numOutputs` 索引 `float**`。只递 2 个指针 = 读数组外 → AccessViolation。
+  桥的做法是永远按 `max(numInputs,1)` / `max(numOutputs,1)` 备缓冲，用不到的填静音，
+  出来的结果再映射回立体声（单声道插件复制到左右）。
+
+**验证方式**：`Y:\Insts\VSTEffects\VST2` 下 51 个 dll（46 × x64 + 5 × x86）逐个过桥：
+加载 → 参数 → 8 块音频 → 旁通逐样本比对 → 卸载。结果 51/51 通过，旁通全部逐位一致；
+`RoomReverb.dll` 被正确识别为"不是 VST2"（没有 `VSTPluginMain` 导出）。
 
 ### 5.4 隔离（VST3 那条特别要求）
 
@@ -660,7 +711,9 @@ ExperimentalPatch/InsertHost/
 - **不动 SDK 的 `TrackInfo`**（冻结面）：路由与插入只走 `epMixer` 与 sidecar，通用格式（MIDI 等）导出时自然丢弃。
 - sidecar 只在"文件内没有 `epMixer`"时被采用 —— 说明这个工程最后一次是被原版（或别的工具）保存的。
 - sidecar 过期（用户回滚了工程文件）无法完全避免；靠 9.3 的名字 + 序号匹配把影响限制在单轨，并记日志。
-- `pluginId`：VST3 用 `classId` + 插件名兜底；VST2 用 `uniqueId` + 路径兜底；JSFX 用工程内相对路径。
+- `pluginId`：VST3 用 `classId` + 插件名兜底；VST2 用 **`"vst2:" + 文件名`**
+  （扫描阶段不加载插件，拿不到 `uniqueId`；重名插件会撞 id，这是有意的取舍，
+  见 §9.4）；JSFX 用工程内相对路径。
 
 ## 10. 里程碑
 
@@ -683,7 +736,7 @@ ExperimentalPatch/InsertHost/
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
 | M6 | `IInsertHost` + **VST3**（OwnAudioVST3，独立 ALC） | 挂一个 VST3：出声、存读、延迟被 PDC 补偿 |
-| M7 | **VST2**：64 位进程内 + **x86 桥进程**（§5.3） | 32 位老插件能出声；主工程仍 AnyCPU |
+| M7 | **VST2：一律过桥**（x86 + x64 两个桥，§5.3）。**已完成**：`PluginHost` 的 C ABI、`Vst2Backend`/`Vst2Insert`、位数判定、参数/状态、桥的多任务串行化 | 51 个真插件（46 × x64 + 5 × x86）全部出声、旁通逐位一致；插件崩只死桥 |
 | M8 | FX 浮窗接线：旁通 / 界面 / 增删；插件扫描缓存；找不到插件的降级 | 与外观稿一致；插件缺失不丢链 |
 | M9 | JSFX（§12 Q4：先 spike 再定） | — |
 
@@ -697,7 +750,7 @@ ExperimentalPatch/InsertHost/
 |---|---|---|
 | 引擎重写引入实时毛刺 / 爆音 | 高 | 先做 M3（无 AUX 的退化图），用现有测试与听感做基线；回调里零分配 |
 | PDC 算错 | 中 | 用"两条等长路径"与"一条带 1024 样本延迟插件"的用例验证相位 |
-| VST 崩溃带走应用 | 高 | v1 明说；v2 独立进程 |
+| VST 崩溃带走应用 | 高 | VST2 已经全部过桥（§5.3）；VST3 仍在进程内（vendored wrapper），后续可沿用同一套桥 |
 | JSFX 没有现成解释器 | 高 | §12 Q4；先 spike（ysfx 能否 P/Invoke + @gfx + 许可） |
 | VST2 许可与 SDK 合规 | 中 | 只做运行时加载、不分发 SDK；文档写明 |
 | 工程格式兼容 | 中 | 版本 +1，老版本硬失败；native DTO 不进 SDK |

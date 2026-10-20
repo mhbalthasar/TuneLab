@@ -18,43 +18,25 @@ internal static class BridgeProgram
 {
     static int Main(string[] args)
     {
-        // 参数契约：宿主传 --job <handle> --pipe <name>。缺任何一个就当"被人手点开了"，
-        // 立刻退出——一个单独运行的桥没有任何意义（它的插件句柄是宿主管的）。
-        string? jobHandle = null;
+        // 参数契约：宿主传 --pipe <name>。缺了就说明是"被人手点开了"，立刻退出
+        // ——一个单独运行的桥没有任何意义（它的共享段与生命周期都归宿主）。
+        //
+        // 【为什么没有 --job】作业句柄是进程本地的，把它的数值传给子进程只会得到
+        // 一个不存在的句柄（ERROR_INVALID_HANDLE）。所以"加入作业"这一步由宿主
+        // 在 Process.Start 之后自己调 AssignProcessToJobObject 完成（见 VstBridgeClient）。
         string? pipeName = null;
 
         for (int i = 0; i < args.Length - 1; i++)
         {
-            if (args[i] == "--job")
-                jobHandle = args[i + 1];
-            else if (args[i] == "--pipe")
+            if (args[i] == "--pipe")
                 pipeName = args[i + 1];
         }
 
-        if (jobHandle == null || pipeName == null)
+        if (pipeName == null)
         {
-            Console.Error.WriteLine("vst-bridge: missing --job/--pipe; this process only runs under TuneLab.");
+            Console.Error.WriteLine("vst-bridge: missing --pipe; this process only runs under TuneLab.");
             return 2;
         }
-
-        if (!long.TryParse(jobHandle, out long jobValue) || jobValue == 0)
-        {
-            Console.Error.WriteLine("vst-bridge: invalid job handle.");
-            return 2;
-        }
-
-        // 进宿主的作业。这一步就是"不能独活"的全部实现：
-        // 从此刻起我们的命挂在宿主的作业句柄上，他关我们就没。
-        IntPtr job = new(jobValue);
-        if (!Native.AssignProcessToJobObject(job, Native.GetCurrentProcess()))
-        {
-            int error = Marshal.GetLastWin32Error();
-            Console.Error.WriteLine($"vst-bridge: AssignProcessToJobObject failed ({error}); exiting.");
-            return 3;
-        }
-
-        // 注意：不要把宿主**加进**这个作业。宿主创建它时已经指定了 KILL_ON_JOB_CLOSE，
-        // 那是"杀我们"用的。反过来做就会变成"桥能决定宿主何时死"——那不是同步，那是劫持。
 
         Console.CancelKeyPress += (_, e) =>
         {

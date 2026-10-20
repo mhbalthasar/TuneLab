@@ -40,6 +40,12 @@
     <Compile Remove="VstBridge/**" />
     <None Remove="VstBridge/**" />
     <EmbeddedResource Remove="VstBridge/**" />
+
+    <!-- VstBridge.X64/ 是同一套源码的 64 位构建（只有 csproj，没有 .cs）。
+         它的 obj/ 会生成 AssemblyInfo.cs，必须一起排除，否则这里会撞 CS0579。 -->
+    <Compile Remove="VstBridge.X64/**" />
+    <None Remove="VstBridge.X64/**" />
+    <EmbeddedResource Remove="VstBridge.X64/**" />
   </ItemGroup>
 
 </Project>

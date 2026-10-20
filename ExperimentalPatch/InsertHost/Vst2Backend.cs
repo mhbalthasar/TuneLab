@@ -5,36 +5,37 @@ using TuneLab.ExperimentalPatch.MixerEngine;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
 
-// VST2 后端：**目前只做清单，还不能加载**。
+// VST2 后端：列插件清单 + 通过桥进程建实例。
 //
-// 【为什么先这样】VST2 的加载要分两条路：
-//   · 64 位插件：进程内直载（P/Invoke VST2 的 C ABI，见 VstBridge/PluginHost.cs ——
-//     那段已经写好并编译通过，但还没有一个宿主经它建过实例）；
-//   · 32 位插件：过 x86 桥（VstBridge 的协议、JobObject、共享环都已落地，同样没人调过）。
-// 两条都没端到端跑通之前，让它能"扫到"已经是有用的：用户至少看得见自己装了什么，
-// 而不会因为"明明装了却搜不到"以为我们没实现。
+// 【加载一律过桥】见 Vst2Insert 的类注释：进程内直载 64 位 VST2 实测会被
+// 单个插件的 effSetChunk 崩掉整个宿主，所以不分位数，全部交给桥。
+// 桥按插件位数选 x86 / x64 两份可执行文件（PluginBitness 读 PE 头决定）。
 //
-// 【可用性】一律不可用 + 原因（界面据 IsAvailable 禁用菜单项）。这是 DES
+// 【扫描不加载插件】清单按 .dll 列，名字用文件名，PluginId = "vst2:" + 文件名。
+// 真名/厂商要加载插件才问得到，而扫一遍目录就为了显示名字去 load 几十个 dll
+// 是自找崩溃（而且很慢）。代价是重名插件会撞 id —— 这个取舍写在 DESIGN.md 里。
 public sealed class Vst2Backend : IInsertBackend
 {
     public const string FormatName = "VST2";
 
     string IInsertBackend.FormatName => FormatName;
 
-    // 常驻 false：真加载还没接（见类注释）。
-    public bool IsAvailable => false;
+    // 桥是 Windows 专属的（共享内存段 + JobObject）。别的平台上这个后端整个不可用。
+    public bool IsAvailable => OperatingSystem.IsWindows();
 
-    public string? UnavailableReason => "VST2 hosting is not wired up yet";
+    public string? UnavailableReason
+        => OperatingSystem.IsWindows() ? null : "the VST2 bridge is Windows-only";
 
-    // 按目录清单扫 .dll。**不判断是不是真 VST2**：那要读导出表（VSTPluginMain），
-    // 而读导出表要么把 dll load 进来（可能崩）、要么自己 PE 解析（那一整块还没写）。
-    // 宁可多列几个，也不能漏 —— 漏了用户会以为我们的扫描不可信。
     public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null)
     {
         if (directories == null || directories.Count == 0)
             return [];
 
         var list = new List<InsertPluginInfo>();
+
+        // 同一个 dll 可能被两个目录同时包含（用户既有公共目录又有私有目录）：
+        // 按完整路径去重，别在菜单里出现两行一模一样的。
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (string directory in directories)
         {
@@ -43,6 +44,15 @@ public sealed class Vst2Backend : IInsertBackend
 
             foreach (string file in Directory.EnumerateFiles(directory, "*.dll", SearchOption.AllDirectories))
             {
+                if (!seen.Add(file))
+                    continue;
+
+                int bitness = PluginBitness.Read(file);
+
+                // 不是合法 PE（或既不是 32 也不是 64 位）→ 不列。列了也装不进来。
+                if (bitness == 0)
+                    continue;
+
                 string name = Path.GetFileNameWithoutExtension(file);
 
                 list.Add(new InsertPluginInfo
@@ -50,6 +60,7 @@ public sealed class Vst2Backend : IInsertBackend
                     Format = FormatName,
                     PluginId = "vst2:" + name,
                     Name = name,
+                    Category = bitness + "-bit",
                     Locator = file,
                 });
             }
@@ -60,7 +71,12 @@ public sealed class Vst2Backend : IInsertBackend
 
     public IMixInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
     {
-        reason = "VST2 hosting is not wired up yet";
-        return null;
+        if (!OperatingSystem.IsWindows())
+        {
+            reason = UnavailableReason;
+            return null;
+        }
+
+        return Vst2Insert.Create(plugin, settings, out reason);
     }
 }

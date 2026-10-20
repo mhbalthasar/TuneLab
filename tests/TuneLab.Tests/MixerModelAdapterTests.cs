@@ -197,7 +197,10 @@ public class MixerModelAdapterTests
 
             // 没实现的格式永远是禁用的：界面不画做不到的入口。
             Assert.False(model.InsertFormats.Single(f => f.Name == "JSFX").IsAvailable);
-            Assert.False(model.InsertFormats.Single(f => f.Name == "VST2").IsAvailable);
+            // VST2 现在走桥进程（原生库不在宿主进程里加载），所以可用性只取决于平台：
+            // Windows 上永远可用（桥是自包含 exe），别的平台上没有这一类。
+            Assert.Equal(OperatingSystem.IsWindows(),
+                model.InsertFormats.Single(f => f.Name == "VST2").IsAvailable);
         }
     }
 

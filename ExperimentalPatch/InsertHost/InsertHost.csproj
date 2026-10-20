@@ -28,6 +28,11 @@
     <ProjectReference Include="..\MixerEngine\MixerEngine.csproj" />
   </ItemGroup>
 
+  <!-- 单元测试要看到 PluginBitness（纯读 PE 头，没有 native 依赖）。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="TuneLab.Tests" />
+  </ItemGroup>
+
   <!-- 桥协议与共享音频环被**两个工程各编译一份**（VstBridge 与 InsertHost）。
        不抽第三个共享工程是有意的：多一个工程就多一处被两端同时改的冲突面，
        而这里的内容必须两边逐字节一致。<Compile Include> 让单一真相源
