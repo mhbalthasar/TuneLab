@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.ExperimentalPatch.VstBridge;
@@ -77,6 +77,10 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     public bool TryActivateEditor() => mClient.BringEditorToFrontBlocking(mSlotId);
 
     public bool CloseEditor() => mClient.CloseEditorBlocking(mSlotId);
+
+    // 桥进程的 stderr（最近几十行）。编辑器/加载失败时带上它，
+    // 否则"bridge did not answer"这种话等于没说。
+    public string? BridgeError => mClient.LastBridgeError;
 
     public void Process(Span<float> buffer, int offset, int count)
     {
@@ -232,3 +236,4 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
             loaded.LatencySamples, loaded.HasEditor, settings.Bypass);
     }
 }
+

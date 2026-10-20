@@ -101,6 +101,9 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
 
     public bool HasOpenEditor => mInsert.IsEditorOpen;
 
+    // 插件窗口还开着吗？宿主用它决定"带到前台"还是"重新开"。
+    public bool IsOpen => mInsert.IsEditorOpen;
+
     // 每 20ms 泵一次插件自己的消息队列。VSTGUI 那类实现不泵就不画第一帧、也不响应点击。
     void StartPump()
     {
@@ -178,6 +181,7 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
         // 壳没有窗口；真正开窗在 Create 里的 TryOpen（见 InsertEditorHost.Show）。
     }
 }
+
 
 
 

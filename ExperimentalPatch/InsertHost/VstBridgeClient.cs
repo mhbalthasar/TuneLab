@@ -505,7 +505,7 @@ internal sealed class VstBridgeClient : IDisposable
     static readonly TimeSpan RaiseTimeout = TimeSpan.FromSeconds(3);
 
     // 建插件 UI 的上限。3 秒以上在交互上就是"软件卡死了"（用户原话）。
-    static readonly TimeSpan EditorOpenTimeout = TimeSpan.FromSeconds(3);
+    static readonly TimeSpan EditorOpenTimeout = TimeSpan.FromSeconds(8);
 
     public byte[]? GetStateBlocking(int slot) => RunBlocking(() => TryGetStateAsync(slot));
 
@@ -979,4 +979,6 @@ internal sealed class JobHandle : IDisposable
         internal static extern bool CloseHandle(IntPtr handle);
     }
 }
+
+
 

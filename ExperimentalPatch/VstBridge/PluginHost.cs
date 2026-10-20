@@ -241,8 +241,16 @@ internal sealed class PluginHost
         // 已经开着：带回前台，不重建（重建会丢插件窗口里的临时状态）。
         if (slot.Editor != null)
         {
-            slot.Editor.BringToFront();
-            return (true, null, slot.Editor.ChildWindowCount);
+            // 用户可能已经点 ✕ 关掉了：窗口与消息循环都没了，必须当作"没开"重来，
+            // 否则 BringToFront 打在一个已销毁的 HWND 上，表现是"关掉后再点没反应"。
+            if (slot.Editor.IsAlive)
+            {
+                slot.Editor.BringToFront();
+                return (true, null, slot.Editor.ChildWindowCount);
+            }
+
+            slot.Editor.Dispose();
+            slot.Editor = null;
         }
 
         if (!Vst2EditorWindow.TryOpen(slot.Effect, slot.Dispatcher, title, out var editor) || editor == null)
@@ -753,3 +761,4 @@ internal sealed class PluginHost
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     delegate void ProcessProc(IntPtr effect, IntPtr inputs, IntPtr outputs, int frames);
 }
+

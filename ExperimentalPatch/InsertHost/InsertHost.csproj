@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!-- ════════════════════════════════════════════════════════════════════════
        InsertHost — VST 插入效果的宿主侧适配（DESIGN.md §5 / §7 Q1、Q9）
@@ -44,8 +44,19 @@
 
   <!-- 原生 VST3 host（ownvst3）。三个平台各一份，运行时按 RID 选。
        文件名带 .tlhost 后缀，避免与别的扩展带的那一份撞车（见 Vendored/README）。 -->
-  <ItemGroup>
-    <None Include="Native\win-x64\ownvst3.tlhost.dll" CopyToOutputDirectory="PreserveNewest" Link="ownvst3.tlhost.dll" />
+  <!-- native 库按**运行时标识**分目录放：Native/<rid>/ownvst3.tlhost.<ext>。
+       目前仓库里只有 win-x64 一份；把别的平台的二进制丢进对应目录即可，不用改代码。
+       （ownvst3 上游支持 win/linux/osx 的 x64 与 arm64，见 Vendored/README.md） -->
+  <PropertyGroup>
+    <Vst3NativeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == ''">linux-x64</Vst3NativeRid>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('Native/$(Vst3NativeRid)')">
+    <None Include="Native/$(Vst3NativeRid)/*" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>
+

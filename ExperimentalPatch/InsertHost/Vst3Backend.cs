@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -23,7 +23,33 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 public sealed class Vst3Backend : IInsertBackend
 {
     // 我们的 native dll 文件名（设计文档 §5.4 的"改名"方案，见 Vendored/README）。
-    public const string NativeFileName = "ownvst3.tlhost.dll";
+    // native 库的文件名按平台取扩展名。目前仓库里只 vendor 了 win-x64 一份，
+    // 但名字与查找路径都按平台算 —— 往 Native/<rid>/ 里放一份对应平台的二进制就能用，
+    // 不需要改代码（DESIGN.md §5.4）。
+    public const string NativeBaseName = "ownvst3.tlhost";
+
+    public static string NativeFileName =>
+        OperatingSystem.IsWindows() ? NativeBaseName + ".dll" :
+        OperatingSystem.IsMacOS() ? NativeBaseName + ".dylib" :
+        NativeBaseName + ".so";
+
+    // 运行时标识（与 .NET 的 RID 同名）：win-x64 / win-arm64 / win-x86 /
+    // linux-x64 / linux-arm64 / osx-x64 / osx-arm64。
+    public static string NativeRid
+    {
+        get
+        {
+            var arch = RuntimeInformation.ProcessArchitecture;
+
+            if (OperatingSystem.IsWindows())
+                return arch == Architecture.Arm64 ? "win-arm64" : arch == Architecture.X86 ? "win-x86" : "win-x64";
+
+            if (OperatingSystem.IsMacOS())
+                return arch == Architecture.Arm64 ? "osx-arm64" : "osx-x64";
+
+            return arch == Architecture.Arm64 ? "linux-arm64" : "linux-x64";
+        }
+    }
 
     string IInsertBackend.FormatName => "VST3";
 
@@ -61,10 +87,17 @@ public sealed class Vst3Backend : IInsertBackend
     // 不做"去系统目录搜"：那正是我们要避免的撞车来源。
     static string? FindNativeLibrary()
     {
+        // 1. 与 exe 同目录（发布/构建输出的布局）
         string beside = Path.Combine(AppContext.BaseDirectory, NativeFileName);
         if (File.Exists(beside))
             return beside;
 
+        // 2. native/<rid>/ 子目录（按平台分目录放，免得 arm64/x64 的同名文件打架）
+        string perRid = Path.Combine(AppContext.BaseDirectory, "native", NativeRid, NativeFileName);
+        if (File.Exists(perRid))
+            return perRid;
+
+        // 3. 环境变量（开发机 / 外部注入）
         string? fromEnv = Environment.GetEnvironmentVariable("TL_VST3_NATIVE");
         if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv))
             return fromEnv;
@@ -80,8 +113,8 @@ public sealed class Vst3Backend : IInsertBackend
             return IntPtr.Zero;
         }
 
-        string candidate = Path.Combine(AppContext.BaseDirectory, NativeFileName);
-        return File.Exists(candidate) ? NativeLibrary.Load(candidate) : IntPtr.Zero;
+        string? resolved = FindNativeLibrary();
+        return resolved != null ? NativeLibrary.Load(resolved) : IntPtr.Zero;
     }
 
     public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null,
@@ -366,3 +399,6 @@ public sealed class Vst3Backend : IInsertBackend
     public InsertPluginInfo? Resolve(string pluginId)
         => ListPlugins(probeInstruments: false).FirstOrDefault(p => p.PluginId == pluginId);
 }
+
+
+

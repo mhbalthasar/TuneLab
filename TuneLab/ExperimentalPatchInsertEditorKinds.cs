@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Foundation;
@@ -13,8 +13,13 @@ internal interface IInsertEditorWindow
     void Show();
     void Close();
 
+    // 编辑器现在还开着吗？宿主据此决定"带到前台"还是"重新开一扇"。
+    // 关掉之后再点「界面」必须能重开 —— 第一版复用一个已经死掉的壳，表现是点了没反应。
+    bool IsOpen { get; }
+
     // 真的关掉时回调一声（用户点了 ✕ / 原生窗口自己没了）。宿主据此注销槽位。
     // 名字故意不叫 Closed：Avalonia 的 TopLevel.Closed 已经是 event EventHandler，
     // 撞名会让实现方"意外实现"接口成员 —— 那正是这一轮修掉的 bug。
     event Action? WindowClosed;
 }
+

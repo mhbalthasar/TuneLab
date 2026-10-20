@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -52,6 +52,9 @@ internal sealed class Vst2EditorWindow : IDisposable
     Thread? mThread;
     IntPtr mHwnd;
     volatile bool mClosed;
+
+    // 消息循环退出（窗口被关）—— 与 mClosed（宿主主动 Dispose）分开。
+    volatile bool mExited;
     readonly ManualResetEventSlim mReady = new(false);
     bool mOpened;
 
@@ -69,6 +72,10 @@ internal sealed class Vst2EditorWindow : IDisposable
         mDispatcher = dispatcher;
         mTitle = title;
     }
+
+    // 编辑器线程还活着吗？用户点 ✕ 之后窗口没了、消息循环也退了，但宿主这边还拿着
+    // 这个对象 —— 不判这一下，"关掉后再点界面"就会往一个已销毁的 HWND 上 BringToFront。
+    public bool IsAlive => !mExited;
 
     // 从桥的主线程调：起编辑器线程并等它把窗口开出来。
     // 返回 false = 插件没有界面 / effEditOpen 失败 / 超时（窗口已经收拾干净）。
@@ -115,7 +122,7 @@ internal sealed class Vst2EditorWindow : IDisposable
 
     // 宿主侧 OpenEditorBlocking 等 3 秒。桥这边稍微长一点：窗口创建 + 插件建 UI
     // 可能真的接近一秒，多数时间是 100~400ms。
-    static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(4);
+    static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(10);
 
     // 从桥的主线程调：把窗口带到前面（已经打开时）或请求关闭。
     public void BringToFront()
@@ -139,7 +146,18 @@ internal sealed class Vst2EditorWindow : IDisposable
         if (hwnd != IntPtr.Zero)
             PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
 
-        // 编辑器线程是后台线程：插件卡在消息循环里也不会挡住桥退出。
+        // 【必须等它退完】WM_CLOSE 只是投递消息，编辑器线程还要跑 effEditClose + 退出循环。
+        // 不等就返回，宿主会立刻 effClose + FreeLibrary —— 插件代码还在那条线程上跑，
+        // 于是卸载时 AccessViolation（实测：关闭后再卸载必崩）。
+        // 上限 3 秒：真卡死的插件不该把桥的卸载流程一起拖住。
+        try
+        {
+            mThread?.Join(TimeSpan.FromSeconds(3));
+        }
+        catch (Exception)
+        {
+            // 线程已经没了 / 不能 Join：继续走，反正后面也只是不再用它。
+        }
     }
 
     // ── 编辑器线程 ──
@@ -222,6 +240,9 @@ internal sealed class Vst2EditorWindow : IDisposable
             DispatchMessage(ref message);
         }
 
+        // 窗口关了、循环退了：让宿主知道这个对象已经没用（否则下次 OpenEditor
+        // 会往已销毁的 HWND 上 BringToFront，表现是"关掉后再点没反应"）。
+        mExited = true;
         mReady.Set();
     }
 
@@ -252,13 +273,30 @@ internal sealed class Vst2EditorWindow : IDisposable
         return DefWindowProc(hwnd, message, wParam, lParam);
     }
 
-    // 从 ERect* 读出插件首选的客户区尺寸。返回 false = 插件没报 / 报了离谱的值。
+    // 从 ERect 读出插件首选的客户区尺寸。返回 false = 插件没报 / 报了离谱的值。
+    //
+    // 【effEditGetRect 的 ptr 是 ERect**，不是 ERect*】VST2 的约定是：宿主传一个
+    // "指针的指针"，插件往里写它自己的 ERect 地址。早先这里传了 NULL 并拿返回值当指针，
+    // 插件于是往地址 0 写 —— 桥进程当场 AccessViolation（实测 AnSpec / reacomp /
+    // Marvel GEQ 全崩，日志里是 "the bridge did not answer"）。
     bool TryGetEditorSize(out int width, out int height)
     {
         width = 640;
         height = 480;
 
-        IntPtr rect = Call(EffEditGetRect, 0, IntPtr.Zero, IntPtr.Zero, 0);
+        var slot = GCHandle.Alloc(IntPtr.Zero, GCHandleType.Pinned);
+        IntPtr rect;
+
+        try
+        {
+            Call(EffEditGetRect, 0, IntPtr.Zero, slot.AddrOfPinnedObject(), 0);
+            rect = Marshal.ReadIntPtr(slot.AddrOfPinnedObject());
+        }
+        finally
+        {
+            slot.Free();
+        }
+
         if (rect == IntPtr.Zero)
             return false;
 
@@ -408,3 +446,10 @@ internal sealed class Vst2EditorWindow : IDisposable
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? lpModuleName);
 }
+
+
+
+
+
+
+

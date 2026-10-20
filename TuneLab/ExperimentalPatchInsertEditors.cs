@@ -27,10 +27,17 @@ internal static class InsertEditorHost
     public static void Show(string slotId, string pluginName, IMixInsert insert)
     {
         // 已开着的窗口只带到前面，不重建 —— 重建会丢插件窗口里的临时状态。
+        // 但如果插件窗口已经被用户关掉了（IsOpen 为 false），就注销旧的、重新开一扇；
+        // 复用一个死掉的壳正是"关掉之后再点没反应"的原因。
         if (sWindows.TryGetValue(slotId, out var existing))
         {
-            existing.Activate();
-            return;
+            if (existing.IsOpen)
+            {
+                existing.Activate();
+                return;
+            }
+
+            sWindows.Remove(slotId);
         }
 
 
@@ -104,6 +111,7 @@ internal static class InsertEditorHost
         sWindows.Clear();
     }
 }
+
 
 
 

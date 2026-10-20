@@ -656,6 +656,48 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
    重建的事件，所以装载完之后没有任何实例，全部灰。加一个新插件触发了结构变化，
    图重建、实例全建出来，于是"全变正常"。
    修法：`MixerPersistence.Apply` 末尾补一次 `AudioEngine.RebuildMixerGraph()`。
+
+#### 5.7.8 VST2 编辑器：effEditGetRect 的 ptr 是 ERect**（2026-10-21）
+
+**症状**：Marvel GEQ / AnSpec / reacomp 这些 VST2 插件「界面」键有（`effFlagsHasEditor`
+为真），点下去却什么也不出来，日志只有一句 `the bridge did not answer`。
+
+**根因**：`effEditGetRect` 的 `ptr` 参数是 **`ERect**`（指针的指针）**，插件会往宿主给的
+地址里写它自己的 ERect 指针。我们传了 `IntPtr.Zero` 并拿返回值当指针 —— 插件于是往
+**地址 0** 写，桥进程当场 `AccessViolationException`，管道断掉，宿主看到的就是
+"bridge did not answer"。三个插件全崩，不是插件的问题。
+
+**修法**：钉一块 `IntPtr` 当 ERect* 的接收槽，把它的地址当 `ptr` 传，再从槽里读回指针。
+
+**顺带修的两处**（都是这条路上暴露出来的）：
+
+- **卸载顺序**：`Vst2EditorWindow.Dispose` 只投递了 WM_CLOSE 就返回，宿主紧接着
+  `effClose` + `FreeLibrary`，而编辑器线程还在跑插件代码 → 卸载时 AV。
+  现在 Dispose 会等编辑器线程退出（上限 3 秒）。
+- **关掉后重开**：用户点 ✕ 之后窗口与消息循环都没了，但桥里 `slot.Editor` 还指着它，
+  `OpenEditor` 走"已开着 → BringToFront"分支打在一个已销毁的 HWND 上。
+  现在先看 `IsAlive`，死了就 Dispose 掉重建。
+
+#### 5.7.9 多平台：现在的边界与下一步（2026-10-21）
+
+`ownvst3` 上游本身是跨平台的（JUCE 驱动，win/linux/osx 的 x64 与 arm64 都有构建），
+但**仓库里只 vendor 了 `Native/win-x64` 一份**。所以今天的实际边界是：
+
+- VST3 编辑器：Windows-x64 可用；
+- VST2：桥是 Windows 可执行文件，非 Windows 上没有 VST2；
+- 编辑器置顶：`GetTopWindow` / `SetWindowPos` 是 Win32，非 Windows 上自动跳过
+  （`OperatingSystem.IsWindows()` 守卫），编辑器仍由插件自己显示。
+
+为了让"以后加平台"只变成**放文件**，代码这边已经做了两件事：
+
+1. `Vst3Backend.NativeFileName` 按平台取扩展名（`.dll` / `.so` / `.dylib`），
+   `NativeRid` 按 `RuntimeInformation.ProcessArchitecture` 算；
+2. 查找顺序：与 exe 同目录 → `native/<rid>/` → 环境变量 `TL_VST3_NATIVE`；
+   `InsertHost.csproj` 按 `$(RuntimeIdentifier)`（缺省按构建机 OS）把
+   `Native/<rid>/*` 拷进输出。
+
+要真正跨平台，还差：各平台的原生库产物（需要上游 CI / fork）、VST2 桥的
+非 Windows 等价物（或明确"VST2 仅 Windows"）、以及编辑器置顶的 X11/Cocoa 实现。
 要数窗口就用 `FindWindowEx` 遍历兄弟链；要判断编辑器状态就问插件自己的 API。
 ## 6. 界面
 
@@ -1007,6 +1049,7 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

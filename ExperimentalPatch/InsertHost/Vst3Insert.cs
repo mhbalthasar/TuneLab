@@ -180,6 +180,19 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
             if (stillOpen)
                 return true;
 
+            // 插件那边已经把窗口关了，但 native 库还记着"编辑器已创建" ——
+            // 直接再 CreateEditor 它会回 true 却什么都不建（实测 BC Flanger 3 / Sound Delay：
+            // 日志里是 "reported success but IsEditorOpen is false"）。
+            // 先显式关一次，把 native 侧的状态清干净，再重建。
+            try
+            {
+                mWrapper.CloseEditor();
+            }
+            catch (Exception)
+            {
+                // 已经关过一次了：清不掉也只能继续往下试。
+            }
+
             mEditorOpen = false;
             mNeedsPump = false;
         }
@@ -230,6 +243,10 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     {
         var set = new HashSet<IntPtr>();
 
+        // 窗口枚举/置顶是 Win32 专属；别的平台上编辑器由插件自己显示，我们不做任何事。
+        if (!OperatingSystem.IsWindows())
+            return set;
+
         IntPtr hwnd = GetTopWindow(IntPtr.Zero);
         int guard = 0;
         while (hwnd != IntPtr.Zero && guard++ < 10000)
@@ -248,6 +265,9 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     // 退而求其次取任意可见的新窗口。找不到返回 0。
     public IntPtr FindEditorWindowSince(HashSet<IntPtr> before)
     {
+        if (!OperatingSystem.IsWindows())
+            return IntPtr.Zero;
+
         IntPtr fallback = IntPtr.Zero;
 
         IntPtr hwnd = GetTopWindow(IntPtr.Zero);
@@ -280,7 +300,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     // 也是"打开后藏在别的窗口下面"这个问题的根治办法。
     public static void BringToFront(IntPtr hwnd)
     {
-        if (hwnd == IntPtr.Zero)
+        if (hwnd == IntPtr.Zero || !OperatingSystem.IsWindows())
             return;
 
         ShowWindow(hwnd, SwRestore);
@@ -465,6 +485,8 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 }
+
+
 
 
 
