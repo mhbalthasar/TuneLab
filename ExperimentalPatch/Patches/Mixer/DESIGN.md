@@ -718,6 +718,28 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 缓存里没有（从没扫过 / 被清）才退回按目录枚举。这样"用户看到的插件"与"能定位到的插件"
 永远是同一份。
 
+#### 5.7.11 DPF/NanoVG 插件渲染成白色块：环境没有 OpenGL 1.3（2026-10-21）
+
+**症状**：ZamDynamicEQ / Dragonfly 系列（DPF 框架）编辑器能打开，但画面是白的 + 几块色块。
+
+**实测**：插件的 stderr 里有
+
+```
+[dpf] assertion failure: "glActiveTexture != nullptr" in file src/NanoVG.cpp
+[dpf] assertion failure: Failed to create NanoVG context, expect a black screen
+```
+
+`glActiveTexture` 是 OpenGL **1.3** 才有的函数。Windows 自带的软件渲染器只提供 **1.1**，
+所以 `wglGetProcAddress("glActiveTexture")` 返回 null，NanoVG 建不出上下文。
+这台机器的显示适配器是 `GameViewer Virtual Display Adapter` / `Microsoft Hyper-V 视频` ——
+虚拟机/远程桌面，没有 GPU 驱动，GL 版本停在 1.1。**不是宿主或插件实现的 bug。**
+
+**办法**（都是环境层面的）：
+
+- 在有真实 GPU 驱动的机器上跑；或
+- 在 `TuneLab.exe`（以及桥进程目录）旁放一份 Mesa3D 的软件 `opengl32.dll`（llvmpipe），
+  它会提供 GL 4.x。注意 VST2 的窗口在桥进程里，那份目录也要放。
+
 **顺带**：VST2 的窗口开在桥进程里，`SetForegroundWindow` 会被 Windows 静默拒绝
 （只有前台进程或获它授权的进程才能抢前台），表现是"窗口开了但藏在宿主下面"。
 宿主现在在发 `OpenEditor` 之前调 `AllowSetForegroundWindow(桥的 pid)`，
@@ -1073,6 +1095,7 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 
