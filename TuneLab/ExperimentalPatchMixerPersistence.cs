@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -154,6 +154,13 @@ internal static class MixerPersistence
             project.EndMergeNotify();
             project.Commit();
         }
+
+        // 【必须重建图】装载发生在 `mDocument.SetProject` **之后**：那一刻 AudioGraph 已经
+        // 用"没有插入"的工程编过一次图，之后 ApplyPayload 才把插入槽位塞进来。
+        // 而插入不是"加轨/改路由"那类会自己触发重建的事件（成员变化挂在混音台模型上，
+        // 而模型是懒创建的，此时可能还没订阅）。不补这一下，槽位要等下一次结构变化
+        // 才进链 —— 用户看到的就是"插件的「界面」键全是灰的，加一个新插件之后才全变正常"。
+        AudioEngine.RebuildMixerGraph();
     }
 
     static void ApplyPayload(Project project, Payload payload)
@@ -441,3 +448,4 @@ internal static class MixerPersistence
         public double Gain { get; set; }
     }
 }
+

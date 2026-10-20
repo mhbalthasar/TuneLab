@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using Avalonia.Threading;
 using TuneLab.ExperimentalPatch.InsertHost;
 using HostLog = TuneLab.Foundation.Log;
@@ -27,6 +28,12 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
     // 泵插件消息的定时器。插件窗口活着它就活着；关掉编辑器 / 实例就停。
     DispatcherTimer? mTimer;
 
+    // 打开编辑器之前记下的本进程顶层窗集合；用来"差"出插件那扇窗。
+    HashSet<IntPtr>? mWindowBefore;
+
+    // 已经把它带到前台过一次了（窗口可能晚出现，所以要在定时器里重试）。
+    bool mRaised;
+
     Vst3EditorShell(Vst3Insert insert, string pluginName)
     {
         mInsert = insert;
@@ -48,6 +55,10 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
             return false;
         }
 
+        // 先记下"打开前"的本进程顶层窗，打开后取差集 = 插件那扇窗。
+        // 它自己不会主动置前（用户报"打开了但藏在别的窗口下面"），我们要拿到句柄才能置顶。
+        var before = mInsert.SnapshotTopLevelWindows();
+
         if (!mInsert.OpenEditor(IntPtr.Zero))
         {
             HostLog.Warning($"insert: '{mPluginName}' refused to open its editor");
@@ -63,7 +74,29 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
         }
 
         StartPump();
+
+        // 窗口可能刚建好还没显示，所以**第一次泵消息时**再取差集并置顶（见 StartPump）。
+        mWindowBefore = before;
+        TryRaise();
+
         return true;
+    }
+
+    // 把插件窗口带到前台并置顶。窗口是插件建的，可能要晚几十毫秒才可见，
+    // 所以泵消息的定时器会重试几次，找到一次就够了。
+    void TryRaise()
+    {
+        if (mRaised || mWindowBefore == null)
+            return;
+
+        IntPtr hwnd = mInsert.FindEditorWindowSince(mWindowBefore);
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        Vst3Insert.BringToFront(hwnd);
+        mRaised = true;
+
+        HostLog.Info($"insert: raised the editor window of '{mPluginName}' (0x{hwnd:x})");
     }
 
     public bool HasOpenEditor => mInsert.IsEditorOpen;
@@ -84,12 +117,17 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
             if (!mInsert.IsEditorOpen)
             {
                 // 插件窗口被用户关掉了：停泵，让宿主也有机会注销这个壳。
+                // （下次点「界面」会新建一个壳 —— 不注销就会复用一个已经停泵的旧壳，
+                //   表现是"第一次能开、之后再点没反应"。）
                 StopPump();
                 WindowClosed?.Invoke();
                 return;
             }
 
             mInsert.PumpEditorMessages();
+
+            // 窗口可能比 CreateEditor 晚几十毫秒才可见：每次泵都试一次，找到即置顶。
+            TryRaise();
         };
 
         mTimer.Start();
@@ -111,8 +149,14 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
     // 所以这里只能重开一次（插件侧对"已开着"的实现是直接返回 true）。
     public void Activate()
     {
-        if (mInsert.IsEditorOpen)
-            mInsert.PumpEditorMessages();
+        if (!mInsert.IsEditorOpen)
+            return;
+
+        mInsert.PumpEditorMessages();
+
+        // 再点一次「界面」= 把它重新带到前台（用户可能把它挪到别的窗口后面了）。
+        mRaised = false;
+        TryRaise();
     }
 
     public void DropEditor()
@@ -134,4 +178,10 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
         // 壳没有窗口；真正开窗在 Create 里的 TryOpen（见 InsertEditorHost.Show）。
     }
 }
+
+
+
+
+
+
 

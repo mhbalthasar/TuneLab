@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using OwnVST3Host;
 using TuneLab.ExperimentalPatch.MixerEngine;
@@ -168,7 +169,20 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
             return false;
 
         if (mEditorOpen)
-            return true;
+        {
+            // 插件自己那扇窗可能已经被用户关掉了（IsEditorOpen 变 false），
+            // 而我们这边还记着"开着" —— 不重置就永远返回 true 却什么也不开，
+            // 表现是"第一次能开，关掉后再也点不开"。
+            bool stillOpen;
+            try { stillOpen = mWrapper.IsEditorOpen; }
+            catch (Exception) { stillOpen = false; }
+
+            if (stillOpen)
+                return true;
+
+            mEditorOpen = false;
+            mNeedsPump = false;
+        }
 
         try
         {
@@ -202,6 +216,109 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
             mNeedsPump = false;
         }
     }
+
+    // ── 找插件那扇窗并把带到前台 ──
+    //
+    // 【为什么需要】插件自己建窗之后不会主动置前（用户报"打开了但藏在别的窗口下面"）。
+    // 要 SetForegroundWindow / 置顶，先得拿到它的 HWND。
+    //
+    // 【怎么拿】不能靠 EnumWindows / EnumChildWindows / EnumThreadWindows —— 实测在
+    // .NET 进程里这几个回调版 API 要么一个都不触发、要么把调用线程直接挂死。
+    // 改走 z 序链表：GetTopWindow + GetWindow(GW_HWNDNEXT)，纯函数调用，实测可靠。
+    // 取"打开前 / 打开后"的差集，新出现的本进程顶层窗就是插件那扇。
+    public HashSet<IntPtr> SnapshotTopLevelWindows()
+    {
+        var set = new HashSet<IntPtr>();
+
+        IntPtr hwnd = GetTopWindow(IntPtr.Zero);
+        int guard = 0;
+        while (hwnd != IntPtr.Zero && guard++ < 10000)
+        {
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == (uint)Environment.ProcessId)
+                set.Add(hwnd);
+
+            hwnd = GetWindow(hwnd, GwHwndNext);
+        }
+
+        return set;
+    }
+
+    // 差集里第一个**可见**的顶层窗。优先带标题的（插件窗口一般有名字），
+    // 退而求其次取任意可见的新窗口。找不到返回 0。
+    public IntPtr FindEditorWindowSince(HashSet<IntPtr> before)
+    {
+        IntPtr fallback = IntPtr.Zero;
+
+        IntPtr hwnd = GetTopWindow(IntPtr.Zero);
+        int guard = 0;
+        while (hwnd != IntPtr.Zero && guard++ < 10000)
+        {
+            GetWindowThreadProcessId(hwnd, out uint pid);
+
+            if (pid == (uint)Environment.ProcessId
+                && !before.Contains(hwnd)
+                && IsWindowVisible(hwnd))
+            {
+                var title = new System.Text.StringBuilder(256);
+                int length = GetWindowText(hwnd, title, title.Capacity);
+
+                if (length > 0)
+                    return hwnd;
+
+                if (fallback == IntPtr.Zero)
+                    fallback = hwnd;
+            }
+
+            hwnd = GetWindow(hwnd, GwHwndNext);
+        }
+
+        return fallback;
+    }
+
+    // 把插件那扇窗带到前台并置顶。置顶是用户的明确要求（"editor 应该能置顶"），
+    // 也是"打开后藏在别的窗口下面"这个问题的根治办法。
+    public static void BringToFront(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        ShowWindow(hwnd, SwRestore);
+        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0,
+            SwpNoMove | SwpNoSize | SwpShowWindow);
+        SetForegroundWindow(hwnd);
+    }
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetTopWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hwnd, int cmd);
+
+    [DllImport("user32.dll")]
+    static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
+
+    [DllImport("user32.dll")]
+    static extern bool SetForegroundWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int capacity);
+
+    const uint GwHwndNext = 2;
+    const int SwRestore = 9;
+    static readonly IntPtr HwndTopmost = new(-1);
+    const uint SwpNoSize = 0x0001;
+    const uint SwpNoMove = 0x0002;
+    const uint SwpShowWindow = 0x0040;
 
     // 插件自己那扇窗是否还开着。**native 库自己的判断**，比数我们的窗口可靠 ——
     // 实测数窗口那条恒为 0 且会误导（GUI 一直是有的，只是不挂在我们给的 HWND 上）。
@@ -348,6 +465,9 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 }
+
+
+
 
 
 

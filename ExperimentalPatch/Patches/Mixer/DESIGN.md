@@ -631,7 +631,31 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 换成 STA 同线程、换另一条线程跑消息循环、传 0 都试过，全死。那是插件的缺陷，重新装它。
 宿主侧只做一件事：超时不无限冻结（见 5.7.4 的上限约定）。
 
-**给下一个读这里的人**：`EnumChildWindows` / `EnumWindows` 在 .NET 进程里可能整个不回调。
+**给下一个读这里的人**：`EnumChildWindows` / `EnumWindows` / `EnumThreadWindows` 在 .NET 进程里
+要么整个不回调、要么直接把调用线程挂死（后者实测过）。**要数窗口就走 z 序链表**：
+`GetTopWindow(0)` + `GetWindow(h, GW_HWNDNEXT)`，纯函数调用，实测可靠。
+要判断编辑器状态就问插件自己的 `IsEditorOpen`。
+
+#### 5.7.7 编辑器窗口置顶、重开、以及"界面键全是灰的"（2026-10-21）
+
+三个现象，三个独立的根因：
+
+1. **打开后藏在别的窗口下面**：插件自己建窗时不会主动置前。现在打开前后各取一次
+   本进程顶层窗集合（z 序链表），差集里第一个可见的带标题窗口就是它，然后
+   `SetWindowPos(HWND_TOPMOST)` + `SetForegroundWindow`。窗口可能比 `CreateEditor`
+   晚几十毫秒才可见，所以泵消息的定时器每 20ms 重试一次，找到即置顶。
+   再点一次「界面」也会重新置前（`mRaised` 复位）。
+
+2. **关掉后再也点不开**：`Vst3Insert.mEditorOpen` 是我们这边的标记，插件把窗口关了它
+   不会跟着变。于是下次 `OpenEditor` 看到标记为 true 就直接返回 true —— 什么也没开。
+   现在先问一次 `IsEditorOpen`，为 false 就把标记清掉、重新建。
+
+3. **「界面」键一开始全是灰的，加一个新插件后全变正常**：`HasEditor` 问的是**活实例**，
+   而实例是编图时建的。装载工程的顺序是 `SetProject`（此时编了一次图，但插入还没装载）
+   → `MixerPersistence.Apply`（把槽位塞进去）。插入不是"加轨/改路由"那类会自己触发
+   重建的事件，所以装载完之后没有任何实例，全部灰。加一个新插件触发了结构变化，
+   图重建、实例全建出来，于是"全变正常"。
+   修法：`MixerPersistence.Apply` 末尾补一次 `AudioEngine.RebuildMixerGraph()`。
 要数窗口就用 `FindWindowEx` 遍历兄弟链；要判断编辑器状态就问插件自己的 API。
 ## 6. 界面
 
@@ -983,5 +1007,6 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
