@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using TuneLab.Data;
@@ -199,10 +199,47 @@ internal sealed class InsertInstanceFactory
     IInsertBackend? Resolve(string format)
         => Backends.FirstOrDefault(b => string.Equals(b.FormatName, format, StringComparison.OrdinalIgnoreCase));
 
+    // 扫描缓存（由宿主注入）：PluginId → Locator 的**权威来源**。
+    //
+    // 【为什么需要它】Locator（插件文件的真实路径）按设计**不落盘**（换机器就失效）。
+    // 于是重开工程时槽位上只有 PluginId，得重新定位。只按"目录清单再枚举一遍"定位会漏：
+    // 用户把插件放在自定义目录、而工厂手里的目录还是默认值时，枚举不到 ——
+    // 日志里就是 "the plugin 'X' is not installed any more"，槽位变占位旁通，
+    // 「界面」键自然永远是灰的（实测 ZamDynamicEQ / DragonflyHallReverb 就是这样）。
+    // 缓存是**菜单用的同一份清单**，按它找就不会与用户看到的不一致。
+    public static Func<IReadOnlyList<InsertPluginEntry>>? PluginCacheProvider { get; set; }
+
     // 按 PluginId 在扫描缓存里找。缓存可能比工程旧（用户卸了插件）——
-    // 找不到就如实说"找不到了"，不猜一个相似的。
+    // 找不到就如实说""找不到了""，不猜一个相似的。
     InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId)
     {
+        // 1) 先查扫描缓存（有 Locator，且与菜单同源）。
+        var cached = PluginCacheProvider?.Invoke();
+
+        if (cached != null)
+        {
+            foreach (var entry in cached)
+            {
+                if (!string.Equals(entry.Format, backend.FormatName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!string.Equals(entry.PluginId, pluginId, StringComparison.Ordinal))
+                    continue;
+
+                return new InsertPluginInfo
+                {
+                    Format = entry.Format,
+                    PluginId = entry.PluginId,
+                    Name = entry.Name,
+                    Vendor = entry.Vendor,
+                    Category = entry.Category,
+                    Locator = entry.Locator,
+                    IsInstrument = entry.IsInstrument,
+                };
+            }
+        }
+
+        // 2) 缓存里没有（从没扫过 / 缓存被清）→ 退回按目录枚举。
         // 每个格式有自己的一份路径清单（VST2 与 VST3 的老插件目录通常不是同一棵树）。
         var paths = string.Equals(backend.FormatName, Vst2Backend.FormatName, StringComparison.OrdinalIgnoreCase)
             ? Vst2Paths
@@ -295,3 +332,4 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
         Changed?.Invoke();
     }
 }
+

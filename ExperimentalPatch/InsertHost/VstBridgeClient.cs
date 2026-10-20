@@ -452,6 +452,19 @@ internal sealed class VstBridgeClient : IDisposable
     // 比"界面冻结十几秒"好 —— 超时后窗口留着，用户还是能继续混音的。
     public (bool Ok, string? Reason, int ChildWindows) OpenEditorBlocking(int slot, string title)
     {
+        // 让**桥**有资格把窗口带到前台。Windows 只允许"当前前台进程"或获得它授权的进程
+        // 调 SetForegroundWindow；桥是被我们启动的子进程，不授权的话它的 SetForegroundWindow
+        // 会被静默忽略 —— 表现就是"窗口开了，但藏在宿主窗口下面"（实测 Marvel GEQ）。
+        // 用户刚点过我们的按钮，所以我们此刻是前台进程，授权有效。
+        try
+        {
+            if (mProcess is { HasExited: false })
+                AllowSetForegroundWindow(mProcess.Id);
+        }
+        catch (Exception)
+        {
+            // 授权失败不致命：桥那边还会试一次 SetForegroundWindow，最坏是窗口在下面。
+        }
         var task = Task.Run(() => TryOpenEditorAsync(slot, title));
 
         if (!task.Wait(EditorOpenTimeout))
@@ -502,6 +515,10 @@ internal sealed class VstBridgeClient : IDisposable
     }
 
     // 带到前台是微秒级的活：3 秒还没回来说明桥卡死了，那时该走的是超时那条路。
+    // ASFW_ANY = -1（允许任意进程）；这里给具体 pid 更克制。
+    [DllImport("user32.dll")]
+    static extern bool AllowSetForegroundWindow(int processId);
+
     static readonly TimeSpan RaiseTimeout = TimeSpan.FromSeconds(3);
 
     // 建插件 UI 的上限。3 秒以上在交互上就是"软件卡死了"（用户原话）。
@@ -979,6 +996,8 @@ internal sealed class JobHandle : IDisposable
         internal static extern bool CloseHandle(IntPtr handle);
     }
 }
+
+
 
 
 

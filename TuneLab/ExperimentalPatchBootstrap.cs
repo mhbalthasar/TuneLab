@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -154,6 +154,15 @@ internal static class ExperimentalPatchBootstrap
 
         static readonly InsertPluginSettings sInsertPlugins = new();
 
+        // 插入实例的定位与插件扫描共用同一份清单：工厂按 PluginId 找 Locator 时先查缓存。
+        // （Locator 不落盘，重开工程必须重新定位；只按默认目录枚举会漏掉自定义目录里的插件。）
+        static HostServices()
+        {
+            Audio.InsertInstanceFactory.PluginCacheProvider = () => sInsertPlugins.CachedPlugins;
+        }
+
         const string Prefix = "[ExperimentalPatch] ";
     }
 }
+
+

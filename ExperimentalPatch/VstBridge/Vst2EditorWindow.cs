@@ -44,6 +44,9 @@ internal sealed class Vst2EditorWindow : IDisposable
     const uint SwpNoMove = 0x0002;
     const uint SwpNoZOrder = 0x0004;
     const uint SwpNoActivate = 0x0010;
+    const uint SwpNoSize = 0x0001;
+    const uint SwpShowWindow = 0x0040;
+    static readonly IntPtr HwndTopmost = new(-1);
 
     readonly IntPtr mEffect;
     readonly Vst2DispatcherProc mDispatcher;
@@ -204,6 +207,10 @@ internal sealed class Vst2EditorWindow : IDisposable
 
         ShowWindow(hwnd, SwShow);
         UpdateWindow(hwnd);
+
+        // 置顶 + 前台。插件窗口在桥进程里，宿主那边已经 AllowSetForegroundWindow 授权过，
+        // 这里的 SetForegroundWindow 才会生效（否则 Windows 静默忽略，窗口藏在宿主后面）。
+        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
         SetForegroundWindow(hwnd);
 
         // effEditOpen：把宿主窗口句柄交给插件，它会在里面创建自己的子窗口。
@@ -446,6 +453,7 @@ internal sealed class Vst2EditorWindow : IDisposable
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? lpModuleName);
 }
+
 
 
 

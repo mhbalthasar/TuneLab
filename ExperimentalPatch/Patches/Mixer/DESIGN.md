@@ -698,6 +698,30 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 
 要真正跨平台，还差：各平台的原生库产物（需要上游 CI / fork）、VST2 桥的
 非 Windows 等价物（或明确"VST2 仅 Windows"）、以及编辑器置顶的 X11/Cocoa 实现。
+
+#### 5.7.10 「界面」键永远是灰的：Locator 不落盘，定位却只查默认目录（2026-10-21）
+
+**症状**：ZamDynamicEQ / DragonflyHallReverb 这些插件插在工程里、「界面」键却一直是灰的，
+日志写着 `the plugin 'X' is not installed any more (id vst3:X); passing through`。
+
+**根因**：`Locator`（插件文件的真实路径）**按设计不落盘**（换机器就失效），所以重开工程时
+槽位上只剩 `PluginId`，必须重新定位。而 `InsertInstanceFactory.FindPlugin` 只做一件事：
+拿**工厂自己的目录清单**（默认值 = `Program Files\Common Files\VST3` 两处）重新枚举。
+用户在设置里配的自定义目录（`Y:\Insts\VSTEffects\VST3`）从来没传给工厂 ——
+于是那里的插件全部"找不到"，槽位退化成占位旁通，没有活实例，`HasEditor` 自然是 false。
+
+**为什么"加一个新插件就全好了"**：那是另一条路（扫描缓存在菜单里），加插件时
+`Locator` 是内存里现成的。
+
+**修法**：`FindPlugin` **先查扫描缓存**（`InsertInstanceFactory.PluginCacheProvider`，
+由宿主注入 `InsertPluginSettings.CachedPlugins`）—— 那是菜单用的同一份清单，带 Locator。
+缓存里没有（从没扫过 / 被清）才退回按目录枚举。这样"用户看到的插件"与"能定位到的插件"
+永远是同一份。
+
+**顺带**：VST2 的窗口开在桥进程里，`SetForegroundWindow` 会被 Windows 静默拒绝
+（只有前台进程或获它授权的进程才能抢前台），表现是"窗口开了但藏在宿主下面"。
+宿主现在在发 `OpenEditor` 之前调 `AllowSetForegroundWindow(桥的 pid)`，
+桥侧再把窗口设成 topmost 并前置。
 要数窗口就用 `FindWindowEx` 遍历兄弟链；要判断编辑器状态就问插件自己的 API。
 ## 6. 界面
 
@@ -1049,6 +1073,7 @@ software.`，导入表里有 `GetOpenFileName`），于是它弹一个文件选�
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 
