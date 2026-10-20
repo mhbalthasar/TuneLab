@@ -152,11 +152,17 @@ public sealed class Mixer
                 continue;
 
             // 插入链：在推子之后、分发之前就地处理（DESIGN.md §3.2）。
-            // 旁通的插入自己也说"我没干活"（IsBypassed），所以这里不挑，
-            // 让实现方以最快的方式直通——空转一圈也比在引擎里判类型便宜。
+            // 跳过旁通的插入：**旁通是活值**（写入后下一块就生效），引擎这里每块现读一次
+            // IsBypassed，所以按状态直接 continue。实现方仍然应该自己判直通路径 ——
+            // 这里只保证"旁通的插入一次都不会被调用"，测试替身据此断言。
             var inserts = node.Inserts;
             for (int k = 0; k < inserts.Count; k++)
+            {
+                if (inserts[k].IsBypassed)
+                    continue;
+
                 inserts[k].Process(target, targetOffset, count);
+            }
 
             var edges = node.Outputs;
             for (int e = 0; e < edges.Count; e++)

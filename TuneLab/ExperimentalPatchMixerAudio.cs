@@ -167,6 +167,9 @@ internal sealed class MixerGraphCompiler
         public bool IsBypassed => true;
         public int LatencySamples => 0;
 
+        // 永远失败的占位（插件建不出来时用到）。没有"不旁通"这种状态。
+        public void SetBypassed(bool bypassed) { }
+
         public void Process(Span<float> buffer, int offset, int count)
         {
             // 直通：什么都不做。放在这里而不是让引擎跳过，链的长度因此是稳定的。

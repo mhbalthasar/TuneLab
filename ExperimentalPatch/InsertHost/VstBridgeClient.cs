@@ -281,6 +281,54 @@ internal sealed class VstBridgeClient : IDisposable
         }
     }
 
+    // 打开插件的原生编辑器。窗口在**桥进程**里（见 Vst2EditorWindow），这里只等它的回执。
+    // 失败原因原样带回去（"no editor" / "refused"），界面可以据此禁用按钮。
+    public async Task<(bool Ok, string? Reason)> TryOpenEditorAsync(int slot, string title,
+        CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return (false, "the bridge is not running");
+
+        try
+        {
+            string? reply = await ExchangeAsync(JsonSerializer.Serialize(new OpenEditorMessage
+            {
+                Slot = slot,
+                Title = title,
+            }), cancellation).ConfigureAwait(false);
+
+            if (reply == null)
+                return (false, "the bridge did not answer");
+
+            var result = JsonSerializer.Deserialize<OpenEditorResultMessage>(reply);
+            return result == null ? (false, "bad reply") : (result.Ok, result.Reason);
+        }
+        catch (Exception)
+        {
+            return (false, "the bridge did not answer");
+        }
+    }
+
+    public async Task<bool> TryCloseEditorAsync(int slot, CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return false;
+
+        try
+        {
+            string? reply = await ExchangeAsync(
+                JsonSerializer.Serialize(new CloseEditorMessage { Slot = slot }),
+                cancellation).ConfigureAwait(false);
+
+            return reply != null
+                && JsonSerializer.Deserialize<CloseEditorResultMessage>(reply)?.Ok == true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     public async Task<byte[]?> TryGetStateAsync(int slot, CancellationToken cancellation = default)
     {
         if (!IsRunning)
@@ -387,6 +435,55 @@ internal sealed class VstBridgeClient : IDisposable
         => RunBlocking(() => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass));
 
     public bool UnloadBlocking(int slot) => RunBlocking(() => TryUnloadAsync(slot));
+
+    // 开编辑器要等插件建 UI（几百毫秒很常见）。给它一个上限：插件在 effEditOpen 里卡死时
+    // 不能把宿主 UI 线程一起带走 —— 超时就杀桥，音频本来也已经直通了。
+    public (bool Ok, string? Reason) OpenEditorBlocking(int slot, string title)
+    {
+        var task = Task.Run(() => TryOpenEditorAsync(slot, title));
+
+        if (!task.Wait(EditorOpenTimeout))
+        {
+            KillBridge();
+            return (false, "the plugin did not open its editor in time");
+        }
+
+        return task.Result;
+    }
+
+    public bool CloseEditorBlocking(int slot) => RunBlocking(() => TryCloseEditorAsync(slot));
+
+    // 已经开着的窗口再点一次「界面」= 带到前台。桥没开窗（插件没界面 / 已关）时回 false，
+    // 界面据此决定是重新开一扇还是什么都不做。
+    public bool BringEditorToFrontBlocking(int slot)
+    {
+        var task = Task.Run(async () =>
+        {
+            if (!IsRunning)
+                return false;
+
+            try
+            {
+                // 复用 OpenEditor：桥侧"已经开着"会走 BringToFront 分支并回 ok。
+                string? reply = await ExchangeAsync(JsonSerializer.Serialize(new OpenEditorMessage
+                {
+                    Slot = slot,
+                    Title = string.Empty,
+                }), CancellationToken.None).ConfigureAwait(false);
+
+                return reply != null
+                    && JsonSerializer.Deserialize<OpenEditorResultMessage>(reply)?.Ok == true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        });
+
+        return task.Wait(EditorOpenTimeout) && task.Result;
+    }
+
+    static readonly TimeSpan EditorOpenTimeout = TimeSpan.FromSeconds(15);
 
     public byte[]? GetStateBlocking(int slot) => RunBlocking(() => TryGetStateAsync(slot));
 

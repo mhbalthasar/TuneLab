@@ -20,6 +20,8 @@ public sealed class GainInsert : IMixInsert
 
     public bool IsBypassed => Bypassed;
 
+    public void SetBypassed(bool bypassed) => Bypassed = bypassed;
+
     public int LatencySamples { get; }
 
     // 记下被处理了多少块 —— 测试断言"旁通时一次都没进来"用。
@@ -58,6 +60,11 @@ public sealed class FailingInsert : IMixInsert
     public string Name => "AlwaysFails";
 
     public bool IsBypassed => true;
+
+    public void SetBypassed(bool bypassed)
+    {
+        // 永远失败的后端没有"不旁通"这种状态。
+    }
 
     public int LatencySamples => 0;
 

@@ -70,12 +70,13 @@ internal sealed class InsertInstanceFactory
     {
         reason = null;
 
-        if (slot.State != null && mLive.TryGetValue(slot.Id, out var existing))
-        {
-            // 已经建过（换图但数据没变）：直接复用实例，包括它已载入的插件状态。
-            // 重建一份会让"改了路由之后插件参数回默认值"——那是个真会挨骂的 bug。
+        // 已经建过（换图但数据没变）：直接复用实例，包括它已载入的插件状态。
+        // 重建一份会让"改了路由之后插件参数回默认值"——那是个真会挨骂的 bug；
+        // 更糟的是插件的编辑器还挂在旧实例上，用户调的是"没人在听的"那一份。
+        //
+        // 换插件走 SetPlugin，它会先 Release；开工程走 ReleaseAll。所以"存在即复用"是安全的。
+        if (mLive.TryGetValue(slot.Id, out var existing))
             return existing;
-        }
 
         var backend = Resolve(slot.Format);
         if (backend == null || !backend.IsAvailable)
@@ -155,9 +156,23 @@ internal sealed class InsertInstanceFactory
         return slot.State;
     }
 
-    /// <summary>某个槽位的实例被图放弃了：放掉原生句柄。</summary>
+    /// <summary>取某个槽位正在跑的实例（界面要开编辑器 / 读旁通时用）。</summary>
+    public bool TryGetLive(string slotId, out IMixInsert? insert)
+        => mLive.TryGetValue(slotId, out insert);
+
+    /// <summary>旁通是活值：直接写到正在跑的实例上，不必等下一次编图。</summary>
+    public void SetBypassed(string slotId, bool bypassed)
+    {
+        if (mLive.TryGetValue(slotId, out var insert))
+            insert.SetBypassed(bypassed);
+    }
+
+    /// <summary>某个槽位的实例被图放弃了：先关编辑器，再放掉原生句柄。</summary>
     public void Release(string slotId)
     {
+        // 编辑器窗口里挂的是插件自己的 view：必须在 Dispose（effClose / FreeLibrary）之前关掉。
+        InsertEditorHost.Close(slotId);
+
         if (!mLive.Remove(slotId, out var insert))
             return;
 
@@ -173,6 +188,8 @@ internal sealed class InsertInstanceFactory
 
     public void ReleaseAll()
     {
+        InsertEditorHost.CloseAll();
+
         foreach (var id in mLive.Keys.ToArray())
             Release(id);
     }
@@ -205,7 +222,8 @@ internal sealed class InsertInstanceFactory
 }
 
 /// <summary>宿主侧的插入视图（把 InsertSlot 翻成契约 IMixerInsert）。</summary>
-internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory factory) : IMixerInsert, IInsertPluginTarget
+internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory factory, Action? onContentChanged = null)
+    : IMixerInsert, IInsertPluginTarget
 {
     // 宿主侧要用：RemoveInsert 靠它把实例与数据槽位对上。
     public InsertSlot Slot => slot;
@@ -219,16 +237,38 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
     public bool IsBypassed
     {
         get => slot.IsBypassed.Value;
-        set => slot.IsBypassed.Set(value);
+        set
+        {
+            if (slot.IsBypassed.Value == value)
+                return;
+
+            // 数据（undo / 落盘）+ 正在跑的实例（立刻听见）两边都要写。
+            // 只写数据的话，旁通要等下一次结构变化才生效 —— 用户按下去就是"没反应"。
+            slot.IsBypassed.Set(value);
+            factory.SetBypassed(slot.Id, value);
+            Changed?.Invoke();
+        }
     }
 
-    // 插件有界面 ≠ 我们打得开它。VST3 的原生编辑器要平台相关的宿主窗口（§5.5）；
-    // 现在还没接，所以统一说"没有界面"—— 比画一个点了没反应的按钮诚实。
-    public bool HasEditor => false;
+    // 「界面」键是否可点：问**正在跑的实例**。没有实例（插件建失败 / 还没编图）就是 false。
+    public bool HasEditor
+        => factory.TryGetLive(slot.Id, out var insert)
+           && insert switch
+           {
+               Vst3Insert vst3 => vst3.HasEditor,
+               Vst2Insert vst2 => vst2.HasEditor,
+               _ => false,
+           };
 
     public void OpenEditor()
     {
-        // §5.5：v1 用独立浮窗承载插件原生编辑器。接上之前是空实现（按钮本身也不显示）。
+        if (!factory.TryGetLive(slot.Id, out var insert) || insert == null)
+        {
+            HostLog.Warning($"insert: '{slot.Name.Value}' has no live instance; cannot open its editor");
+            return;
+        }
+
+        InsertEditorHost.Show(slot.Id, slot.Name.Value, insert);
     }
 
     public event Action? Changed;
@@ -248,8 +288,10 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
         // 下一次编译图时会按新 pluginId 建一个新的。
         factory.Release(slot.Id);
 
-        // 通道的 RoutingChanged 由 MembershipModified 触发，而这里成员没变、
-        // 只是内容变了。所以自己发一次：图的链要重建。
+        // 成员没变、内容变了：MembershipModified 不会响。
+        // 这条**必须**重建图（onContentChanged），否则新选的插件根本不会进链 ——
+        // 加槽位那次编译时 PluginId 还是空的，之后再没人编过图。
+        onContentChanged?.Invoke();
         Changed?.Invoke();
     }
 }

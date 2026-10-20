@@ -217,11 +217,80 @@ public class MixerEngineTests
 
         public string Name => "recording";
 
-        public bool IsBypassed => false;
+        public bool IsBypassed { get; private set; }
+
+        public void SetBypassed(bool bypassed) => IsBypassed = bypassed;
 
         public int LatencySamples => 0;
 
         public void Process(Span<float> buffer, int offset, int count) => Calls.Add((offset, count));
+    }
+
+    // 旁通是**活值**：一改，下一次 Process 就该按新状态走，而且要能从音频线程看得见
+    // （引擎读 IsBypassed 在音频线程，写在 UI 线程）。这条测试钉住两个方向。
+    [Fact]
+    public void Bypass_TakesEffectOnTheNextBlockWithoutRebuildingTheGraph()
+    {
+        const int frames = 256;
+
+        var insert = new RecordingInsert();
+        insert.SetBypassed(true);
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState { Volume = 1 });
+        var node = builder.AddNode("track-0", MixNodeKind.Track, new TestState { Volume = 1 },
+            new ArraySource(MakeSamples(frames, 31)), inserts: [insert]);
+        builder.Connect(node, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        // 旁通态进第一块：引擎看到的就是新值（快照不用重建）。
+        mixer.Render(0, frames, new float[frames * 2], 0);
+        Assert.Empty(insert.Calls);
+
+        insert.SetBypassed(false);
+
+        // 第二块照常进插入 —— 中间没有 SetSnapshot。
+        // 注意 source 只有 frames 长，从 frames 往回取就空了；这里要的是"插进没插进"，
+        // 不是取值，所以另起一个等长的静音源按 0 位置取。
+        var second = new MixGraphBuilder();
+        var master2 = second.AddNode("master", MixNodeKind.Master, new TestState { Volume = 1 });
+        var node2 = second.AddNode("track-0", MixNodeKind.Track, new TestState { Volume = 1 },
+            new ArraySource(MakeSamples(frames, 77)), inserts: [insert]);
+        second.Connect(node2, master2, 1f);
+
+        var mixer2 = new Mixer();
+        mixer2.SetSnapshot(second.Build());
+        mixer2.Render(0, frames, new float[frames * 2], 0);
+
+        var call = Assert.Single(insert.Calls);
+        Assert.Equal(0, call.Offset);
+        Assert.Equal(frames, call.Count);
+    }
+
+    // 跳过的插入一次都不调：接口注释里承诺过这条，钉住它。
+    // （有测试替身把"没被调用"当成"我失败了"，比如永远失败的后端。）
+    [Fact]
+    public void BypassedInsert_IsNeverCalled()
+    {
+        const int frames = 64;
+
+        var insert = new RecordingInsert();
+        insert.SetBypassed(true);
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState { Volume = 1 });
+        var node = builder.AddNode("track-0", MixNodeKind.Track, new TestState { Volume = 1 },
+            new ArraySource(MakeSamples(frames, 7)), inserts: [insert]);
+        builder.Connect(node, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        mixer.Render(0, frames, new float[frames * 2], 0);
+
+        Assert.Empty(insert.Calls);
     }
 
     [Fact]

@@ -522,6 +522,48 @@ ExperimentalPatch/InsertHost/
 - 读管道的**回执**仍是无上限的等（协议要求一问一答，超时就会串台）：这是唯一的例外，
   它的上限来自桥自己的处理时间 —— 插件本身卡死时，第 3 条会兜住。
 
+#### 5.7.3 旁通是活值（2026-10-20 修复）
+
+**症状**：FX 浮窗里按「旁通」，既听不出差别、按键也不亮 —— 看起来就是"没反应"。
+
+**根因**：`IsBypassed` 只写进数据槽位，而混音图**不是旁通结构变化**（换快照的触发器只有
+加删轨 / 加删 AUX / 改路由），所以新值要等到下一次结构变化才进链。更糟的是按钮读的
+`insert.IsBypassed` 来自那个写前的适配器，按键的常亮态也回不来。
+
+**现在的约定**：
+
+1. `IMixInsert` 加 `SetBypassed(bool)`。旁通不是图结构，不需要换快照；它与推子/静音同一条
+   纪律 —— **活值**，改完立即生效。
+2. 引擎每块现读 `IsBypassed` 并**跳过**旁通的插入（`false` 时实现方自己走最快的直通路）。
+   这条也让"旁通的插入一次都不会被调用"变成可测的：测试替身因此能断言"没进过链"。
+3. 宿主侧 `InsertSlotAdapter.IsBypassed` 同时写三处：数据（undo / 落盘）、活实例（听见）、
+   `Changed`（浮窗刷新按键与配色）。
+4. `IsBypassed` 字段在 `Vst2Insert` / `Vst3Insert` 里是 `volatile` —— 写在 UI 线程、读在音频线程。
+
+#### 5.7.4 「界面」键：插件编辑器怎么接（2026-10-20）
+
+**症状**：「界面」键按下去没反应，没有插件的调整界面。
+
+**根因**：`InsertSlotAdapter.HasEditor` 恒定 `false`、`OpenEditor()` 是空实现 ——
+契约里有这两个成员，但宿主侧从没接过。
+
+**现在的约定**（两条路，按格式分）：
+
+- **VST3**（进程内加载）：宿主建一个 Avalonia Window，把它的平台句柄（`TryGetPlatformHandle()`）
+  交给插件的 `CreateEditor`，插件在里面创建自己的子窗口。窗口尺寸先用 `GetEditorSize()` 报的
+  首选值，用户可再拖。**关窗前必须 `CloseEditor`**：view 要早于宿主窗口销毁被摘掉，
+  反序的话插件关窗时会碰已释放的组件（实测会崩）。`InsertInstanceFactory.Release` 与
+  关工程都会先过 `InsertEditorHost.Close`。
+- **VST2**（跑在桥进程里）：跨进程 `SetParent` 不可靠（菜单、焦点、拖放、DPI 全错），
+  所以宿主只发一条 `OpenEditor` 消息，窗口由**桥**创建：`Vst2EditorWindow` 单起一条 STA 线程
+  （VST2 的 `effEditOpen` / `effEditIdle` / `effEditClose` 必须在同一条线程上），
+  建 Win32 窗 → `effEditOpen` → 消息循环 + 50 ms 定时器驱动 `effEditIdle`。
+  关闭统一走 `PostMessage(WM_CLOSE)`：消息被插件的窗口子类吞掉时也只是"窗口没关掉"，
+  不会把桥弄死。
+
+补丁侧只经 `IMixerInsert.HasEditor` / `OpenEditor()` 这两件事，不知道底下分了几条路。
+宿主侧向活实例要答案 —— 插件建失败 / 还没编图时按钮自然就是灰的。
+
 ## 6. 界面
 
 ### 6.1 通道条（新布局）

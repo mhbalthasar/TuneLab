@@ -48,8 +48,6 @@ public sealed class FxPopupWindow : Window
         Content = BuildContent();
 
         mChannel.RoutingChanged += Rebuild;
-        foreach (var insert in mChannel.Inserts)
-            insert.Changed += Rebuild;
 
         Rebuild();
     }
@@ -85,12 +83,21 @@ public sealed class FxPopupWindow : Window
             Child = headerRow,
         };
 
+        // 视口高度必须是**行距的整数倍**：早先写死 260，而 8 行之后剩下 4px，
+        // 第 9 行只露出薄薄一绺、下半截被裁掉 —— 看起来像"列表最后一行坏了"。
+        // 现在按可见行数算：8 行 + 7 个间距 + 上下内边距，一行都不半露。
+        const int visibleRows = 8;
+        const double verticalPadding = 8;
+
         var body = new ScrollViewer
         {
             Content = new Panel { Children = { mRows, mEmpty } },
-            MaxHeight = 260,
-            Padding = new Thickness(MixerMetrics.PopupPadding, 8),
+            MaxHeight = visibleRows * MixerMetrics.PopupRowHeight
+                        + (visibleRows - 1) * mRows.Spacing
+                        + verticalPadding * 2,
+            Padding = new Thickness(MixerMetrics.PopupPadding, verticalPadding),
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
         };
 
         mEmpty.FontSize = 10.5;
@@ -296,7 +303,15 @@ public sealed class FxPopupWindow : Window
             Height = 18,
             IsChecked = insert.IsBypassed,
         };
-        bypass.Click += () => insert.IsBypassed = !insert.IsBypassed;
+
+        // 旁通要**当场**反映：只写数据槽位的话，音频图不会重建（旁通不是结构变化），
+        // 用户按下去既听不出差别、按键也不亮，看起来就是"没反应"。
+        // 适配器会把值写进正在跑的插件实例并立刻生效，这里再重建一遍行来更新配色。
+        bypass.Click += () =>
+        {
+            insert.IsBypassed = !insert.IsBypassed;
+            Rebuild();
+        };
 
         var editor = new ChromeButton
         {
@@ -328,8 +343,6 @@ public sealed class FxPopupWindow : Window
     {
         base.OnClosed(e);
         mChannel.RoutingChanged -= Rebuild;
-        foreach (var insert in mChannel.Inserts)
-            insert.Changed -= Rebuild;
     }
 
     string L(string zh, string en)

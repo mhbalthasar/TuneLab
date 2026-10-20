@@ -62,6 +62,13 @@ public enum BridgeMessageKind
     // ── 自述 ──
     Shutdown,
     Error,
+
+    // ── 插件编辑器（低频，开窗是慢操作）──
+    // 追加在末尾：枚举按数值序列化，插在中间会让旧桥把 Shutdown 认成别的消息。
+    OpenEditor,
+    OpenEditorResult,
+    CloseEditor,
+    CloseEditorResult,
 }
 
 // 握手。桥起来的头一件事：告诉宿主"我是什么、我能干什么"。
@@ -154,6 +161,10 @@ public sealed class LoadPluginResultMessage
     // VST2 没有静态元数据，问插件自己是唯一可靠的办法（过桥问，不在宿主进程里直载）。
     [JsonPropertyName("isSynth")]
     public bool IsSynth { get; init; }
+
+    // AEffect.flags 里的 effFlagsHasEditor（带编辑器）。混音台的「界面」键据此启用/置灰。
+    [JsonPropertyName("hasEditor")]
+    public bool HasEditor { get; init; }
 }
 
 public sealed class UnloadPluginMessage
@@ -409,5 +420,57 @@ public sealed class ShutdownAck
 
     [JsonPropertyName("ok")]
     public bool Ok { get; init; } = true;
+}
+
+// ── 插件编辑器 ──
+
+public sealed class OpenEditorMessage
+{
+    [JsonPropertyName("kind")]
+    public BridgeMessageKind Kind => BridgeMessageKind.OpenEditor;
+
+    [JsonPropertyName("slot")]
+    public int Slot { get; init; }
+
+    // 窗口标题（插件名）。桥是另一个进程，拿不到宿主的界面语言/命名逻辑，所以由宿主给。
+    [JsonPropertyName("title")]
+    public string Title { get; init; } = string.Empty;
+}
+
+public sealed class OpenEditorResultMessage
+{
+    [JsonPropertyName("kind")]
+    public BridgeMessageKind Kind => BridgeMessageKind.OpenEditorResult;
+
+    [JsonPropertyName("slot")]
+    public int Slot { get; init; }
+
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    // 失败原因（"插件没有界面" / "拒绝打开"）。界面可以直接显示。
+    [JsonPropertyName("reason")]
+    public string? Reason { get; init; }
+}
+
+public sealed class CloseEditorMessage
+{
+    [JsonPropertyName("kind")]
+    public BridgeMessageKind Kind => BridgeMessageKind.CloseEditor;
+
+    [JsonPropertyName("slot")]
+    public int Slot { get; init; }
+}
+
+public sealed class CloseEditorResultMessage
+{
+    [JsonPropertyName("kind")]
+    public BridgeMessageKind Kind => BridgeMessageKind.CloseEditorResult;
+
+    [JsonPropertyName("slot")]
+    public int Slot { get; init; }
+
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
 }
 

@@ -42,6 +42,10 @@ internal sealed class PluginHost
     // AEffect.flags 里的乐器位（VST2 的 effFlagsIsSynth）。
     const int EffFlagsIsSynth = 1 << 8;
 
+    // AEffect.flags 里的"插件带编辑器"位（effFlagsHasEditor）。扫描时用它决定
+    // 混音台那行「界面」键是否可点 —— 没界面的插件不该给一个按下去没反应的按钮。
+    const int EffFlagsHasEditor = 1 << 4;
+
     readonly Dictionary<int, Slot> mSlots = [];
 
     // 共享音频环（DESIGN.md §5.3 之后的修订：音频走共享内存，指令走命名管道）。
@@ -57,7 +61,7 @@ internal sealed class PluginHost
         mOut = output;
     }
 
-    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth) Load(
+    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth, bool HasEditor) Load(
         LoadPluginMessage request, out int inputChannels, out int outputChannels)
     {
         inputChannels = 0;
@@ -70,7 +74,7 @@ internal sealed class PluginHost
 
         if (!File.Exists(request.Path))
         {
-            return (false, "plugin file not found", null, null, 0, false);
+            return (false, "plugin file not found", null, null, 0, false, false);
         }
 
         IntPtr library;
@@ -82,13 +86,13 @@ internal sealed class PluginHost
         {
             // 最常见的原因：位数不匹配（桥是 32 位进程，装 64 位 dll 会报
             // ERROR_BAD_EXE_FORMAT），或者缺少依赖 dll。
-            return (false, "cannot load the plugin library: " + ex.Message, null, null, 0, false);
+            return (false, "cannot load the plugin library: " + ex.Message, null, null, 0, false, false);
         }
 
         if (!NativeLibrary.TryGetExport(library, "VSTPluginMain", out IntPtr entry))
         {
             NativeLibrary.Free(library);
-            return (false, "the file is not a VST2 plugin (no VSTPluginMain export)", null, null, 0, false);
+            return (false, "the file is not a VST2 plugin (no VSTPluginMain export)", null, null, 0, false, false);
         }
 
         // 插件在 VSTPluginMain 里就会问宿主版本 / 采样率 / 块长（见 HostCallback），
@@ -109,13 +113,13 @@ internal sealed class PluginHost
         if (effect == IntPtr.Zero)
         {
             NativeLibrary.Free(library);
-            return (false, "the plugin refused to create its AEffect", null, null, 0, false);
+            return (false, "the plugin refused to create its AEffect", null, null, 0, false, false);
         }
 
         if (Marshal.ReadInt32(effect, 0) != VstMagic)
         {
             NativeLibrary.Free(library);
-            return (false, "the returned pointer is not a VST2 AEffect", null, null, 0, false);
+            return (false, "the returned pointer is not a VST2 AEffect", null, null, 0, false, false);
         }
 
         // AEffect 的布局随**指针宽度**变化：x86 桥里指针 4 字节，x64 里 8 字节。
@@ -126,8 +130,13 @@ internal sealed class PluginHost
         int numInputs = Marshal.ReadInt32(effect, layout.NumInputs);
         int numOutputs = Marshal.ReadInt32(effect, layout.NumOutputs);
 
+        int flags = Marshal.ReadInt32(effect, layout.Flags);
+
         // effFlagsIsSynth = 1 << 8：乐器。扫描时用它把乐器从插入清单里剔掉。
-        bool isSynth = (Marshal.ReadInt32(effect, layout.Flags) & EffFlagsIsSynth) != 0;
+        bool isSynth = (flags & EffFlagsIsSynth) != 0;
+
+        // effFlagsHasEditor = 1 << 4：插件带界面。混音台的「界面」键据此启用/置灰。
+        bool hasEditor = (flags & EffFlagsHasEditor) != 0;
 
         inputChannels = numInputs;
         outputChannels = numOutputs;
@@ -136,8 +145,8 @@ internal sealed class PluginHost
         {
             Library = library,
             Effect = effect,
-            Dispatcher = (DispatcherProc)Marshal.GetDelegateForFunctionPointer(
-                Marshal.ReadIntPtr(effect, layout.Dispatcher), typeof(DispatcherProc)),
+            Dispatcher = (Vst2DispatcherProc)Marshal.GetDelegateForFunctionPointer(
+                Marshal.ReadIntPtr(effect, layout.Dispatcher), typeof(Vst2DispatcherProc)),
             SetParameter = (SetParameterProc)Marshal.GetDelegateForFunctionPointer(
                 Marshal.ReadIntPtr(effect, layout.SetParameter), typeof(SetParameterProc)),
             GetParameter = (GetParameterProc)Marshal.GetDelegateForFunctionPointer(
@@ -162,7 +171,7 @@ internal sealed class PluginHost
         {
             ReleaseSlot(slot, closeEffect: true);
             NativeLibrary.Free(library);
-            return (false, "the plugin exposes no audio processing entry point", null, null, 0, false);
+            return (false, "the plugin exposes no audio processing entry point", null, null, 0, false, false);
         }
 
         slot.ProcessReplacing = (ProcessProc)Marshal.GetDelegateForFunctionPointer(
@@ -196,9 +205,11 @@ internal sealed class PluginHost
 
         slot.PublishPlanes = new float[SharedAudioLayout.MaxChannels][];
 
+        slot.HasEditor = hasEditor;
+
         mSlots[request.Slot] = slot;
 
-        return (true, null, name, vendor, latency, isSynth);
+        return (true, null, name, vendor, latency, isSynth, hasEditor);
     }
 
     public bool Unload(int slotNumber)
@@ -206,8 +217,46 @@ internal sealed class PluginHost
         if (!mSlots.Remove(slotNumber, out var slot))
             return false;
 
+        // 编辑器先关：窗口里挂的是插件自己的 view，得在 effClose / FreeLibrary 之前摘下来。
+        slot.Editor?.Dispose();
+        slot.Editor = null;
+
         ReleaseSlot(slot, closeEffect: true);
         NativeLibrary.Free(slot.Library);
+        return true;
+    }
+
+    // 打开插件的原生编辑器。窗口由**桥进程**创建（插件在哪个进程加载，窗口就得在哪个进程），
+    // 宿主只负责发这条消息 + 把结果告诉界面。
+    public (bool Ok, string? Reason) OpenEditor(int slotNumber, string title)
+    {
+        if (!mSlots.TryGetValue(slotNumber, out var slot))
+            return (false, "slot not found");
+
+        if (!slot.HasEditor)
+            return (false, "the plugin has no editor");
+
+        // 已经开着：带回前台，不重建（重建会丢插件窗口里的临时状态）。
+        if (slot.Editor != null)
+        {
+            slot.Editor.BringToFront();
+            return (true, null);
+        }
+
+        if (!Vst2EditorWindow.TryOpen(slot.Effect, slot.Dispatcher, title, out var editor) || editor == null)
+            return (false, "the plugin refused to open its editor");
+
+        slot.Editor = editor;
+        return (true, null);
+    }
+
+    public bool CloseEditor(int slotNumber)
+    {
+        if (!mSlots.TryGetValue(slotNumber, out var slot))
+            return false;
+
+        slot.Editor?.Dispose();
+        slot.Editor = null;
         return true;
     }
 
@@ -412,7 +461,7 @@ internal sealed class PluginHost
 
     // VST2 里字符串通过一个回调参数回传：宿主提供一个指针，dispatcher 往里写。
     // 这里用一个固定的托管缓冲 + GCHandle 钉住，读一段立刻释放。
-    static string ReadString(DispatcherProc dispatcher, IntPtr effect, int opcode, int index = 0)
+    static string ReadString(Vst2DispatcherProc dispatcher, IntPtr effect, int opcode, int index = 0)
     {
         var buffer = new byte[256];
 
@@ -479,7 +528,7 @@ internal sealed class PluginHost
     // dispatcher 的薄封装，参数一律按 VST2 的宽类型写：
     //   value 是 VstIntPtr（指针宽），ptr 是 void*，opt 是 float。
     // 把 value 写成 int 会在 x64 上传一半的参，插件读到的就是垃圾。
-    static IntPtr Call(DispatcherProc dispatcher, IntPtr effect, int opcode, int index,
+    static IntPtr Call(Vst2DispatcherProc dispatcher, IntPtr effect, int opcode, int index,
         IntPtr value, IntPtr ptr, float opt)
         => dispatcher(effect, opcode, index, value, ptr, opt);
 
@@ -636,7 +685,7 @@ internal sealed class PluginHost
     {
         public IntPtr Library;
         public IntPtr Effect;
-        public DispatcherProc Dispatcher = null!;
+        public Vst2DispatcherProc Dispatcher = null!;
         public SetParameterProc SetParameter = null!;
         public GetParameterProc GetParameter = null!;
         public ProcessProc ProcessReplacing = null!;
@@ -644,6 +693,12 @@ internal sealed class PluginHost
         public int NumInputs;
         public int NumOutputs;
         public int Frames;
+
+        // effFlagsHasEditor（扫描时读一次，之后不变）。
+        public bool HasEditor;
+
+        // 打开的编辑器窗口（没有界面 / 没打开时为 null）。只在桥的主线程读写。
+        public Vst2EditorWindow? Editor;
 
         // 长度 = max(NumInputs, 1) / max(NumOutputs, 1)：必须容纳插件声明的全部声道。
         public float[][] InPlanes = [];
@@ -676,10 +731,8 @@ internal sealed class PluginHost
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     delegate IntPtr VstPluginMain(IntPtr hostCallback);
 
-    // AEffectDispatcherProc：宿主 → 插件（effOpen / effClose / getChunk / setChunk …）。
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    delegate IntPtr DispatcherProc(IntPtr effect, int opcode, int index,
-        IntPtr value, IntPtr ptr, float opt);
+    // AEffectDispatcherProc 的类型在 Vst2EditorWindow.cs 里（internal Vst2DispatcherProc）：
+    // 音频路径与编辑器路径必须传同一个原生函数指针，声明只留一份。
 
     // audioMasterCallback：插件 → 宿主。
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

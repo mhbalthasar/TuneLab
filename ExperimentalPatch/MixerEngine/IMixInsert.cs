@@ -17,6 +17,12 @@ public interface IMixInsert
     // 旁通 = 直通（音频原样穿过）。槽位与顺序都不变，与"从链里删掉"是两件事。
     bool IsBypassed { get; }
 
+    // 改旁通态。只在 UI 线程调；音频线程下一次 Process 就能看到（实现方要保证可见性）。
+    //
+    // 为什么不是"换快照"：旁通不是图的结构变化，换快照会重建整个链（插件实例、延迟线…），
+    // 代价大且会把插件参数丢掉。旁通是活值，和推子/静音同一条纪律。
+    void SetBypassed(bool bypassed);
+
     // 该插件引入的延迟（样本）。0 = 无延迟。PDC 用它给别的路径补延迟线（§3.5）。
     int LatencySamples { get; }
 

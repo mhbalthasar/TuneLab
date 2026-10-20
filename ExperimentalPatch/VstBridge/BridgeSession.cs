@@ -77,6 +77,14 @@ internal sealed class BridgeSession : IDisposable
                     HandleSetParameter(json);
                     break;
 
+                case BridgeMessageKind.OpenEditor:
+                    HandleOpenEditor(json);
+                    break;
+
+                case BridgeMessageKind.CloseEditor:
+                    HandleCloseEditor(json);
+                    break;
+
                 case BridgeMessageKind.Shutdown:
                     Write(JsonSerializer.Serialize(new ShutdownAck()));
                     mRunning = false;
@@ -114,6 +122,43 @@ internal sealed class BridgeSession : IDisposable
             InputChannels = inputChannels,
             OutputChannels = outputChannels,
             IsSynth = result.IsSynth,
+            HasEditor = result.HasEditor,
+        }));
+    }
+
+    void HandleOpenEditor(string? json)
+    {
+        OpenEditorMessage? message = Deserialize<OpenEditorMessage>(json);
+        if (message == null)
+        {
+            WriteError("bad OpenEditor message");
+            return;
+        }
+
+        var result = mHost.OpenEditor(message.Slot, message.Title);
+
+        Write(JsonSerializer.Serialize(new OpenEditorResultMessage
+        {
+            Slot = message.Slot,
+            Ok = result.Ok,
+            Reason = result.Reason,
+        }));
+    }
+
+    void HandleCloseEditor(string? json)
+    {
+        CloseEditorMessage? message = Deserialize<CloseEditorMessage>(json);
+        if (message == null)
+        {
+            WriteError("bad CloseEditor message");
+            return;
+        }
+
+        bool ok = mHost.CloseEditor(message.Slot);
+        Write(JsonSerializer.Serialize(new CloseEditorResultMessage
+        {
+            Slot = message.Slot,
+            Ok = ok,
         }));
     }
 

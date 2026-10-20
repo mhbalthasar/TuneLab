@@ -25,17 +25,18 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     readonly float[][] mInPlanes;
     readonly float[][] mOutPlanes;
 
-    bool mBypassed;
+    volatile bool mBypassed;
     bool mDisposed;
 
     Vst2Insert(InsertPluginInfo plugin, VstBridgeClient client, int slotId,
-        int blockSize, int latencySamples, bool bypassed)
+        int blockSize, int latencySamples, bool hasEditor, bool bypassed)
     {
         Plugin = plugin;
         Name = plugin.Name;
         mClient = client;
         mSlotId = slotId;
         mBlockSize = Math.Max(blockSize, 32);
+        HasEditor = hasEditor;
 
         // 桥是立体声的（SharedAudioLayout.MaxChannels = 2）。
         mChannels = SharedAudioLayout.MaxChannels;
@@ -61,7 +62,19 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     // VST2 的 latency 在 AEffect.initialDelay 里，加载时读一次。插件运行中不该变。
     public int LatencySamples { get; }
 
+    // AEffect.flags 的 effFlagsHasEditor，加载时读一次。
+    public bool HasEditor { get; }
+
     public void SetBypassed(bool bypassed) => mBypassed = bypassed;
+
+    // 编辑器窗口由**桥进程**开（插件在哪个进程加载，窗口就只能在哪个进程），
+    // 所以这里只是发一条消息 + 把失败原因带回来。调用会等插件建完 UI。
+    public (bool Ok, string? Reason) OpenEditor() => mClient.OpenEditorBlocking(mSlotId, Name);
+
+    // 窗口已经在桥那边开着：把它带到前台。已经没开（插件没界面 / 窗口被关过）时返回 false。
+    public bool TryActivateEditor() => mClient.BringEditorToFrontBlocking(mSlotId);
+
+    public bool CloseEditor() => mClient.CloseEditorBlocking(mSlotId);
 
     public void Process(Span<float> buffer, int offset, int count)
     {
@@ -214,6 +227,6 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         }
 
         return new Vst2Insert(plugin, client, slotId, blockSize,
-            loaded.LatencySamples, settings.Bypass);
+            loaded.LatencySamples, loaded.HasEditor, settings.Bypass);
     }
 }

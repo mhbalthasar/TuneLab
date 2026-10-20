@@ -22,8 +22,9 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     readonly float[][] mOutPlanes;
     readonly int mChannels;
     readonly int mBlockSize;
-    bool mBypassed;
+    volatile bool mBypassed;
     bool mDisposed;
+    bool mEditorOpen;
 
     public Vst3Insert(InsertPluginInfo plugin, OwnVst3Wrapper wrapper, double sampleRate, int blockSize, bool bypassed)
     {
@@ -129,6 +130,77 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     public string? Version => mWrapper.Version;
     public bool HasEditor => mWrapper.HasEditor;
 
+    // 插件自己报的首选尺寸（像素）。拿不到就返回 null，让宿主用默认大小。
+    public (int Width, int Height)? EditorSize
+    {
+        get
+        {
+            try
+            {
+                var size = mWrapper.GetEditorSize();
+                return size == null ? null : (size.Value.Width, size.Value.Height);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+    }
+
+    // 把插件编辑器挂到宿主给的窗口句柄上。**必须在 UI 线程调**（VST3 的 IPlugView 约定）。
+    // 返回 false = 插件没有界面 / 拒绝创建；调用方负责收拾窗口。
+    public bool OpenEditor(IntPtr parent)
+    {
+        if (mDisposed || parent == IntPtr.Zero)
+            return false;
+
+        if (mEditorOpen)
+            return true;
+
+        try
+        {
+            mEditorOpen = mWrapper.CreateEditor(parent);
+            return mEditorOpen;
+        }
+        catch (Exception)
+        {
+            mEditorOpen = false;
+            return false;
+        }
+    }
+
+    public void CloseEditor()
+    {
+        if (!mEditorOpen)
+            return;
+
+        mEditorOpen = false;
+
+        try
+        {
+            mWrapper.CloseEditor();
+        }
+        catch (Exception)
+        {
+            // 插件在关窗时抛错：句柄马上要跟着 wrapper 一起没，吞掉。
+        }
+    }
+
+    // 窗口尺寸变了：把客户区告诉插件（IPlugView::onSize）。
+    public void ResizeEditor(int width, int height)
+    {
+        if (!mEditorOpen || width <= 0 || height <= 0)
+            return;
+
+        try
+        {
+            mWrapper.ResizeEditor(width, height);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
     public IReadOnlyList<VST3Parameter> Parameters => mWrapper.GetAllParameters();
 
     public double GetParameter(int id) => mWrapper.GetParameter(id);
@@ -179,6 +251,9 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
             return;
 
         mDisposed = true;
+
+        // 先摘编辑器再销毁插件：反过来的话，窗口里挂着的 view 会指向已经释放的组件。
+        CloseEditor();
 
         try
         {

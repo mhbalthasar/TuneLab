@@ -487,7 +487,7 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
         {
             var list = new List<IMixerInsert>(InsertList.Count);
             foreach (var slot in InsertList)
-                list.Add(new InsertSlotAdapter(slot, Owner.InsertFactory));
+                list.Add(new InsertSlotAdapter(slot, Owner.InsertFactory, Owner.RaiseRoutingChanged));
 
             return list;
         }
@@ -545,7 +545,7 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
         InsertList.Add(slot);   // 成员变化 → RaiseRoutingChanged（重建图 + 通知界面）
         Data.Commit();          // 一步 undo：加一个槽位自成一个撤销单元
 
-        return new InsertSlotAdapter(slot, Owner.InsertFactory);
+        return new InsertSlotAdapter(slot, Owner.InsertFactory, Owner.RaiseRoutingChanged);
     }
 
     public virtual void RemoveInsert(IMixerInsert insert)
