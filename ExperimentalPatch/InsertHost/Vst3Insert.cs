@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using OwnVST3Host;
 using TuneLab.ExperimentalPatch.MixerEngine;
@@ -149,11 +149,22 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 
-    // 把插件编辑器挂到宿主给的窗口句柄上。**必须在 UI 线程调**（VST3 的 IPlugView 约定）。
-    // 返回 false = 插件没有界面 / 拒绝创建；调用方负责收拾窗口。
+    // 打开插件编辑器：**窗口由插件/native 库自己建**，我们不提供宿主窗口。
+    //
+    // 【为什么改成这样】实测（探针 5/6/7）：把 Avalonia 窗口的平台句柄交给
+    // CreateEditor，插件会返回成功、IsEditorOpen 也是 true、用户能瞥见 GUI 一闪 ——
+    // 但 GUI 从来不挂进我们给的 HWND（窗口树下 0 个子窗口，STA 同线程也一样）。
+    // 也就是说这个 vendored 的 ownvst3 只支持"自己开一扇顶层窗"这一种模式。
+    // 硬要塞宿主窗口，结果是我们的窗口永远空白、还要额外做消息泵。
+    //
+    // 代价：编辑器窗口是独立的一扇，不带在混音台/宿主窗口里。这是这个 native 库
+    // 的能力边界，不是我们的选择。换来的是 GUI 真的能显示、能交互。
+    //
+    // parent 参数保留（签名不动，调用方不必改），但一律按 0 传：
+    // 不支持的路径留着只会让人以为它work。
     public bool OpenEditor(IntPtr parent)
     {
-        if (mDisposed || parent == IntPtr.Zero)
+        if (mDisposed)
             return false;
 
         if (mEditorOpen)
@@ -161,10 +172,9 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
 
         try
         {
-            mEditorOpen = mWrapper.CreateEditor(parent);
+            mEditorOpen = mWrapper.CreateEditor(IntPtr.Zero);
 
-            // 插件把 GUI 挂在自己的线程/自己的消息队列上时，不泵消息就什么都不画 ——
-            // 用户看到"窗口是空的，但没报错"。PumpMessages 由编辑器窗口的定时器驱动。
+            // 插件把 GUI 挂在自己的消息队列上：不泵就不画。定时器由宿主编辑器壳驱动。
             mNeedsPump = mEditorOpen;
             return mEditorOpen;
         }
@@ -193,32 +203,53 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 
+    // 插件自己那扇窗是否还开着。**native 库自己的判断**，比数我们的窗口可靠 ——
+    // 实测数窗口那条恒为 0 且会误导（GUI 一直是有的，只是不挂在我们给的 HWND 上）。
+    public bool IsEditorOpen
+    {
+        get
+        {
+            if (!mEditorOpen)
+                return false;
+
+            try
+            {
+                return mWrapper.IsEditorOpen;
+            }
+            catch (Exception)
+            {
+                // 插件已经没了：按"没开着"处理，让上层的定时器停。
+                return false;
+            }
+        }
+    }
+
     /// <summary>
-    /// 我们给的宿主窗口里挂了多少个子窗口。0 = 插件声称成功却什么也没画进来
-    /// （实测 Sound Delay：CreateEditor 返回 true、没有任何子窗口、泵消息也没用）。
-    /// 宿主据此给用户一句明话，而不是留一个空窗。
+    /// 我们给的宿主窗口里挂了多少个子窗口。**已废弃的检测**：插件自己开顶层窗时
+    /// 这里永远是 0，那并不代表"没有界面"（实测误导过一整轮）。留着只为兼容旧调用方。
     /// </summary>
     public int ChildWindowCount(IntPtr parent)
     {
         if (parent == IntPtr.Zero)
             return 0;
 
+        // 走链表而不是 EnumChildWindows 的回调：托管进程里那个回调实测一个都不触发
+        // （连自己那个活窗口都数出 0，害我把"探测方法坏了"误判成"所有插件都没界面"）。
+        // FindWindowEx 遍历兄弟链，不依赖回调。
         int count = 0;
 
-        bool Enum(IntPtr hwnd, IntPtr lParam)
+        IntPtr child = FindWindowEx(parent, IntPtr.Zero, null, null);
+        while (child != IntPtr.Zero)
         {
             count++;
-            return true;
+            child = FindWindowEx(parent, child, null, null);
         }
 
-        EnumChildWindows(parent, Enum, IntPtr.Zero);
         return count;
     }
 
-    [DllImport("user32.dll")]
-    static extern bool EnumChildWindows(IntPtr parent, EnumChildProc proc, IntPtr lParam);
-
-    delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? cls, string? title);
 
     public void CloseEditor()
     {
@@ -317,3 +348,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         }
     }
 }
+
+
+
+

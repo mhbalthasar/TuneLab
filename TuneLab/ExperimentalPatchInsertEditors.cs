@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.MixerEngine;
@@ -8,9 +8,11 @@ namespace TuneLab.Audio;
 
 // 插件原生编辑器的入口（插入效果那一行的「界面」键，DESIGN.md §5.5）。
 //
-// 【为什么要有这么一个中间层】两种插件的开窗方式完全不同，且都只能在各自的进程里做：
-//   · VST3 是进程内加载，插件把 GUI 画进我们给它的 HWND；
-//   · VST2 跑在**桥进程**里，窗口也由桥创建，宿主只发一条消息。
+// 【两种插件的窗口归谁】都不归我们 —— 这是实测出来的边界，不是设计选择：
+//   · VST3：把宿主窗口句柄交给 native 库，它返回成功、IsEditorOpen 为真、GUI 也能
+//     被瞥见，但 GUI 从来不挂进我们给的 HWND（窗口树下 0 个子窗口，STA 同线程也一样）。
+//     所以改由插件自己开顶层窗，我们只负责开关与泵消息。
+//   · VST2：窗口由桥进程创建（插件在哪个进程加载，窗口就只能在哪个进程）。
 // 对上（混音台的浮窗）只暴露一个入口，所以这里做委托，别让界面去分格式。
 //
 // 【生命周期】窗口按槽位注册。实例被释放（换插件 / 卸插件 / 关工程）时，
@@ -31,27 +33,38 @@ internal static class InsertEditorHost
             return;
         }
 
-        // 桥那头的情况（超时 / 空窗 / 拒绝）经这个出口进宿主日志 ——
-        // Vst2EditorShell 自己不能引用宿主日志类型，所以留了个静态钩子。
-        Vst2EditorShell.HostLog = message => Log.Warning("insert: " + message);
 
-        IInsertEditorWindow? window = insert switch
+        // 插件窗口是它自己的（VST3 在本进程、VST2 在桥进程）：用户点了那个窗的 ✕
+        // 之后壳必须注销，否则再点「界面」只会复用一个已经停掉消息泵的旧壳
+        // —— 表现是"第一次能开，之后再点没反应"。
+
+        if (insert is Vst3Insert vst3)
         {
-            Vst3Insert vst3 => Vst3EditorWindow.Create(vst3, pluginName),
-            Vst2Insert vst2 => Vst2EditorShell.Create(vst2, pluginName),
-            _ => null,
-        };
+            var shell = Vst3EditorShell.Create(vst3, pluginName);
 
-        if (window == null)
+            if (!shell.TryOpen())
+            {
+                Log.Warning($"insert: '{pluginName}' has no usable editor; the button does nothing");
+                return;
+            }
+
+            Register(slotId, shell);
             return;
+        }
 
-        sWindows[slotId] = window;
+        if (insert is Vst2Insert vst2)
+        {
+            Register(slotId, Vst2EditorShell.Create(vst2, pluginName));
+            return;
+        }
 
-        // 关闭了就注销：Avalonia 的 Window 关闭后不可再 Show；VST2 那边的原生窗口
-        // 也可能被用户直接点掉。留着条目 = "第一个还能用、之后再也弹不开"。
-        window.WindowClosed += () => sWindows.Remove(slotId);
+        Log.Warning($"insert: '{pluginName}' has an unhandled format; cannot open an editor");
+    }
 
-        window.Show();
+    static void Register(string slotId, IInsertEditorWindow shell)
+    {
+        shell.WindowClosed += () => sWindows.Remove(slotId);
+        sWindows[slotId] = shell;
     }
 
     public static void Close(string slotId)
@@ -91,3 +104,7 @@ internal static class InsertEditorHost
         sWindows.Clear();
     }
 }
+
+
+
+
