@@ -51,7 +51,10 @@ internal static class InsertEditorHost
 
             if (!shell.TryOpen())
             {
-                Log.Warning($"insert: '{pluginName}' has no usable editor; the button does nothing");
+                // 开不出插件界面（没有 GL / 插件拒绝 / 干脆没做界面）时退到参数面板 ——
+                // 参数一直是能读能写的，比"点了没反应"有用得多。
+                Log.Warning($"insert: '{pluginName}' has no usable editor; showing the parameter panel instead");
+                ShowParameters(slotId, pluginName, insert);
                 return;
             }
 
@@ -139,6 +142,8 @@ internal static class InsertEditorHost
         sWindows.Clear();
     }
 }
+
+
 
 
 

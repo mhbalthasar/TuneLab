@@ -49,6 +49,15 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
     /// </summary>
     public bool TryOpen()
     {
+        // DPF / NanoVG 的界面在只有 GL 1.1 的机器上会**直接崩**（NanoVG 拿到空函数指针后
+        // 照样调 glActiveTexture）。所以先判断：需要 GL 1.3+ 而机器没有 → 不开窗，
+        // 让调用方改用参数面板。宁可少一个界面，也不能让整个进程消失。
+        if (mInsert.NeedsOpenGl && !TuneLab.ExperimentalPatch.VstBridge.OpenGlPatcher.HasUsableOpenGl)
+        {
+            HostLog.Warning($"insert: '{mPluginName}' needs OpenGL 1.3+ but this machine has none; "
+                          + "using the parameter panel instead");
+            return false;
+        }
         if (!mInsert.HasEditor)
         {
             HostLog.Warning($"insert: '{mPluginName}' reports no editor");
@@ -99,23 +108,13 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
 
         sOpenGlLogged = true;
 
-        string? version = OpenGlProbe.Version;
-
-        if (version == null)
+        // 不建 GL 上下文探测（那会把系统的 opengl32 加载进进程，Mesa 就再也换不上了）。
+        // 只看显示适配器 —— 与 OpenGlPatcher 用同一条判据。
+        if (!TuneLab.ExperimentalPatch.VstBridge.OpenGlPatcher.HasUsableOpenGl)
         {
-            HostLog.Warning("insert: could not create an OpenGL context; "
-                          + "editors that need OpenGL (DPF/NanoVG) may render blank");
-            return;
+            HostLog.Warning("insert: no hardware OpenGL and no software fallback; "
+                          + "editors that need OpenGL 1.3+ (DPF/NanoVG) will render blank");
         }
-
-        if (!OpenGlProbe.SupportsAtLeast13)
-        {
-            HostLog.Warning($"insert: OpenGL {version} — editors that need OpenGL 1.3+ "
-                          + "(DPF/NanoVG, e.g. ZamDynamicEQ / Dragonfly) will render blank on this machine");
-            return;
-        }
-
-        HostLog.Info($"insert: OpenGL {version}");
     }
 
     // 把插件窗口带到前台并置顶。窗口是插件建的，可能要晚几十毫秒才可见，
@@ -217,6 +216,8 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
         // 壳没有窗口；真正开窗在 Create 里的 TryOpen（见 InsertEditorHost.Show）。
     }
 }
+
+
 
 
 

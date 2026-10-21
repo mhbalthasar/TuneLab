@@ -25,6 +25,12 @@ public static class OpenGlPatcher
     /// <summary>已经生效的目录；null = 没启用（不是 Windows / 没放 dll / 加载失败）。</summary>
     public static string? AppliedDirectory { get; private set; }
 
+    /// <summary>
+    /// 这台机器能不能跑需要 OpenGL 1.3+ 的插件界面：有硬件显卡，或者我们已经装上了 Mesa。
+    /// 宿主用它决定"开窗"还是"改用参数面板"。
+    /// </summary>
+    public static bool HasUsableOpenGl => AppliedDirectory != null || HasHardwareGraphicsAdapter();
+
     /// <summary>Mesa 用的渲染后端："d3d12"（有硬件 D3D12）或 "llvmpipe"（纯 CPU）。</summary>
     public static string? AppliedDriver { get; private set; }
 
@@ -80,7 +86,7 @@ public static class OpenGlPatcher
     // 之后无论再 LoadLibrary 哪一份 Mesa 都没用了（模块按文件名唯一）。所以只能
     // 看**适配器名字**：虚拟机 / 远程桌面 / 基础显示驱动这几类的 GL 只有 1.1，
     // 真显卡（NVIDIA/AMD/Intel）都不是这些名字。
-    static bool HasHardwareGraphicsAdapter()
+    public static bool HasHardwareGraphicsAdapter()
     {
         for (uint i = 0; ; i++)
         {
@@ -210,6 +216,7 @@ public static class OpenGlPatcher
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr LoadLibraryW(string path);
 }
+
 
 
 

@@ -284,7 +284,8 @@ public sealed class Vst3Backend : IInsertBackend
     }
 
     // 在二进制里找一段 ASCII 或 UTF-16LE 的字面量，分块读（插件有好几百 MB 的，不能整个读进内存）。
-    static bool ContainsMarker(string file, string needle)
+    // 插件是不是 NanoVG（DPF）那类必须 OpenGL 1.3+ 的界面：internal 给 Vst3Insert 用。
+    internal static bool ContainsMarker(string file, string needle)
     {
         byte[] ascii = Encoding.ASCII.GetBytes(needle);
         byte[] utf16 = Encoding.Unicode.GetBytes(needle);
@@ -406,6 +407,7 @@ public sealed class Vst3Backend : IInsertBackend
     public InsertPluginInfo? Resolve(string pluginId)
         => ListPlugins(probeInstruments: false).FirstOrDefault(p => p.PluginId == pluginId);
 }
+
 
 
 

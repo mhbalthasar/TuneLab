@@ -133,6 +133,35 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     public string? Version => mWrapper.Version;
     public bool HasEditor => mWrapper.HasEditor;
 
+    // 这个插件的界面是不是**必须 OpenGL 1.3+**（DPF / NanoVG 那类）。
+    //
+    // 【为什么要知道】这类界面在只有 GL 1.1 的机器（虚拟机 / 远程桌面）上不是"画不出来"，
+    // 而是会**直接崩**：NanoVG 拿到空函数指针后照样调用 glActiveTexture，进程当场没。
+    // 所以宿主在这种情况下不能开窗，改用参数面板（DESIGN §5.7.11）。
+    //
+    // 判据是二进制里的 "NanoVG" 标记（DPF 静态链接 NanoVG 时必然带这个字符串）。
+    bool? mNeedsOpenGl;
+
+    public bool NeedsOpenGl
+    {
+        get
+        {
+            if (mNeedsOpenGl == null)
+            {
+                try
+                {
+                    mNeedsOpenGl = Vst3Backend.ContainsMarker(Plugin.Locator, "NanoVG");
+                }
+                catch (Exception)
+                {
+                    mNeedsOpenGl = false;
+                }
+            }
+
+            return mNeedsOpenGl.Value;
+        }
+    }
+
     // 插件自己报的首选尺寸（像素）。拿不到就返回 null，让宿主用默认大小。
     public (int Width, int Height)? EditorSize
     {
