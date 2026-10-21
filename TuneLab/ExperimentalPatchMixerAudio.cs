@@ -23,8 +23,11 @@ internal sealed class MixerGraphCompiler
     volatile TrackChannelState[] mTrackStates = [];
     volatile AuxChannelState[] mAuxStates = [];
 
-    public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks, IReadOnlyCollection<AuxBus> auxes)
+    public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks,
+        IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null)
     {
+        // Master 是"总轨"：它的插入链挂在 master 节点上（DESIGN §5.7.18）。
+        // 没有就传 null，行为与以前完全一致。
         // 插件的**装配参数**必须跟着当前图走，且每次编译都刷一遍：
         //   · 块长：插件被喂的块长必须 ≥ 引擎实际交出来的块长。早先这里没人设，
         //     工厂停在默认 512，而引擎按 1024（设备缓冲）交块 —— 于是每块只处理了前 512 帧、
@@ -40,7 +43,8 @@ internal sealed class MixerGraphCompiler
         var auxStates = new List<AuxChannelState>(auxList.Count);
 
         var builder = new MixGraphBuilder();
-        var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState());
+        var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(),
+            null, BuildInserts("master", masterInserts ?? []));
 
         // v1 只有一个设备：所有"设备"输出都进同一个 sink（DESIGN.md §4.4）。
         var device = builder.AddNode("device", MixNodeKind.Device);
@@ -313,4 +317,6 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
+
+
 

@@ -801,6 +801,20 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 **做法**：按 `(格式, PluginId)` 去重，保留扫描顺序里的第一条（= 路径清单里靠前的那个）。
 两处都排：`Scan` 落盘前，以及 `CachedPlugins` 读取时（老缓存不重扫也能立刻变干净）。
 
+#### 5.7.18 Master 也有插入链（2026-10-21）
+
+Master 是"总轨"，效果器挂在它上面 = 总线效果。之前它的 `AddInsert` 只会抛
+`NotSupportedException`（"needs a home in the host model"），而异常从菜单回调里抛出去
+会直接带走进程 —— 用户看到的就是"加个插件就闪退"。
+
+现在 Master 的插入槽位挂在 **`Project.MasterInserts`**（与 `Tracks` / `Auxes` 同级），
+所以 undo、落盘都跟着工程走：
+
+- `Project` 构造时创建并交给 `AudioEngine.SetMasterInserts(...)`，编译时挂到 master 节点；
+- 装载/保存走 payload 的 `MasterInserts`（老文件没有该字段 → 空列表，行为不变）；
+- `MixerMasterChannel.Inserts / AddInsert / RemoveInsert` 与轨道 / AUX 同一套适配器；
+- 界面上 Master 的 FX 按钮回来了，`canAdd` 也恢复成全局的 `SupportsInserts`。
+
 #### 5.7.16 通道位置调整（轨道头右键，2026-10-21）
 
 右键通道条 → 上移 / 下移 / 置顶 / 置底 / 移动到…（子菜单列出同组其它通道）。
@@ -1228,6 +1242,7 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

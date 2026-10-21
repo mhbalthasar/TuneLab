@@ -390,6 +390,9 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     readonly List<IMixerOutput> mOutputs = [];
     readonly List<IMixerInsertFormat> mFormats = [];
 
+    // Master 的插入链挂在工程上（Project.MasterInserts），通道视图要用它。
+    internal Project Project => mProject;
+
     // 插入实例工厂：进程内一份。实例持有原生句柄，而适配器会随工程替换重建 ——
     // 工厂跟着适配器走就会"换一次工程全部插件重新初始化、参数回默认"。
     static readonly InsertInstanceFactory sInsertFactory = InsertInstanceFactory.Shared;
@@ -992,7 +995,20 @@ internal sealed class MixerMasterChannel : IMixerChannel
     }
 
     public IReadOnlyList<IMixerSend> Sends => [];
-    public IReadOnlyList<IMixerInsert> Inserts => [];
+
+    // Master 的插入链：与轨道 / AUX 同一套适配器，只是槽位挂在工程上（Project.MasterInserts）。
+    public IReadOnlyList<IMixerInsert> Inserts
+    {
+        get
+        {
+            var list = new List<IMixerInsert>(mOwner.Project.MasterInserts.Count);
+
+            foreach (var slot in mOwner.Project.MasterInserts)
+                list.Add(new InsertSlotAdapter(slot, mOwner.InsertFactory));
+
+            return list;
+        }
+    }
 
     // Master 也能挂插入（母带链，DESIGN.md §6.3）—— 只是它的槽位不在 Project 里，
     // 所以宿主侧还没处可放。现在返回空表、AddInsert 说明原因，而不是画一个假按钮。
@@ -1018,11 +1034,42 @@ internal sealed class MixerMasterChannel : IMixerChannel
 
     // Master 的插入链挂在哪儿还是 TODO：它不在 Project.Auxes 里，需要一个等价的位置。
     // 在此之前如实说"不支持"，比让用户点出一个异常好。
+    // Master 是"总轨"：效果器挂在这里就是总线效果。槽位与轨道 / AUX 完全同构，
+    // 只是父对象是 Project（所以 undo / 落盘跟着工程走）。
     public IMixerInsert AddInsert(IMixerInsertFormat format)
-        => throw new NotSupportedException("the Master insert chain needs a home in the host model (M6e)");
+    {
+        var project = mOwner.Project;
+
+        var slot = new InsertSlot(
+            "insert-" + Guid.NewGuid().ToString("N"),
+            format.Name,
+            string.Empty,
+            string.Empty,
+            project.MasterInserts);
+
+        project.MasterInserts.Add(slot);
+        project.Commit();
+
+        // 成员变化没有经过 MembershipModified 的订阅（Master 不在 Tracks/Auxes 里），
+        // 所以这里自己重建图 + 通知界面。
+        mOwner.RaiseRoutingChanged();
+
+        return new InsertSlotAdapter(slot, mOwner.InsertFactory);
+    }
 
     public void RemoveInsert(IMixerInsert insert)
-        => throw new NotSupportedException("the Master insert chain needs a home in the host model (M6e)");
+    {
+        if (insert is not InsertSlotAdapter adapter)
+            return;
+
+        var project = mOwner.Project;
+
+        mOwner.InsertFactory.Release(adapter.SlotId);
+        project.MasterInserts.Remove(adapter.Slot);
+        project.Commit();
+
+        mOwner.RaiseRoutingChanged();
+    }
 
     readonly MixerModelAdapter mOwner;
 }
@@ -1063,5 +1110,8 @@ internal sealed class MixerInsertFormat(string name, bool isAvailable, string? u
     public bool IsAvailable => isAvailable;
     public string? UnavailableReason => unavailableReason;
 }
+
+
+
 
 

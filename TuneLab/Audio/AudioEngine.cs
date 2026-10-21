@@ -148,6 +148,12 @@ internal static class AudioEngine
         AudioGraph.RebuildMixerGraph();
     }
 
+    // [EP-MIXER-19] Master 的插入链由工程提供（Project.MasterInserts）：换工程时跟着换。
+    public static void SetMasterInserts(DataObjectList<TuneLab.Data.InsertSlot>? inserts)
+    {
+        AudioGraph.SetMasterInserts(inserts);
+    }
+
     public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo)
     {
         ExportTrack(filePath, track, isStereo, SampleRate.Value, AudioEncodeSettings.Wav(16));
@@ -584,3 +590,5 @@ internal static class AudioEngine
     static readonly IAudioData?[] mPreviewKeySamples = new IAudioData?[MusicTheory.PITCH_COUNT];
     static readonly object mPreviewLock = new();
 }
+
+

@@ -18,6 +18,9 @@ internal class Project : DataObject, IProject
     public ITimeSignatureManager TimeSignatureManager => mTimeSignatureManager;
     public IReadOnlyDataObjectList<ITrack> Tracks => mTracks;
 
+    // [EP-MIXER-19] Master 总线上的插入效果（总轨效果）。与 AUX 的 Inserts 同构。
+    public DataObjectList<InsertSlot> MasterInserts { get; }
+
     // AUX 总线（DESIGN.md §4.1）。**暂不落盘**：见 §9 与 Patches/Mixer/DESIGN.md 的说明——
     // 打开另一个工程时这里会被清空（它们属于上一个工程），UI 上有明确提示。
     public IReadOnlyDataObjectList<AuxBus> Auxes => mAuxes;
@@ -38,6 +41,10 @@ internal class Project : DataObject, IProject
         mTracks = new(this);
         mAuxes = new(this);
 
+        // [EP-MIXER-19] Master 的插入链：Master 是"总轨"，效果器挂在它上面 = 总线效果。
+        // 数据挂在 Project 上（与 Tracks/Auxes 同级），所以 undo / 落盘都跟着工程走。
+        MasterInserts = new DataObjectList<InsertSlot>(this);
+        AudioEngine.SetMasterInserts(MasterInserts);
         mTracks.ItemAdded.Subscribe(OnTrackAdded);
         mTracks.ItemRemoved.Subscribe(OnTrackRemoved);
         mAuxes.ItemAdded.Subscribe(OnAuxAdded);
@@ -167,6 +174,8 @@ internal class Project : DataObject, IProject
 
     public void Dispose()
     {
+        // 工程没了：Master 的插入链也从音频图摘掉（否则下一个工程会用上旧槽位）。
+        AudioEngine.SetMasterInserts(null);
         foreach (var track in mTracks)
         {
             track.Deactivate();
@@ -192,6 +201,9 @@ internal class Project : DataObject, IProject
     readonly DataObjectList<AuxBus> mAuxes;
     int mAuxSeq;
 }
+
+
+
 
 
 

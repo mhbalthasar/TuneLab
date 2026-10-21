@@ -86,6 +86,9 @@ internal static class MixerPersistence
             });
         }
 
+        // [EP-MIXER-19] Master 总线上的插入（总轨效果）。
+        payload.MasterInserts = ToInsertDtos(project.MasterInserts);
+
         return payload;
     }
 
@@ -212,6 +215,9 @@ internal static class MixerPersistence
 
         if (dropped > 0)
             HostLog.Warning($"mixer: {dropped} track(s) in the routing sidecar had no match; their routing was dropped");
+
+        // Master 的插入链：与轨道 / AUX 同一套装载。
+        ApplyInserts(project.MasterInserts, payload.MasterInserts);
 
         if (matched > 0 || auxes.Count > 0)
             HostLog.Info($"mixer: restored routing ({auxes.Count} aux, {matched} track(s))");
@@ -398,6 +404,9 @@ internal static class MixerPersistence
         public int Branch { get; set; }
         public List<AuxDto> Auxes { get; set; } = [];
         public List<TrackDto> Tracks { get; set; } = [];
+
+        // [EP-MIXER-19] Master 的插入链。老文件没有这个字段 → 空列表，行为与以前一致。
+        public List<InsertDto> MasterInserts { get; set; } = [];
     }
 
     sealed class AuxDto
@@ -448,4 +457,7 @@ internal static class MixerPersistence
         public double Gain { get; set; }
     }
 }
+
+
+
 

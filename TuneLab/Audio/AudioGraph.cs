@@ -201,7 +201,7 @@ internal class AudioGraph()
 
         try
         {
-            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes));
+            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts));
         }
         catch (Exception ex)
         {
@@ -232,6 +232,15 @@ internal class AudioGraph()
             buffer[offset + i] *= volume;
     }
 
+    // [EP-MIXER-19] Master 的插入链（由当前工程提供）。编译时挂到 master 节点上。
+    DataObjectList<InsertSlot>? mMasterInserts;
+
+    public void SetMasterInserts(DataObjectList<InsertSlot>? inserts)
+    {
+        mMasterInserts = inserts;
+        RebuildSnapshot();
+    }
+
     int mSampleRate = 44100;
     List<IAudioTrack> mTracks = [];
     readonly List<AuxBus> mAuxes = [];
@@ -241,5 +250,7 @@ internal class AudioGraph()
     readonly Mixer mMixer = new() { LimiterEnabled = true };
     readonly MixerGraphCompiler mCompiler = new();
 }
+
+
 
 

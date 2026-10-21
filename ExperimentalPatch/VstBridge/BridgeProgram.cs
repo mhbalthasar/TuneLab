@@ -18,8 +18,6 @@ internal static class BridgeProgram
 {
     static int Main(string[] args)
     {
-        // 越早越好：GL 模块按文件名唯一，必须早于插件第一次碰 OpenGL。
-        OpenGlPatcher.EnsureApplied();
         // 参数契约：宿主传 --pipe <name>。缺了就说明是"被人手点开了"，立刻退出
         // ——一个单独运行的桥没有任何意义（它的共享段与生命周期都归宿主）。
         //
@@ -106,4 +104,5 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
 }
+
 
