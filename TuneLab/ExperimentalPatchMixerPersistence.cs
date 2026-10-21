@@ -69,6 +69,11 @@ internal static class MixerPersistence
                 Sends = ToDtos(aux.Sends),
                 Pin = aux.Pinned.Value.ToString(),
                 Inserts = ToInsertDtos(aux.Inserts),
+
+                // [EP-MIXER-20] 输入级
+                TrimDb = aux.TrimDb.Value,
+                PhaseInvert = aux.PhaseInvert.Value,
+                HpfHz = aux.HpfHz.Value,
             });
         }
 
@@ -83,6 +88,11 @@ internal static class MixerPersistence
                 Sends = ToDtos(track.Sends),
                 Pin = track.Pinned.Value.ToString(),
                 Inserts = ToInsertDtos(track.Inserts),
+
+                // [EP-MIXER-20] 输入级
+                TrimDb = track.TrimDb.Value,
+                PhaseInvert = track.PhaseInvert.Value,
+                HpfHz = track.HpfHz.Value,
             });
         }
 
@@ -183,6 +193,11 @@ internal static class MixerPersistence
             aux.IsSolo.SetInfo(dto.Solo);
             aux.Output.SetInfo(FromDto(dto.Output));
             aux.Pinned.SetInfo(ParsePin(dto.Pin));
+
+            // [EP-MIXER-20] 输入级（老工程没有这几个字段 → 默认值 = 关闭）
+            aux.TrimDb.SetInfo(dto.TrimDb);
+            aux.PhaseInvert.SetInfo(dto.PhaseInvert);
+            aux.HpfHz.SetInfo(dto.HpfHz);
             ApplyInserts(aux.Inserts, dto.Inserts);
             ApplySends(aux.Sends, dto.Sends);
 
@@ -208,6 +223,11 @@ internal static class MixerPersistence
 
             track.Output.SetInfo(FromDto(dto.Output));
             track.Pinned.SetInfo(ParsePin(dto.Pin));
+
+            // [EP-MIXER-20] 输入级（老工程没有这几个字段 → 默认值 = 关闭）
+            track.TrimDb.SetInfo(dto.TrimDb);
+            track.PhaseInvert.SetInfo(dto.PhaseInvert);
+            track.HpfHz.SetInfo(dto.HpfHz);
             ApplyInserts((DataObjectList<InsertSlot>)track.Inserts, dto.Inserts);
             ApplySends((DataObjectList<Send>)track.Sends, dto.Sends);
             matched++;
@@ -421,6 +441,11 @@ internal static class MixerPersistence
         public List<SendDto>? Sends { get; set; }
         public string? Pin { get; set; }
         public List<InsertDto>? Inserts { get; set; }
+
+        // [EP-MIXER-20] 输入级
+        public double TrimDb { get; set; }
+        public bool PhaseInvert { get; set; }
+        public double HpfHz { get; set; }
     }
 
     sealed class TrackDto
@@ -431,6 +456,11 @@ internal static class MixerPersistence
         public List<SendDto>? Sends { get; set; }
         public string? Pin { get; set; }
         public List<InsertDto>? Inserts { get; set; }
+
+        // [EP-MIXER-20] 输入级
+        public double TrimDb { get; set; }
+        public bool PhaseInvert { get; set; }
+        public double HpfHz { get; set; }
     }
 
     // 一个插入槽位。state 是 base64（DESIGN.md §9.4 / §5.6：
@@ -457,6 +487,10 @@ internal static class MixerPersistence
         public double Gain { get; set; }
     }
 }
+
+
+
+
 
 
 

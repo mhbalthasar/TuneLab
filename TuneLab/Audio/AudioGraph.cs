@@ -18,6 +18,7 @@ internal class AudioGraph()
         {
             mSampleRate = value;
             mMixer.Limiter.SampleRate = value;
+            mMixer.SampleRate = value;
             lock (mTrackLockObject)
             {
                 foreach (var track in mTracks)

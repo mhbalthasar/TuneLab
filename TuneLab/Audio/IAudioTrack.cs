@@ -28,4 +28,11 @@ internal interface IAudioTrack
     // Track 同时实现两个接口，而 C# 要求显式实现的返回类型能同时满足双方 ——
     // 写成 IReadOnlyList<> 会以 CS0738 拒绝编译。
     IReadOnlyDataObjectList<InsertSlot> Inserts { get; }
+    // [EP-MIXER-20] 输入级：混进通道缓冲之后、推子与插入之前（DESIGN §5.7.22）。
+    // 默认值（0 / false / 0）下引擎整段跳过，所以"没有输入级"与旧路径逐位相同。
+    double TrimDb => 0;
+    bool PhaseInvert => false;
+    double HpfHz => 0;
+
 }
+

@@ -17,6 +17,7 @@ internal static class MixerMetrics
     public const double IndexHeight = 22;    // 轨号 / AUX 名（压在色条上）
     public const double NameHeight = 20;
     public const double PanHeight = 42;      // 旋钮 + 数值
+    public const double InputHeight = 22;    // 输入级 [IN]（Trim / Ø / HPF）
     public const double CountButtonHeight = 20;   // Send N / FX N
     public const double ToggleHeight = 22;   // M / S
     public const double ReadoutHeight = 24;
@@ -37,5 +38,6 @@ internal static class MixerMetrics
     public const double PopupHeaderHeight = 30;
     public const double PopupPadding = 10;
 }
+
 
 

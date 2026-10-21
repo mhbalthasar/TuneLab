@@ -1,4 +1,4 @@
-namespace TuneLab.ExperimentalPatch.MixerEngine;
+﻿namespace TuneLab.ExperimentalPatch.MixerEngine;
 
 // 一条通道的**活**状态：每个块渲染时现读，不在快照里存值。
 //
@@ -15,4 +15,20 @@ public interface IMixChannelState
     // 门控：静音 / 未 solo / −∞ 档。**宿主算好**再给引擎——solo 的判据（"有任一轨 solo"）
     // 是宿主语义，引擎不该知道。返回 true 时该节点不出声（轨道连音源都不读，总线直接输出静音）。
     bool IsSilent { get; }
+
+    // ── 输入级：混进通道缓冲之后、推子与插入之前 ──
+    //
+    // 三项都是"默认值 = 什么都不做"，引擎在默认值上会**整段跳过**（不做哪怕一次乘法），
+    // 所以"没有输入级"的工程仍然与旧路径逐位相同（DESIGN §7.2 的硬验收）。
+    //
+    // 输入增益（dB）。0 = 不变。范围由界面约束（-24..+24）。
+    double TrimDb => 0;
+
+    // 相位反转（Ø）。true = 整条通道取反。
+    bool PhaseInvert => false;
+
+    // 高通截止频率（Hz）。≤ 20 = 关闭；否则二阶（12 dB/oct）高通。
+    double HpfHz => 0;
 }
+
+

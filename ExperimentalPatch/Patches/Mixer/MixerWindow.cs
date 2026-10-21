@@ -45,6 +45,7 @@ public sealed class MixerWindow : Window
     MixerChannelStrip? mMasterView;
     SendPopupWindow? mSendPopup;
     FxPopupWindow? mFxPopup;
+    InputStageWindow? mInputPopup;
 
     bool mResizing;
     ResizeEdge mResizeEdge;
@@ -537,6 +538,7 @@ public sealed class MixerWindow : Window
     {
         strip.SendRequested += ShowSendPopup;
         strip.FxRequested += ShowFxPopup;
+        strip.InputStageRequested += ShowInputStage;
         strip.OutputRequested += ShowOutputMenu;
         strip.PanRequested += ScrollBy;   // 拖通道条头部 = 横向平移
     }
@@ -555,6 +557,21 @@ public sealed class MixerWindow : Window
 
         // 位置调整：只在所属组内（轨道组 / AUX 组）移动。顺序就是工程里的顺序，
         // 主界面的轨道头会跟着变。
+        if (channel.HasInputStage)
+        {
+            menu.Items.Add(new Separator());
+
+            var input = new MenuItem { Header = L("输入级…", "Input stage…") };
+            input.Click += (_, _) =>
+            {
+                var strip = mStripViews.FirstOrDefault(view => ReferenceEquals(view.Channel, channel));
+                if (strip != null)
+                    ShowInputStage(strip);
+            };
+
+            menu.Items.Add(input);
+        }
+
         if (channel.Kind != MixerChannelKind.Master)
         {
             menu.Items.Add(new Separator());
@@ -737,12 +754,40 @@ public sealed class MixerWindow : Window
         popup.Position = point;
     }
 
+    // 输入级浮窗：与 FX / Send 同一套放置方式，归属混音台（始终压在它上面）。
+    void ShowInputStage(MixerChannelStrip strip)
+    {
+        if (!strip.Channel.HasInputStage)
+            return;
+
+        if (mInputPopup != null)
+        {
+            mInputPopup.Close();
+            mInputPopup = null;
+        }
+
+        var popup = new InputStageWindow(strip.Channel, mHost);
+        PlacePopup(popup, strip.InputAnchor);
+        popup.Show(this);
+
+        // 关掉之后通道条的 [IN] 高亮要跟着变（弹窗里改的值不经过模型事件）。
+        popup.Closed += (_, _) =>
+        {
+            mInputPopup = null;
+            strip.RefreshInputState();
+        };
+
+        mInputPopup = popup;
+    }
+
     void ClosePopups()
     {
         mSendPopup?.Close();
         mSendPopup = null;
         mFxPopup?.Close();
         mFxPopup = null;
+        mInputPopup?.Close();
+        mInputPopup = null;
     }
 
     void PumpMeters()
@@ -762,6 +807,9 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
+
 
 
 

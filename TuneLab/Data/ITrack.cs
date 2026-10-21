@@ -25,6 +25,12 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     new IDataProperty<MixerRoute> Output { get; }
     new IReadOnlyDataObjectList<Send> Sends { get; }
     new IReadOnlyDataObjectList<InsertSlot> Inserts { get; }
+
+    // [EP-MIXER-20] 输入级（混音台通道条）：Trim / 相位 / 高通。
+    new IDataProperty<double> TrimDb { get; }
+    new IDataProperty<bool> PhaseInvert { get; }
+    new IDataProperty<double> HpfHz { get; }
+
     IDataProperty<MixerPin> Pinned { get; }    bool ExportEnabled { get; set; }
     int ExportChannels { get; set; }
     IReadOnlyDataObjectLinkedList<IPart> Parts { get; }
@@ -44,9 +50,15 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     bool IAudioTrack.IsSolo => IsSolo.Value;
     double IAudioTrack.Volume => MusicTheory.dB2Level(Gain.Value);
     double IAudioTrack.Pan => Pan.Value;
+
+    // [EP-MIXER-20] 输入级：DIM 把它们接到数据槽位上（Track 只提供 DataProperty）。
+    double IAudioTrack.TrimDb => TrimDb.Value;
+    bool IAudioTrack.PhaseInvert => PhaseInvert.Value;
+    double IAudioTrack.HpfHz => HpfHz.Value;
     double IAudioTrack.EndTime => Parts.MaxBy(part => part.EndTime())?.EndTime() ?? 0;
     IEnumerable<IAudioSource> IAudioTrack.AudioSources => Parts;
 
     MixerRoute IAudioTrack.Output => Output.Value;
     IReadOnlyList<Send> IAudioTrack.Sends => Sends;
 }
+

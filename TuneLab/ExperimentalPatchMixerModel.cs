@@ -581,6 +581,12 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
     public abstract IDataProperty<MixerRoute> OutputProperty { get; }
     public abstract DataObjectList<Send> SendList { get; }
     public abstract DataObjectList<InsertSlot> InsertList { get; }
+
+    // 输入级（Master 不走这里 —— 它自己实现 IMixerChannel）。
+    public abstract bool HasInputStage { get; }
+    public abstract double TrimDb { get; set; }
+    public abstract bool PhaseInvert { get; set; }
+    public abstract double HpfHz { get; set; }
     // 插入链的顺序（= 处理顺序）。▲▼ 用它，delta = -1 上移 / +1 下移。
     public bool CanMoveInsert(IMixerInsert insert, int delta)
     {
@@ -857,6 +863,27 @@ internal sealed class MixerTrackChannel : MixerChannelBase
     public override DataObjectList<Send> SendList => ((Track)mTrack).Sends;
     public override DataObjectList<InsertSlot> InsertList => ((Track)mTrack).Inserts;
 
+    // 输入级（混音台通道条）：直接读写数据槽位，一步 undo。
+    public override bool HasInputStage => true;
+
+    public override double TrimDb
+    {
+        get => ((Track)mTrack).TrimDb.Value;
+        set => ((Track)mTrack).TrimDb.Set(value);
+    }
+
+    public override bool PhaseInvert
+    {
+        get => ((Track)mTrack).PhaseInvert.Value;
+        set => ((Track)mTrack).PhaseInvert.Set(value);
+    }
+
+    public override double HpfHz
+    {
+        get => ((Track)mTrack).HpfHz.Value;
+        set => ((Track)mTrack).HpfHz.Set(value);
+    }
+
     public override (double LeftDb, double RightDb)? Peak
     {
         get
@@ -952,6 +979,26 @@ internal sealed class MixerAuxChannel : MixerChannelBase
     public override DataObjectList<Send> SendList => Bus.Sends;
     public override DataObjectList<InsertSlot> InsertList => Bus.Inserts;
 
+    public override bool HasInputStage => true;
+
+    public override double TrimDb
+    {
+        get => Bus.TrimDb.Value;
+        set => Bus.TrimDb.Set(value);
+    }
+
+    public override bool PhaseInvert
+    {
+        get => Bus.PhaseInvert.Value;
+        set => Bus.PhaseInvert.Set(value);
+    }
+
+    public override double HpfHz
+    {
+        get => Bus.HpfHz.Value;
+        set => Bus.HpfHz.Set(value);
+    }
+
     // AUX 电平：走混音图的节点峰值（推子之后，DESIGN.md §3.4）。停止播放时返回 null → 表归零。
     public override (double LeftDb, double RightDb)? Peak
     {
@@ -1041,6 +1088,12 @@ internal sealed class MixerMasterChannel : IMixerChannel
     }
 
     public IReadOnlyList<IMixerSend> Sends => [];
+
+    // Master 没有输入级（没有音源可 Trim / 高通）。界面据此不画那一行。
+    public bool HasInputStage => false;
+    public double TrimDb { get => 0; set { } }
+    public bool PhaseInvert { get => false; set { } }
+    public double HpfHz { get => 0; set { } }
 
     // Master 的插入链：与轨道 / AUX 同一套适配器，只是槽位挂在工程上（Project.MasterInserts）。
     public IReadOnlyList<IMixerInsert> Inserts
@@ -1194,6 +1247,7 @@ internal sealed class MixerInsertFormat(string name, bool isAvailable, string? u
     public bool IsAvailable => isAvailable;
     public string? UnavailableReason => unavailableReason;
 }
+
 
 
 

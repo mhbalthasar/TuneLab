@@ -43,6 +43,11 @@ internal class AuxBus : DataObject
     public DataObjectList<InsertSlot> Inserts { get; }
     public DataProperty<MixerPin> Pinned { get; }
 
+    // [EP-MIXER-20] 输入级（与轨道同一套语义）。
+    public DataProperty<double> TrimDb { get; }
+    public DataProperty<bool> PhaseInvert { get; }
+    public DataProperty<double> HpfHz { get; }
+
     public AuxBus(string id, string name, DataObject parent) : base(parent)
     {
         Id = id;
@@ -59,6 +64,11 @@ internal class AuxBus : DataObject
         Sends = new DataObjectList<Send>(this);
         Inserts = new DataObjectList<InsertSlot>(this);
         Pinned = new DataStruct<MixerPin>(this);
+
+        // 输入级：默认关闭。
+        TrimDb = new DataStruct<double>(this);
+        PhaseInvert = new DataStruct<bool>(this);
+        HpfHz = new DataStruct<double>(this);
     }
 }
 

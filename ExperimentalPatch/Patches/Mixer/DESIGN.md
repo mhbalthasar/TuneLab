@@ -801,6 +801,25 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 **做法**：按 `(格式, PluginId)` 去重，保留扫描顺序里的第一条（= 路径清单里靠前的那个）。
 两处都排：`Scan` 落盘前，以及 `CachedPlugins` 读取时（老缓存不重扫也能立刻变干净）。
 
+#### 5.7.22 通道输入级：Trim / Ø / HPF（2026-10-21）
+
+通道条上加了一行 `[IN]`（Master 没有，留空以保持推子对齐）。点开是输入级浮窗：
+
+- **增益** −24…+24 dB（0 = 不变）
+- **相位 Ø**（整条通道取反）
+- **高通** 20…2000 Hz，二阶 12 dB/oct（RBJ cookbook，Q = 1/√2）；**20 Hz = 关**
+
+位置在"音源混进通道缓冲之后、推子与插入之前"。实现上放在 `Source.AddData` 之后 ——
+推子只是逐样本乘常数，线性运算可交换，所以与"先输入级再推子"结果相同，而插入链与 send
+本来就在后面，顺序不受影响。
+
+**三项都是默认值时引擎整段跳过**（连一次乘法都不做），所以"没有输入级"的工程与旧路径
+逐位相同 —— `MixerEngineTests.DefaultInputStageLeavesTheSignalUntouched` 钉住这条。
+
+数据挂在 `Track` / `AuxBus`（`TrimDb` / `PhaseInvert` / `HpfHz`），随 epMixer 落盘；
+老工程没有这三个字段 → 默认值。界面用 Avalonia 的 Slider（补丁工程不引用 TuneLab.GUI），
+高度给 26 以免拇指被裁。
+
 #### 5.7.19 插入顺序可调（2026-10-21）
 
 处理顺序 = 列表顺序。FX 浮窗每行加了 ▲▼：到头的那个置灰（`CanMoveInsert` 判定），
@@ -1271,6 +1290,7 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

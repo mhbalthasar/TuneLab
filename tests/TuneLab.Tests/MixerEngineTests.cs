@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using TuneLab.ExperimentalPatch.MixerEngine;
@@ -20,6 +20,11 @@ public class MixerEngineTests
         public double Volume { get; set; } = 1;
         public double Pan { get; set; }
         public bool IsSilent { get; set; }
+
+        // 输入级（默认关闭）
+        public double TrimDb { get; set; }
+        public bool PhaseInvert { get; set; }
+        public double HpfHz { get; set; }
     }
 
     sealed class ArraySource(float[] data) : IMixSource
@@ -227,6 +232,68 @@ public class MixerEngineTests
     }
 
     // 旁通是**活值**：一改，下一次 Process 就该按新状态走，而且要能从音频线程看得见
+    // ── 输入级：Trim / Ø / HPF ──
+
+    [Fact]
+    public void TrimScalesTheInputBeforeAnythingElse()
+    {
+        // +6 dB ≈ ×1.9953。源是 0.25 的常量，推子 1.0、Master 1.0。
+        var state = new TestState { Volume = 1, TrimDb = 6 };
+        var buffer = RenderOneBlock(state, 0.25f, 64);
+
+        Assert.Equal(0.25 * Math.Pow(10, 6.0 / 20), buffer[0], 4);
+    }
+
+    [Fact]
+    public void PhaseInvertNegatesTheInput()
+    {
+        var state = new TestState { Volume = 1, PhaseInvert = true };
+        var buffer = RenderOneBlock(state, 0.25f, 64);
+
+        Assert.Equal(-0.25f, buffer[0]);
+        Assert.Equal(-0.25f, buffer[1]);
+    }
+
+    [Fact]
+    public void HighPassRemovesDc()
+    {
+        // 直流输入 + 200 Hz 高通：稳态应该被压到接近 0（去掉直流，而不是"整体变小"）。
+        var state = new TestState { Volume = 1, HpfHz = 200 };
+        var buffer = RenderOneBlock(state, 1f, 8192);
+
+        int last = (8192 - 1) * 2;
+        Assert.True(Math.Abs(buffer[last]) < 0.01, $"DC should be gone, got {buffer[last]}");
+        Assert.True(Math.Abs(buffer[last + 1]) < 0.01, $"DC should be gone, got {buffer[last + 1]}");
+    }
+
+    [Fact]
+    public void DefaultInputStageLeavesTheSignalUntouched()
+    {
+        // 三项都是默认值时引擎整段跳过 —— 必须与"没有输入级"逐位相同。
+        var defaults = RenderOneBlock(new TestState { Volume = 1 }, 0.37f, 64);
+        var plain = RenderOneBlock(new TestState { Volume = 1 }, 0.37f, 64);
+
+        AssertBitEqual(plain, defaults);
+    }
+
+    static float[] RenderOneBlock(TestState state, float sample, int frames)
+    {
+        var data = new float[frames * 2];
+        Array.Fill(data, sample);
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState { Volume = 1 });
+        var node = builder.AddNode("track-0", MixNodeKind.Track, state, new ArraySource(data));
+        builder.Connect(node, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[frames * 2];
+        mixer.Render(0, frames, buffer, 0);
+        return buffer;
+    }
+
     // （引擎读 IsBypassed 在音频线程，写在 UI 线程）。这条测试钉住两个方向。
     [Fact]
     public void Bypass_TakesEffectOnTheNextBlockWithoutRebuildingTheGraph()
@@ -580,3 +647,4 @@ public class MixerEngineTests
         }
     }
 }
+

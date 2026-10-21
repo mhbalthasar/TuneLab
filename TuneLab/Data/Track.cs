@@ -26,6 +26,11 @@ internal class Track : DataObject, ITrack
     public DataProperty<string> Color { get; }
     // 路由：output 单选出入口 + 并联 send（DESIGN.md §4.2 / §4.3）。
     public DataProperty<MixerRoute> Output { get; }
+
+    // [EP-MIXER-20] 输入级（混音台通道条）。默认值 = 什么都不做。
+    public DataProperty<double> TrimDb { get; }
+    public DataProperty<bool> PhaseInvert { get; }
+    public DataProperty<double> HpfHz { get; }
     public DataObjectList<Send> Sends { get; }
     public DataObjectList<InsertSlot> Inserts { get; }
     // 调音台里的固定位置（靠左/靠右，不随横向滚动）。纯视图状态，但跟着工程走。
@@ -50,6 +55,9 @@ internal class Track : DataObject, ITrack
     IDataProperty<double> ITrack.Pan => Pan;
     IDataProperty<string> ITrack.Color => Color;
     IDataProperty<MixerRoute> ITrack.Output => Output;
+    IDataProperty<double> ITrack.TrimDb => TrimDb;
+    IDataProperty<bool> ITrack.PhaseInvert => PhaseInvert;
+    IDataProperty<double> ITrack.HpfHz => HpfHz;
     IReadOnlyDataObjectList<Send> ITrack.Sends => Sends;
     IReadOnlyDataObjectList<InsertSlot> ITrack.Inserts => Inserts;
     IReadOnlyDataObjectList<InsertSlot> IAudioTrack.Inserts => Inserts;
@@ -66,6 +74,11 @@ internal class Track : DataObject, ITrack
         Pan = new DataStruct<double>(this);
         Color = new DataString(this);
         Output = new DataStruct<MixerRoute>(this);
+
+        // 输入级：默认关闭（0 dB / 不反相 / 高通关）。
+        TrimDb = new DataStruct<double>(this);
+        PhaseInvert = new DataStruct<bool>(this);
+        HpfHz = new DataStruct<double>(this);
         // 构造期尚未接上 document：这条命令被丢弃、只落值（见 DataProperty.SetInfo）。
         Output.SetInfo(MixerRoute.Master);
         Sends = new DataObjectList<Send>(this);

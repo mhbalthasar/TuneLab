@@ -149,6 +149,12 @@ public interface IMixerChannel
     // 免得用户点了个"点了没反应"的目标。Master 恒 false（它没有 send）。
     bool CanSendTo(IMixerOutput target);
 
+    // 输入级（Master 没有：它没有音源可 Trim / 高通）。默认值 = 关闭。
+    bool HasInputStage { get; }
+    double TrimDb { get; set; }        // -24..+24 dB，0 = 不变
+    bool PhaseInvert { get; set; }     // true = 整条通道反相
+    double HpfHz { get; set; }         // ≤20 = 关；否则二阶 12 dB/oct 高通
+
     // 串联插入（按顺序处理）。Master 也可以有。
     IReadOnlyList<IMixerInsert> Inserts { get; }
     IMixerInsert AddInsert(IMixerInsertFormat format);
@@ -236,6 +242,7 @@ public interface IMixerInsertFormat
     // 不可用时给一句原因（"仅 Windows" / "尚未实现"），直接显示在菜单里。
     string? UnavailableReason { get; }
 }
+
 
 
 

@@ -31,6 +31,7 @@ internal sealed class MixerChannelStrip : UserControl
     readonly TextBox mNameEdit = new();
     readonly PanKnob mPan = new();
     readonly StripButton mSend = new();
+    readonly StripButton mInput = new();
     readonly StripButton mFx = new();
     readonly MixerToggle mMute = new() { Text = "M", CheckedColor = Palette.MuteChecked };
     readonly MixerToggle mSolo = new() { Text = "S", CheckedColor = Palette.SoloChecked };
@@ -44,10 +45,12 @@ internal sealed class MixerChannelStrip : UserControl
 
     public IMixerChannel Channel => mChannel;
     public Control SendAnchor => mSend;
+    public Control InputAnchor => mInput;
     public Control FxAnchor => mFx;
     public Control OutputAnchor => mOutput;
 
     public event Action<MixerChannelStrip>? SendRequested;
+    public event Action<MixerChannelStrip>? InputStageRequested;
     public event Action<MixerChannelStrip>? FxRequested;
     public event Action<MixerChannelStrip>? OutputRequested;
 
@@ -79,7 +82,7 @@ internal sealed class MixerChannelStrip : UserControl
         {
             // 固定行合计 192；* 给推子。三种通道行数一致 → 推子对齐。
             RowDefinitions = new RowDefinitions(
-                $"{MixerMetrics.IndexHeight},{MixerMetrics.NameHeight},{MixerMetrics.PanHeight}," +
+                $"{MixerMetrics.IndexHeight},{MixerMetrics.NameHeight},{MixerMetrics.InputHeight},{MixerMetrics.PanHeight}," +
                 $"{MixerMetrics.CountButtonHeight},{MixerMetrics.CountButtonHeight},{MixerMetrics.ToggleHeight}," +
                 $"*,{MixerMetrics.ReadoutHeight},{MixerMetrics.OutputHeight}"),
         };
@@ -87,6 +90,7 @@ internal sealed class MixerChannelStrip : UserControl
         int row = 0;
         rows.Children.Add(Place(BuildHeader(), row++));
         rows.Children.Add(Place(BuildName(), row++));
+        rows.Children.Add(Place(BuildInputButton(), row++));
         rows.Children.Add(Place(BuildPan(), row++));
         rows.Children.Add(Place(BuildSendButton(), row++));
         rows.Children.Add(Place(BuildFxButton(), row++));
@@ -254,6 +258,30 @@ internal sealed class MixerChannelStrip : UserControl
         mName.IsVisible = true;
     }
 
+    // 输入级：一个 [IN] 键。非默认（Trim / Ø / HPF 动过）时高亮 ——
+    // 不打开弹窗也知道这条通道动过。Master 没有输入级，那一行留空以保持推子对齐。
+    Control BuildInputButton()
+    {
+        if (!mChannel.HasInputStage)
+            return new Control();
+
+        mInput.Text = "IN";
+        mInput.Height = 18;
+        mInput.Margin = new Thickness(MixerMetrics.Pad, 2, MixerMetrics.Pad, 2);
+        mInput.Click += () => InputStageRequested?.Invoke(this);
+        return mInput;
+    }
+
+    public void RefreshInputState() => RefreshInputButton();
+
+    void RefreshInputButton()
+    {
+        if (!mChannel.HasInputStage)
+            return;
+
+        mInput.IsActive = mChannel.TrimDb != 0 || mChannel.PhaseInvert || mChannel.HpfHz > 20;
+    }
+
     Control BuildPan()
     {
         if (mIsMaster)
@@ -393,6 +421,7 @@ internal sealed class MixerChannelStrip : UserControl
     public void PumpMeter()
     {
         mMeter.SetValue(mChannel.Peak);
+        RefreshInputButton();
     }
 
     // 静态占位（还没播过、或工程刚装载）：把表硬清零，别留上一次的残影。
@@ -452,5 +481,11 @@ internal sealed class MixerChannelStrip : UserControl
         mChannel.RoutingChanged -= Refresh;
     }
 }
+
+
+
+
+
+
 
 

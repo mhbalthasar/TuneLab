@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace TuneLab.ExperimentalPatch.MixerEngine;
@@ -24,6 +24,9 @@ public sealed class Mixer
 
         mMaxBlockSize = maxBlockSize;
     }
+
+    // 输入级高通要用。由宿主在采样率变化时设置（AudioGraph.SampleRate）。
+    public double SampleRate { get; set; } = 44100;
 
     public bool HasSnapshot => mRuntime != null;
 
@@ -122,6 +125,11 @@ public sealed class Mixer
                     // 于是播放头走到 t 时听到的是 t−X 的内容。读 t+X 就把它拉回 t。
                     // 偏移为 0（没有任何插件延迟）时与旧路径逐位相同 —— 退化的 bit 相同正是靠这个。
                     node.Source.AddData(position + runtime.SeekOffset, count, target, targetOffset, left, right);
+
+                    // 输入级（Trim / Ø / HPF）：位置在推子之前。这里放在 AddData 之后是因为
+                    // 推子只是逐样本乘常数 —— 线性运算可交换，结果与"先输入级再推子"完全相同，
+                    // 而插入链与 send 都在后面，顺序不受影响。
+                    ApplyInputStage(state, target, targetOffset, count, runtime, i);
                 }
             }
             else if (node.Kind == MixNodeKind.Master)
@@ -140,7 +148,11 @@ public sealed class Mixer
                 if (state == null || state.IsSilent)
                     hasSignal = false;
                 else
+                {
+                    // AUX：输入级在推子之前，与轨道同一套语义。
+                    ApplyInputStage(state, target, targetOffset, count, runtime, i);
                     ApplyGain(state, target, targetOffset, count);
+                }
             }
 
             // 电平抽头：Track / AUX / Master 同一口径 —— 推子与声像**之后**、插入链之前。
@@ -218,6 +230,36 @@ public sealed class Mixer
         runtime.PeakRight[nodeIndex] = right;
     }
 
+    // 输入级：Trim（dB）→ Ø → HPF。三项都在默认值时**整段跳过**，
+    // 连一次乘法都不做 —— 这是"没有输入级的工程与旧路径逐位相同"的前提。
+    void ApplyInputStage(IMixChannelState state, float[] buffer, int offset, int count,
+        Runtime runtime, int nodeIndex)
+    {
+        double trimDb = state.TrimDb;
+        bool invert = state.PhaseInvert;
+        double hpf = state.HpfHz;
+
+        bool hasTrim = trimDb != 0 && double.IsFinite(trimDb);
+        bool hasHpf = hpf > 20 && double.IsFinite(hpf);
+
+        if (!hasTrim && !invert && !hasHpf)
+            return;
+
+        if (hasTrim || invert)
+        {
+            float gain = hasTrim ? (float)Math.Pow(10, trimDb / 20) : 1f;
+
+            if (invert)
+                gain = -gain;
+
+            for (int i = 0; i < count * 2; i++)
+                buffer[offset + i] *= gain;
+        }
+
+        if (hasHpf)
+            runtime.Hpf[nodeIndex].Process(buffer, offset, count, SampleRate, hpf);
+    }
+
     static void ApplyGain(IMixChannelState? state, float[] buffer, int offset, int count)
     {
         if (state == null)
@@ -258,6 +300,9 @@ public sealed class Mixer
         public readonly MixSnapshot Snapshot;
         public readonly float[][] Buffers;
         public readonly DelayLine?[][] DelayLines;
+        // 输入级高通：每个节点一份（双声道状态）。构造期分配，音频线程只跑滤波。
+        public readonly HighPassFilter[] Hpf;
+
         public readonly float[] PeakLeft;
         public readonly float[] PeakRight;
         public readonly Dictionary<string, int> Index;
@@ -273,6 +318,7 @@ public sealed class Mixer
             Buffers = new float[snapshot.Nodes.Count][];
             DelayLines = new DelayLine?[snapshot.Nodes.Count][];
             PeakLeft = new float[snapshot.Nodes.Count];
+            Hpf = new HighPassFilter[snapshot.Nodes.Count];
             PeakRight = new float[snapshot.Nodes.Count];
             Index = new Dictionary<string, int>(snapshot.Nodes.Count);
 
@@ -280,6 +326,7 @@ public sealed class Mixer
             {
                 Buffers[i] = new float[maxBlockSize * 2];
                 DelayLines[i] = new DelayLine?[snapshot.Nodes[i].Outputs.Count];
+                Hpf[i] = new HighPassFilter();
                 Index[snapshot.Nodes[i].Id] = i;
 
                 for (int e = 0; e < snapshot.Nodes[i].Outputs.Count; e++)
@@ -292,3 +339,7 @@ public sealed class Mixer
         }
     }
 }
+
+
+
+

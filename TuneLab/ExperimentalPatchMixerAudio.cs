@@ -252,6 +252,11 @@ internal sealed class TrackChannelState : IMixChannelState
     // 与旧路径 MixData 的判据**逐字一致**：`!IsSolo && (IsMute || hasSolo)` 才跳过。
     // 注意上游的既有语义：solo 会盖过同一条轨的 mute（solo 时不看 IsMute）——照抄，不"修正"。
     public bool IsSilent => !mTrack.IsSolo && (mTrack.IsMute || HasSolo);
+
+    // 输入级：读的是数据槽位（活值，不重建图）。
+    public double TrimDb => mTrack.TrimDb;
+    public bool PhaseInvert => mTrack.PhaseInvert;
+    public double HpfHz => mTrack.HpfHz;
 }
 
 // 一条 AUX 的活状态。
@@ -273,6 +278,10 @@ internal sealed class AuxChannelState : IMixChannelState
     public double Pan => mAux.Pan.Value;
 
     public bool IsSilent => !mAux.IsSolo.Value && (mAux.IsMute.Value || HasSolo);
+
+    public double TrimDb => mAux.TrimDb.Value;
+    public bool PhaseInvert => mAux.PhaseInvert.Value;
+    public double HpfHz => mAux.HpfHz.Value;
 }
 
 // 把 Track 的音源按节点算好的左右增益喂给引擎。
@@ -301,6 +310,12 @@ internal sealed class MasterChannelState : IMixChannelState
     public double Pan => 0;
 
     public bool IsSilent => false;
+
+    // Master 没有输入级（没有音源可 Trim / 高通），三项恒为默认值 ——
+    // 引擎因此整段跳过，行为与以前完全一致。
+    public double TrimDb => 0;
+    public bool PhaseInvert => false;
+    public double HpfHz => 0;
 }
 
 // 预览音（AudioPlayer 的一次性片段）作为"直接混进 Master 输入"的音源。
@@ -317,6 +332,9 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
+
+
+
 
 
 
