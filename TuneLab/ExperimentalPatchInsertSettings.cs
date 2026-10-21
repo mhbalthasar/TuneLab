@@ -130,6 +130,21 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     string? mLastScanText;
 
     public IReadOnlyList<InsertPluginEntry> Scan(IProgress<InsertScanProgress>? progress = null)
+        => ScanCore(deep: false, progress);
+
+    /// <summary>
+    /// 完整扫描：VST3 走 native 的 Full 模式，把每个插件的厂商/版本问一遍（慢，但准）。
+    /// </summary>
+    /// <remarks>
+    /// 为什么普通扫描的 VST3 多半没有厂商：那条路只读二进制里的类别标记，
+    /// 而厂商不在二进制里（信息本来就在插件的 factory 上，要 load 之后才问得到）。
+    /// 完整扫描走"问描述"而不是"实例化"，所以安全 —— 实测实例化会 abort 进程，
+    /// 问描述不会。详见 Patches/Mixer/NOTES-vst3-vendor.md。
+    /// </remarks>
+    public IReadOnlyList<InsertPluginEntry> ScanDeep(IProgress<InsertScanProgress>? progress = null)
+        => ScanCore(deep: true, progress);
+
+    IReadOnlyList<InsertPluginEntry> ScanCore(bool deep, IProgress<InsertScanProgress>? progress)
     {
         var state = Load();
 
@@ -148,26 +163,50 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         string currentDirectory = string.Empty;
         int currentDone = 0;
 
-        entries.AddRange(sVst3Backend.ListPlugins(vst3Paths, (index, _, directory) =>
+        List<InsertPluginInfo> vst3;
+
+        if (deep)
+        {
+            // 完整扫描：native Full 模式自带进度（0..1 + 当前条目名），没有"目录"概念，
+            // 所以借 currentDirectory 显示正在问哪个插件。
+            var deepProgress = new Progress<float>(fraction =>
+                progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory)));
+            var deepDetail = new Action<string>(name =>
             {
-                currentDirectory = directory;
-                currentDone = index;
-                progress?.Report(new InsertScanProgress(index, total, directory));
-            },
-            onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
-            .Select(p => new InsertPluginEntry
-            {
-                Format = p.Format,
-                PluginId = p.PluginId,
-                Name = p.Name,
-                Vendor = p.Vendor,
-                Category = p.Category,
-                IsInstrument = p.IsInstrument,
-                Locator = p.Locator,
-            }));
+                currentDirectory = name;
+                progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name));
+            });
+
+            vst3 = sVst3Backend.ListPluginsDeep(deepProgress, deepDetail).ToList();
+        }
+        else
+        {
+            vst3 = sVst3Backend.ListPlugins(vst3Paths, (index, _, directory) =>
+                {
+                    currentDirectory = directory;
+                    currentDone = index;
+                    progress?.Report(new InsertScanProgress(index, total, directory));
+                },
+                onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
+            .ToList();
+        }
+
+        entries.AddRange(vst3.Select(p => new InsertPluginEntry
+        {
+            Format = p.Format,
+            PluginId = p.PluginId,
+            Name = p.Name,
+            Vendor = p.Vendor,
+            Category = p.Category,
+            IsInstrument = p.IsInstrument,
+            Locator = p.Locator,
+        }));
 
         // VST2 一律过桥（Vst2Backend / VstBridge），x86 与 x64 都支持；
         // 桥的可执行文件缺失时 Create 会给原因，扫描这里只负责"列出来"。
+        //
+        // 完整扫描模式下 VST2 照样要扫 —— deep 只改 VST3 那条路（它才有"厂商是空的"问题），
+        // VST2 一直是从桥问真插件，厂商早就有了。
         entries.AddRange(sVst2Backend.ListPlugins(vst2Paths, (index, _, directory) =>
             {
                 currentDirectory = directory;
@@ -301,9 +340,10 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     }
 
     // 缓存格式版本。只有"扫描结果里有意义的那批字段"变了才加 1。
+    // 4 = 完整扫描（ScanDeep）把 VST3 的厂商/版本按官方口径写进缓存。
     // 3 = VST3 开始从 moduleinfo.json 读厂商（同一产品的两种格式不再有厂商落差）。
     // 2 = 开始区分乐器（并且不再把乐器写进缓存）；1 / 0 = 老格式，读的时候当空表。
-    const int CurrentCacheVersion = 3;
+    const int CurrentCacheVersion = 4;
 
     static readonly JsonSerializerOptions JsonOptions = new()
     {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
@@ -35,6 +35,8 @@ public sealed class InsertPluginPathsPage : UserControl
     readonly ObservableCollection<PathEntry> mVst2 = [];
     readonly TextBlock mStatus = new();
     readonly ScanProgressBar mProgress = new();
+    ChromeButton mScan = new();
+    ChromeButton mDeepScan = new();
     bool mScanning;
 
     public InsertPluginPathsPage(IHostServices host)
@@ -80,7 +82,24 @@ public sealed class InsertPluginPathsPage : UserControl
             Width = 84,
             Height = 20,
         };
+        mScan = scan;
         scan.Click += () => Scan(scan);
+
+        var deep = new ChromeButton
+        {
+            Text = L("完整扫描", "Deep scan"),
+            Width = 84,
+            Height = 20,
+            Margin = new Thickness(6, 0, 0, 0),
+        };
+        mDeepScan = deep;
+
+        // 悬停说明：这个按钮比"立即扫描"慢一个量级，得让用户知道为什么、以及什么时候该用它。
+        ToolTip.SetTip(deep,
+            L("把每个 VST3 的厂商/版本问一遍（只问描述，不实例化插件，安全但慢）。\n" +
+              "普通扫描读的是二进制里的类别标记，多半没有厂商。",
+              "Asks every VST3 for its vendor/version (describes only, never instantiates - safe but slow).\n" +
+              "The quick scan reads binary markers and usually has no vendor."));
 
         mProgress.Margin = new Thickness(14, 8, 14, 0);
         mProgress.IsVisible = false;
@@ -91,10 +110,12 @@ public sealed class InsertPluginPathsPage : UserControl
         mStatus.Margin = new Thickness(10, 0, 0, 0);
         mStatus.TextTrimming = TextTrimming.CharacterEllipsis;
 
-        var footerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        var footerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
         Grid.SetColumn(scan, 0);
-        Grid.SetColumn(mStatus, 1);
+        Grid.SetColumn(deep, 1);
+        Grid.SetColumn(mStatus, 2);
         footerRow.Children.Add(scan);
+        footerRow.Children.Add(deep);
         footerRow.Children.Add(mStatus);
 
         var footer = new Border
@@ -349,7 +370,7 @@ public sealed class InsertPluginPathsPage : UserControl
     // 【为什么必须异步】扫几十个目录要几秒到几十秒；同步扫的话窗口直接冻住 ——
     // 连"关掉它"都点不动，用户只能杀进程。这里 UI 线程只做三件事：置灰按钮、
     // 收进度、写结果；真正走路的是后台线程。
-    async void Scan(ChromeButton button)
+    async void Scan(ChromeButton button, bool deep = false)
     {
         if (mScanning)
             return;
@@ -364,9 +385,11 @@ public sealed class InsertPluginPathsPage : UserControl
 
         mScanning = true;
         button.IsEnabled = false;
+        mScan.IsEnabled = false;
+        mDeepScan.IsEnabled = false;
         mProgress.Value = 0;
         mProgress.IsVisible = true;
-        mStatus.Text = L("正在扫描…", "Scanning…");
+        mStatus.Text = deep ? L("完整扫描中…（要一会儿）", "Deep scanning… (this takes a while)") : L("正在扫描…", "Scanning…");
 
         // Progress<T> 在**构造它的线程**（这里是 UI 线程）上回调，所以下面直接碰控件是安全的。
         var progress = new Progress<InsertScanProgress>(p =>
@@ -384,7 +407,7 @@ public sealed class InsertPluginPathsPage : UserControl
 
         try
         {
-            var entries = await Task.Run(() => settings.Scan(progress));
+            var entries = await Task.Run(() => settings.ScanDeep(progress));
 
             mProgress.Value = 1;
 
@@ -405,6 +428,8 @@ public sealed class InsertPluginPathsPage : UserControl
         {
             mScanning = false;
             button.IsEnabled = true;
+            mScan.IsEnabled = true;
+            mDeepScan.IsEnabled = true;
             mProgress.IsVisible = false;
         }
     }
@@ -418,3 +443,6 @@ public sealed class InsertPluginPathsPage : UserControl
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
+

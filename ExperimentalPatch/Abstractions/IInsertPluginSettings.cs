@@ -22,6 +22,17 @@ public interface IInsertPluginSettings
     /// </summary>
     IReadOnlyList<InsertPluginEntry> Scan(IProgress<InsertScanProgress>? progress = null);
 
+    /// <summary>
+    /// 完整扫描：多花一个量级的时间，把每个插件的厂商/版本问一遍（VST3 的正主口径）。
+    /// </summary>
+    /// <remarks>
+    /// 普通扫描对 VST3 只读二进制里的类别标记，厂商多半是空的 —— 信息不在二进制里。
+    /// 完整扫描走"问描述"（不是实例化插件），安全但慢，所以在设置页是独立的按钮，
+    /// 由用户显式触发。默认实现 = 当作普通扫描（后端没有完整扫描能力时退回去）。
+    /// </remarks>
+    IReadOnlyList<InsertPluginEntry> ScanDeep(IProgress<InsertScanProgress>? progress = null)
+        => Scan(progress);
+
     /// <summary>读缓存（打开插件菜单用这个，不现扫）。</summary>
     IReadOnlyList<InsertPluginEntry> CachedPlugins { get; }
 

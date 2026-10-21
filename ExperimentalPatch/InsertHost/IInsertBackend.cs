@@ -41,6 +41,20 @@ public interface IInsertBackend
     IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null,
         Action<int, int, string>? onDirectory = null, bool probeInstruments = true, Action<string>? onDetail = null);
 
+    // 完整扫描：把每个插件的**描述**问一遍（厂商 / 版本 / 类别 / 声道数），比 ListPlugins 慢一个量级。
+    //
+    // 为什么需要它：ListPlugins 是"快扫"—— VST3 那边只读二进制的类别标记，
+    // 厂商多半是空的（信息不在二进制里，见 Vst3Backend.ListFromDirectories 的注释）。
+    // 完整扫描让插件的 factory 报一遍自己的元数据，是官方口径。
+    //
+    // 【安全边界】实现必须走"问描述"，不能"实例化插件"。VST3 那边实例化会 abort 进程
+    // （实测：Blue Cat 的 Chorus/Flanger/Phaser 两两先后 load，3/3 必崩），
+    // 而问描述不会。详见 Patches/Mixer/NOTES-vst3-vendor.md。
+    //
+    // 默认实现 = 返回空（表示"这个后端没有完整扫描"），宿主据此提示用户。
+    IReadOnlyList<InsertPluginInfo> ListPluginsDeep(IProgress<float>? progress = null, Action<string>? onDetail = null)
+        => [];
+
     // 创建一个挂上图的实例。失败返回 null（并把原因写进 reason）——绝不是抛异常，
     // 调用方（宿主）据此把 UI 上的那个槽位标红 + 旁通（DESIGN.md §5.6）。
     IMixInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason);

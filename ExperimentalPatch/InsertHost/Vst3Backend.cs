@@ -137,11 +137,83 @@ public sealed class Vst3Backend : IInsertBackend
         if (directories != null && directories.Count > 0)
             return ListFromDirectories(directories, onDirectory, probeInstruments, onDetail);
 
+        if (directories == null)
+            return ListFromNativeScanner(probeInstruments);
+
+        return [];
+    }
+
+    /// <summary>
+    /// 完整扫描：让 native 的 PluginScanner 走 Full 模式，把每个插件的**描述**问一遍
+    /// （不是实例化）。厂商 / 版本 / 类别 / 声道数全在里面，是官方口径。
+    /// </summary>
+    /// <remarks>
+    /// 为什么不用 <c>VST3Plugin_LoadPlugin</c> 拿厂商：那条路会 <c>createPluginInstance</c>，
+    /// 真实例化插件 —— 实测在 Blue Cat 的 Chorus/Flanger/Phaser 两两先后 load 时
+    /// 直接 abort 整个进程（3/3 必崩，且没有任何 .NET 异常）。而 Full scan 走的是
+    /// <c>findAllTypesForFile</c>，只问 factory 要一份 PluginDescription，
+    /// 插件的代码路径根本不执行，同一批插件全部安全通过（实测 41 个全过）。
+    /// 详见 Patches/Mixer/NOTES-vst3-vendor.md 的实测记录。
+    /// </remarks>
+    public IReadOnlyList<InsertPluginInfo> ListPluginsDeep(
+        IProgress<float>? progress = null, Action<string>? onDetail = null)
+    {
+        if (NativePath == null)
+            return [];
+
         try
         {
-            // 没有清单时只有"一遍标准位置"，进度就报一次（1/1）。
-            onDirectory?.Invoke(0, 1, "standard VST3 locations");
+            var descriptors = PluginScanner.ScanAsync(PluginFormat.Vst3, ScanMode.Full,
+                new ScanProgressBridge(progress, onDetail)).GetAwaiter().GetResult();
 
+            var list = new List<InsertPluginInfo>(descriptors.Count);
+
+            foreach (var plugin in descriptors)
+            {
+                list.Add(new InsertPluginInfo
+                {
+                    Format = "VST3",
+                    PluginId = PluginIdOf(plugin),
+                    Name = plugin.Name,
+                    Vendor = plugin.Vendor,
+                    Category = plugin.Category,
+                    Locator = plugin.Identifier,
+
+                    // Full 扫来的 isInstrument 是 JUCE 从 bundle 元数据读的，比二进制的
+                    // Instrument| 标记更可靠（Surge XT 就是标记对、native 判错的那类）。
+                    IsInstrument = plugin.IsInstrument || IsInstrumentCategory(plugin.Category),
+                });
+            }
+
+            return list;
+        }
+        catch (Exception)
+        {
+            // native 库比 1.7.0 老（没有 scanner），或扫描被取消。
+            // 调用方（设置页）负责提示"完整扫描不可用"，这里只保证不炸。
+            return [];
+        }
+    }
+
+    // 把 native 的 ScanProgress（分数 + 当前条目名）桥到我们的两个回调上。
+    sealed class ScanProgressBridge(IProgress<float>? progress, Action<string>? detail) : IProgress<ScanProgress>
+    {
+        public void Report(ScanProgress value)
+        {
+            if (float.IsFinite(value.Fraction))
+                progress?.Report(Math.Clamp(value.Fraction, 0, 1));
+
+            if (!string.IsNullOrEmpty(value.CurrentItem))
+                detail?.Invoke(value.CurrentItem);
+        }
+    }
+
+    // 没有目录清单 = 扫 native 认定的标准位置。上游的 ScanAsync 不接受目录参数，
+    // 所以这条路只覆盖"默认位置"；用户自定义过的路径走 ListFromDirectories（自己枚举）。
+    IReadOnlyList<InsertPluginInfo> ListFromNativeScanner(bool probeInstruments)
+    {
+        try
+        {
             List<PluginDescriptor> found;
             try
             {

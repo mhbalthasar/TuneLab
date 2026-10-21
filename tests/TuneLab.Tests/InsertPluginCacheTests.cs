@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using TuneLab;
@@ -22,11 +22,11 @@ public class InsertPluginCacheTests
     [Fact]
     public void InstrumentsAreNotPartOfTheCatalog()
     {
-        // 3 = 当前格式（VST3 也从 moduleinfo.json / 二进制读厂商了）。
+        // 4 = 当前格式（完整扫描会把 VST3 的厂商按官方口径写进来）。
         // 旧数字 = 旧格式，整份缓存忽略。
         WithCache("""
         {
-          "CacheVersion": 3,
+          "CacheVersion": 4,
           "Vst3Paths": [],
           "Vst2Paths": [],
           "LastScanUtc": "2026-10-21 00:00:00Z",
@@ -90,3 +90,4 @@ public class InsertPluginCacheTests
         }
     }
 }
+

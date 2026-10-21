@@ -853,6 +853,44 @@ VST2 的厂商是桥探 `effGetVendorString` 拿到的，天然有；同一个�
 缓存加 `CacheVersion`（3 = 带厂商）。旧缓存整份作废 —— 那一版 VST3 条目的 Vendor 全是空的，
 沿用只会让界面说"扫过了"还是一列未知厂商。
 
+#### 5.7.25 完整扫描：VST3 厂商的官方口径（2026-10-21）
+
+二进制嗅探只是兜底。真正该走的是 **native 的 Full scan**：
+
+```
+PluginScanner.ScanAsync(PluginFormat.Vst3, ScanMode.Full)
+```
+
+上游 `OwnAudioVST3` 的两条路差别是决定性的：
+
+| 调用 | 做什么 | 实测 |
+|---|---|---|
+| `PluginScanner::_fullScan` → `findAllTypesForFile` | **只问描述**，不实例化 | **安全**，厂商是 `desc.manufacturerName` |
+| `PluginInstance::loadPluginBody` → `createPluginInstance` | **真实例化** | **崩** |
+
+第二条的崩溃是实测出来的确定条件：先后 load `BC Chorus 4 VST3(Mono)` 和
+`BC Flanger 3 VST3(Mono)`（或 Phaser Mono），进程直接死，没有任何 .NET 异常，
+3/3 必崩。同插件连续 load 两次没事、跨厂商没事、Blue Cat 内部不同产品线（EQ）也没事 ——
+只有调制类三兄弟两两组合才炸。native 的 `__try/__except` 抓不到 abort，
+所以这不是"包一层 SEH 就能救"的问题。
+
+第一条之所以安全：`findAllTypesForFile` 只问 factory 要一份 `PluginDescription`，
+插件的代码路径根本不执行。实测对这台机器跑 Full scan，41 个条目全部拿到厂商、
+进程活着，那三个会崩的都在里面。
+
+所以设置页的插件扫描现在有两个按钮：
+
+- **立即扫描**（默认）：快，读二进制标记，VST3 厂商多半空；
+- **完整扫描**：慢一个量级，但 VST3 厂商/版本是官方口径，实测 88/89 有条目有厂商
+  （普通扫描 58/107）。
+
+契约上加在 `IInsertBackend.ListPluginsDeep()` / `IInsertPluginSettings.ScanDeep()`，
+默认实现都是"退化成普通扫描"—— 后端没有完整扫描能力时不该让宿主挂掉。
+`CacheVersion` 升到 4：完整扫描写进来的 VST3 厂商与二进制嗅探不同源，
+旧缓存沿用只会让界面说"扫过了"还是没厂商。
+
+完整实测记录（含边界组合表）在 `NOTES-vst3-vendor.md`。
+
 #### 5.7.24 乐器不进 FX 目录（2026-10-21）
 
 插件的"是不是乐器"一直是有记录的（`InsertPluginEntry.IsInstrument`：VST3 看二进制的
