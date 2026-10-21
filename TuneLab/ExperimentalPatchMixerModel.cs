@@ -158,6 +158,13 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         if (from < 0 || to < 0 || from == to)
             return;
 
+        // 【语义：插入到 target 现在的位置，不是交换】
+        // 取的是 target **移动前**的下标，然后 RemoveAt(from) + Insert(to)。
+        //   · from > to（往前调）：target 及它到 from-1 之间的元素整体后移一位，
+        //     被拖的那条占住 target 原来的位置。例：[A,B,C,D] 把 D 移到 B → [A,D,B,C]
+        //   · from < to（往后调）：target 及它到 from+1 之间的元素整体前移一位，
+        //     被拖的那条占住 target 原来的位置。例：[A,B,C,D] 把 A 移到 C → [B,C,A,D]
+        // 别"顺手"改成交换：两条相邻时两者看起来一样，三条以上就不同了。
         MoveToIndex(channel, to);
     }
 

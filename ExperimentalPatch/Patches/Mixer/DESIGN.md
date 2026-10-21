@@ -839,6 +839,14 @@ Master 是"总轨"，效果器挂在它上面 = 总线效果。之前它的 `Add
 #### 5.7.16 通道位置调整（轨道头右键，2026-10-21）
 
 右键通道条 → 上移 / 下移 / 置顶 / 置底 / 移动到…（子菜单列出同组其它通道）。
+**「移动到 X」的语义是"插入到 X 现在的位置"，不是交换**：
+
+- 往前调（X 在它前面）：X 及 X 到它前一位之间的通道整体**后移**一位；
+  `[A,B,C,D]` 把 D 移到 B → `[A,D,B,C]`；
+- 往后调（X 在它后面）：X 及 X 到它后一位之间的通道整体**前移**一位；
+  `[A,B,C,D]` 把 A 移到 C → `[B,C,A,D]`。
+
+（两条相邻时"插入"与"交换"结果相同，三条以上才分得出来 —— 改这段代码前先看这条。）
 **只在所属组内移动**：轨道组（`Project.Tracks`）与 AUX 组（`Project.Auxes`）各自独立，
 轨道"置底"不会跑到 AUX 后面。改的是**工程里的顺序**，所以主界面轨道头会跟着变。
 
@@ -1263,6 +1271,7 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 
