@@ -95,9 +95,14 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         {
             var state = Load();
 
-            // 老缓存里可能有重复（同一插件装在两处）。这里也排一次，
-            // 免得用户不重新扫描就一直看到两份。
-            return Dedupe(state.Cache.Select(ToEntry).ToList());
+            // 旧缓存不可信：CacheVersion 之前的版本根本不记录"是不是乐器"，
+            // 于是合成器会以 IsInstrument = false 混在列表里。宁可当空表、让界面提示
+            // "去扫描一次"，也不要把一列合成器重新摆回 FX 菜单。
+            if (state.CacheVersion < CurrentCacheVersion)
+                return [];
+
+            // 写缓存时已经不存乐器了；这里再滤一遍，兜住手工改过 / 旧格式的缓存。
+            return Dedupe(state.Cache.Where(cached => !cached.IsInstrument).Select(ToEntry).ToList());
         }
     }
 
@@ -111,7 +116,9 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 return mLastScanText;
 
             var state = Load();
-            if (string.IsNullOrEmpty(state.LastScanUtc))
+
+            // 旧格式的缓存不算"扫描过"：那批条目里分不出乐器，界面上说"扫过了"会误导。
+            if (state.CacheVersion < CurrentCacheVersion || string.IsNullOrEmpty(state.LastScanUtc))
                 return null;
 
             return DateTimeOffset.TryParse(state.LastScanUtc, out var scanned)
@@ -185,7 +192,13 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         // 保留扫描顺序里的第一条（= 用户路径清单里靠前的那个）。
         entries = Dedupe(entries);
 
+        // 乐器不是插入效果：混音台的 FX 只挂效果器（乐器归宿主自己的轨道乐器系统管，
+        // 插进混音台它也没有 MIDI 输入可用）。所以扫描结果里**直接不留** ——
+        // 缓存、FX 菜单、设置页的计数都看不到合成器。
+        entries.RemoveAll(entry => entry.IsInstrument);
+
         state.Cache = entries.Select(ToCached).ToList();
+        state.CacheVersion = CurrentCacheVersion;
         state.LastScanUtc = DateTime.UtcNow.ToString("u");
 
         Save(state);
@@ -287,6 +300,10 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         }
     }
 
+    // 缓存格式版本。只有"扫描结果里有意义的那批字段"变了才加 1。
+    // 2 = 开始区分乐器（并且不再把乐器写进缓存）；1 / 0 = 老格式，读的时候当空表。
+    const int CurrentCacheVersion = 2;
+
     static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -295,6 +312,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
     public sealed class State
     {
+        public int CacheVersion { get; set; }
         public List<string>? Vst3Paths { get; set; }
         public List<string>? Vst2Paths { get; set; }
         public List<CachedPlugin> Cache { get; set; } = [];

@@ -824,6 +824,23 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 （控件库，不是宿主程序集），并靠它的 `InternalsVisibleTo(TuneLab.ExperimentalPatch)` 拿到
 这些 internal 类型。高通滑杆走对数刻度（0..1 → 20…2000 Hz），最左端 = 关。
 
+#### 5.7.23 乐器不进 FX 目录（2026-10-21）
+
+插件的"是不是乐器"一直是有记录的（`InsertPluginEntry.IsInstrument`：VST3 看二进制的
+`Instrument|` 标记，VST2 走桥探 `effFlagsIsSynth`），但**只有界面在过滤** —— 扫描结果、
+落盘缓存、设置页计数里都还留着合成器。既然混音台的 FX 只挂效果器（乐器交宿主自己的轨道
+乐器系统，插进混音台它也没有 MIDI 输入可用），就从源头拿掉：
+
+- `Scan()` 末尾 `RemoveAll(e => e.IsInstrument)` —— 缓存、菜单、计数从此都看不到乐器；
+- 缓存加 `CacheVersion`。**旧缓存整份作废**（`CachedPlugins` 返回空、`LastScanText` 返回
+  null）：那个格式根本没有 `IsInstrument` 字段，无法区分，宁可让界面提示"去扫描一次"，
+  也不能把合成器摆回菜单。重新扫一次即可，成本是一次扫描。
+
+`FxPopupWindow.ShowAddMenu` 里的 `!p.IsInstrument` 仍然留着 —— 那是最后一道防线
+（手工改过的缓存、或以后有人绕过 `Scan` 往里塞东西）。
+
+设置页的"已扫描 N 个插件"现在报的是效果器数量。
+
 #### 5.7.19 插入顺序可调（2026-10-21）
 
 处理顺序 = 列表顺序。FX 浮窗每行加了 ▲▼：到头的那个置灰（`CanMoveInsert` 判定），
