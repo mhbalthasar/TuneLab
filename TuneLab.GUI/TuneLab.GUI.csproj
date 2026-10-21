@@ -34,6 +34,9 @@
     <InternalsVisibleTo Include="TuneLab.Setup" />
     <!-- 文档截图工具（tools/ScreenshotBot）：读快捷键手势等 GUI 层类型。 -->
     <InternalsVisibleTo Include="TuneLab.ScreenshotBot" />
+    <!-- 补丁层（ExperimentalPatch）：混音台的参数弹窗复用这里的 Slider / DraggableNumberBox，
+         与宿主参数面板保持同一套手感，不再自造滑杆。 -->
+    <InternalsVisibleTo Include="TuneLab.ExperimentalPatch" />
     <!-- 测试：键盘分发的封条要构造手势（KeyBinding）喂给 Keymap.TryHandle。 -->
     <InternalsVisibleTo Include="TuneLab.Tests" />
   </ItemGroup>

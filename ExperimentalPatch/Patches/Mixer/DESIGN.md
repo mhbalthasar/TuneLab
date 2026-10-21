@@ -817,8 +817,12 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 逐位相同 —— `MixerEngineTests.DefaultInputStageLeavesTheSignalUntouched` 钉住这条。
 
 数据挂在 `Track` / `AuxBus`（`TrimDb` / `PhaseInvert` / `HpfHz`），随 epMixer 落盘；
-老工程没有这三个字段 → 默认值。界面用 Avalonia 的 Slider（补丁工程不引用 TuneLab.GUI），
-高度给 26 以免拇指被裁。
+老工程没有这三个字段 → 默认值。
+
+界面用 TuneLab.GUI 的 `Slider` + `DraggableNumberBox`（与宿主参数面板同一套手感：拖动、
+双击回默认、数字框拖动/双击输入）。补丁工程为此新增了对 `TuneLab.GUI` 的 ProjectReference
+（控件库，不是宿主程序集），并靠它的 `InternalsVisibleTo(TuneLab.ExperimentalPatch)` 拿到
+这些 internal 类型。高通滑杆走对数刻度（0..1 → 20…2000 Hz），最左端 = 关。
 
 #### 5.7.19 插入顺序可调（2026-10-21）
 

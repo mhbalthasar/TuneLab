@@ -1,56 +1,68 @@
 ﻿using System;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
 using TuneLab.ExperimentalPatch.UI;
+using TuneLab.Foundation;
+using TuneLab.GUI.Components;
+using TuneLab.SDK;
+using TuneLabSlider = TuneLab.GUI.Components.Slider;
 
 namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
 // 输入级浮窗（通道条上的 [IN] 键，DESIGN §5.7.22）。
 //
 // 三项：输入增益（Trim）、相位反转（Ø）、高通（HPF）。位置在"音源混进通道缓冲之后、
-// 推子与插入之前"，所以它影响的是**进插件之前**的信号 —— 这与 DAW 的通道输入级一致。
+// 推子与插入之前"，所以它影响的是**进插件之前**的信号 —— 与 DAW 的通道输入级一致。
 //
-// 控件用 Avalonia 的 Slider 而不是 TuneLab.GUI 的：混音台整套界面都是补丁层自绘的，
-// 补丁工程不引用 TuneLab.GUI（那是宿主程序集）。滑杆高度给足 26，避免拇指被裁。
+// 控件用 TuneLab.GUI 的 Slider / DraggableNumberBox：和宿主参数面板同一套手感
+// （拖动、双击回默认、数字框拖动/双击输入），TuneLab.GUI 对补丁层开了 InternalsVisibleTo。
+// 通道条本身（Fader / PanKnob / 通道头）仍是补丁自绘的 —— 那是混音台自己的视觉语言。
+//
+// 高通用**对数刻度**：0..1 映射到 20 Hz..2000 Hz。20 Hz 是滑杆最左端 = 关（与引擎的
+// "≤ 20 Hz 视为关闭"一致），此时右侧单位标签显示「关」而不是「Hz」。
 public sealed class InputStageWindow : Window
 {
     readonly IMixerChannel mChannel;
     readonly IHostServices mHost;
 
-    readonly Slider mTrim = new();
-    readonly TextBlock mTrimText = new();
+    readonly TuneLabSlider mTrim = new();
+    readonly DraggableNumberBox mTrimBox = new();
     readonly StripButton mPhase = new();
-    readonly Slider mHpf = new();
-    readonly TextBlock mHpfText = new();
+    readonly TuneLabSlider mHpf = new();
+    readonly DraggableNumberBox mHpfBox = new();
+    readonly TextBlock mHpfUnit = new();
 
     const double MinTrimDb = -24;
     const double MaxTrimDb = 24;
 
-    // 高通用对数刻度：0..1 映射到 20 Hz..2000 Hz（20 Hz = 关）。
+    // 高通的滑杆端点。引擎把 ≤ 20 Hz 当作关心（off），界面上最左端即"关"。
     const double MinHpfHz = 20;
     const double MaxHpfHz = 2000;
+    const double HpfRatio = MaxHpfHz / MinHpfHz;
 
     public InputStageWindow(IMixerChannel channel, IHostServices host)
     {
         mChannel = channel;
         mHost = host;
 
-        Title = L("输入级 — ", "Input stage — ") + channel.Name;
-        Width = 380;
+        Title = Header;
+        Width = 400;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         SystemDecorations = SystemDecorations.None;
         ShowInTaskbar = false;
-        Background = Palette.Brush(Palette.Back);
+        // 和宿主参数面板同一底色（TuneLab.GUI 控件自带配套的颜色）。
+        Background = new SolidColorBrush(TuneLab.GUI.Style.INTERFACE);
 
         Content = BuildContent();
         Sync();
     }
+
+    string Header => L("输入级 — ", "Input stage — ") + mChannel.Name;
 
     Control BuildContent()
     {
@@ -59,10 +71,10 @@ public sealed class InputStageWindow : Window
 
         var title = new TextBlock
         {
-            Text = L("输入级 — ", "Input stage — ") + mChannel.Name,
+            Text = Header,
             FontSize = 11.5,
             FontWeight = FontWeight.SemiBold,
-            Foreground = Palette.Brush(Palette.TextLight),
+            Foreground = new SolidColorBrush(TuneLab.GUI.Style.LIGHT_WHITE),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(10, 0, 0, 0),
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -77,8 +89,8 @@ public sealed class InputStageWindow : Window
         var header = new Border
         {
             Height = MixerMetrics.PopupHeaderHeight,
-            Background = Palette.Brush(Palette.Interface),
-            BorderBrush = Palette.Brush(Palette.Line, 0.4),
+            Background = new SolidColorBrush(TuneLab.GUI.Style.BACK),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(58, 58, 64)),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = headerRow,
         };
@@ -119,7 +131,7 @@ public sealed class InputStageWindow : Window
 
         return new Border
         {
-            BorderBrush = Palette.Brush(Palette.Line),
+            BorderBrush = new SolidColorBrush(TuneLab.GUI.Style.LINE),
             BorderThickness = new Thickness(1),
             Child = grid,
         };
@@ -127,27 +139,32 @@ public sealed class InputStageWindow : Window
 
     Control BuildTrimRow()
     {
-        mTrim.Minimum = MinTrimDb;
-        mTrim.Maximum = MaxTrimDb;
-        mTrim.Height = 26;
+        mTrim.Direction = SliderDirection.LeftToRight;
+        mTrim.Height = 24;
         mTrim.VerticalAlignment = VerticalAlignment.Center;
-        mTrim.PropertyChanged += (_, e) =>
+        mTrim.SetRange(MinTrimDb, MaxTrimDb);
+        // 双击回到 0 dB —— TuneLab 滑杆的默认手势。
+        mTrim.DefaultValue = 0;
+        mTrim.Display(mChannel.TrimDb);
+        mTrim.ValueChanged.Subscribe(() =>
         {
-            if (e.Property != Slider.ValueProperty)
-                return;
+            double db = Math.Round(mTrim.Value, 1);
+            mChannel.TrimDb = db;
+            mTrimBox.Display(db);
+        });
 
-            mChannel.TrimDb = Math.Round(mTrim.Value, 1);
-            mTrimText.Text = FormatDb(mChannel.TrimDb);
-        };
+        ConfigureBox(mTrimBox, MinTrimDb, MaxTrimDb, 0, 0.1);
+        // 增益是正负对称的，"+"号让人一眼看出是加了还是减了。
+        mTrimBox.NumberFormat = SignedDb;
+        mTrimBox.Display(mChannel.TrimDb);
+        mTrimBox.ValueChanged.Subscribe(() =>
+        {
+            double db = Math.Round(mTrimBox.Value, 1);
+            mChannel.TrimDb = db;
+            mTrim.Display(db);
+        });
 
-        mTrimText.FontSize = 10.5;
-        mTrimText.Width = 76;
-        mTrimText.TextAlignment = TextAlignment.Right;
-        mTrimText.VerticalAlignment = VerticalAlignment.Center;
-        mTrimText.FontFamily = new FontFamily("Consolas, Microsoft YaHei UI");
-        mTrimText.Foreground = Palette.Brush(Palette.TextNormal);
-
-        return Row(L("增益", "Trim"), mTrim, mTrimText);
+        return Row(L("增益", "Trim"), mTrim, mTrimBox, "dB");
     }
 
     Control BuildPhaseRow()
@@ -156,97 +173,140 @@ public sealed class InputStageWindow : Window
         mPhase.Width = 96;
         mPhase.Height = 22;
         mPhase.HorizontalAlignment = HorizontalAlignment.Left;
+        mPhase.IsActive = mChannel.PhaseInvert;
         mPhase.Click += () =>
         {
             mChannel.PhaseInvert = !mChannel.PhaseInvert;
-            Sync();
+            mPhase.IsActive = mChannel.PhaseInvert;
         };
 
-        return Row(L("相位", "Phase"), mPhase, new Control());
+        return Row(L("相位", "Phase"), mPhase, new Control(), string.Empty);
     }
 
     Control BuildHpfRow()
     {
-        mHpf.Minimum = 0;
-        mHpf.Maximum = 1;
-        mHpf.Height = 26;
+        mHpf.Direction = SliderDirection.LeftToRight;
+        mHpf.Height = 24;
         mHpf.VerticalAlignment = VerticalAlignment.Center;
-        mHpf.PropertyChanged += (_, e) =>
+        mHpf.Scale = NormalizedScale.Custom(
+            t => MinHpfHz * Math.Pow(HpfRatio, Clamp01(t)),
+            v => Math.Log(Math.Max(v, MinHpfHz) / MinHpfHz) / Math.Log(HpfRatio));
+        // 双击回"关"（滑杆最左端）。
+        mHpf.DefaultValue = MinHpfHz;
+        mHpf.Display(ToSliderHz(mChannel.HpfHz));
+        mHpf.ValueChanged.Subscribe(() =>
         {
-            if (e.Property != Slider.ValueProperty)
-                return;
+            double hz = ToModelHz(mHpf.Value);
+            mChannel.HpfHz = hz;
+            mHpfBox.Display(hz);
+            RefreshHpfUnit(hz);
+        });
 
-            double hz = ToHpfHz(mHpf.Value);
+        // 0 = 关，允许直接输入 0 关掉高通。
+        ConfigureBox(mHpfBox, 0, MaxHpfHz, 0, 1);
+        mHpfBox.Display(mChannel.HpfHz);
+        mHpfBox.ValueChanged.Subscribe(() =>
+        {
+            double hz = ToModelHz(mHpfBox.Value);
+            mChannel.HpfHz = hz;
+            mHpf.Display(ToSliderHz(hz));
+            mHpfBox.Display(hz);
+            RefreshHpfUnit(hz);
+        });
 
-            // 贴到最左 = 关。
-            mChannel.HpfHz = hz <= MinHpfHz * 1.01 ? 0 : Math.Round(hz);
-            mHpfText.Text = FormatHpf(mChannel.HpfHz);
-        };
+        mHpfUnit.FontSize = 10;
+        mHpfUnit.VerticalAlignment = VerticalAlignment.Center;
+        mHpfUnit.HorizontalAlignment = HorizontalAlignment.Left;
+        mHpfUnit.Foreground = new SolidColorBrush(TuneLab.GUI.Style.TEXT_LABEL);
 
-        mHpfText.FontSize = 10.5;
-        mHpfText.Width = 76;
-        mHpfText.TextAlignment = TextAlignment.Right;
-        mHpfText.VerticalAlignment = VerticalAlignment.Center;
-        mHpfText.FontFamily = new FontFamily("Consolas, Microsoft YaHei UI");
-        mHpfText.Foreground = Palette.Brush(Palette.TextNormal);
-
-        return Row(L("高通", "HPF"), mHpf, mHpfText);
+        return Row(L("高通", "HPF"), mHpf, mHpfBox, mHpfUnit);
     }
 
-    static Control Row(string label, Control control, Control value)
+    static void ConfigureBox(DraggableNumberBox box, double min, double max, double defaultValue, double step)
+    {
+        box.MinValue = min;
+        box.MaxValue = max;
+        box.DefaultValue = defaultValue;
+        box.Step = step;
+        box.Width = 68;
+        box.Height = 24;
+        box.VerticalAlignment = VerticalAlignment.Center;
+        box.NumberFormat = NumberFormat.Decimals(step < 1 ? 1 : 0);
+    }
+
+    static Control Row(string label, Control control, Control value, string unit)
+        => Row(label, control, value, new TextBlock
+        {
+            Text = unit,
+            FontSize = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Foreground = new SolidColorBrush(TuneLab.GUI.Style.TEXT_LABEL),
+        });
+
+    static Control Row(string label, Control control, Control value, TextBlock unit)
     {
         var text = new TextBlock
         {
             Text = label,
             FontSize = 10.5,
-            Width = 52,
             VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Palette.Brush(Palette.TextLabel),
+            Foreground = new SolidColorBrush(TuneLab.GUI.Style.TEXT_LABEL),
         };
 
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("52,*,80") };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("52,*,76,26") };
         Grid.SetColumn(text, 0);
         Grid.SetColumn(control, 1);
         Grid.SetColumn(value, 2);
+        Grid.SetColumn(unit, 3);
         grid.Children.Add(text);
         grid.Children.Add(control);
         grid.Children.Add(value);
+        grid.Children.Add(unit);
         return grid;
     }
 
-    // 把数据里的值刷到控件上（Display 语义：改控件不回调写回）。
+    // 把数据里的值刷到控件上（Display 只改显示，不触发 ValueChanged）。
     void Sync()
     {
-        mTrim.Value = Math.Clamp(mChannel.TrimDb, MinTrimDb, MaxTrimDb);
-        mTrimText.Text = FormatDb(mChannel.TrimDb);
+        double trim = Math.Clamp(mChannel.TrimDb, MinTrimDb, MaxTrimDb);
+        mTrim.Display(trim);
+        mTrimBox.Display(trim);
 
         mPhase.IsActive = mChannel.PhaseInvert;
 
-        mHpf.Value = ToSlider(mChannel.HpfHz);
-        mHpfText.Text = FormatHpf(mChannel.HpfHz);
+        double hpf = ToModelHz(mChannel.HpfHz);
+        mHpf.Display(ToSliderHz(hpf));
+        mHpfBox.Display(hpf);
+        RefreshHpfUnit(hpf);
     }
 
-    static double ToSlider(double hz)
+    void RefreshHpfUnit(double hz)
+        => mHpfUnit.Text = hz <= MinHpfHz ? L("关", "off") : "Hz";
+
+    // 模型值（0 = 关）→ 滑杆值（最左端 20 Hz）。中间值原样透传。
+    static double ToSliderHz(double modelHz)
+        => modelHz <= MinHpfHz ? MinHpfHz : Math.Clamp(modelHz, MinHpfHz, MaxHpfHz);
+
+    // 滑杆/数字框的值 → 模型值：贴到最左端（或 ≤ 20）就是关。
+    static double ToModelHz(double hz)
     {
-        if (hz <= MinHpfHz)
+        if (!double.IsFinite(hz) || hz <= MinHpfHz * 1.005)
             return 0;
 
-        double t = Math.Log(hz / MinHpfHz) / Math.Log(MaxHpfHz / MinHpfHz);
-        return Math.Clamp(t, 0, 1);
+        return Math.Round(Math.Clamp(hz, MinHpfHz, MaxHpfHz));
     }
 
-    static double ToHpfHz(double slider)
-    {
-        return MinHpfHz * Math.Pow(MaxHpfHz / MinHpfHz, Math.Clamp(slider, 0, 1));
-    }
+    static double Clamp01(double value) => Math.Clamp(value, 0, 1);
 
-    static string FormatDb(double db)
-        => (db > 0 ? "+" : string.Empty) + db.ToString("0.0") + " dB";
-
-    string FormatHpf(double hz)
-        => hz <= MinHpfHz ? L("关", "off") : hz.ToString("0") + " Hz";
+    // 增益框：正数带 "+"，负数自带 "-"，一位小数（与滑杆的 0.1 dB 步进一致）。
+    static readonly INumberFormat SignedDb = NumberFormat.Custom(
+        v => (v > 0 ? "+" : string.Empty) + v.ToString("F1", System.Globalization.CultureInfo.InvariantCulture),
+        t => double.TryParse(t, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out var parsed) ? parsed : null);
 
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
+
 }
 

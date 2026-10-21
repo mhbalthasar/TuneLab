@@ -69,6 +69,8 @@
 
 **依赖方向是单向的**：`Patches` → `Abstractions`；`FunctionHooker` → `Abstractions`。**没有任何东西依赖宿主程序集**——所以上游怎么重构，补丁都不会编译失败（只会在锚点语义变了时运行期失配，而那是可见的）。
 
+唯一的外部工程依赖是 **`TuneLab.GUI`**（控件库，不是宿主程序集）：混音台的参数弹窗直接复用宿主的 `Slider` / `DraggableNumberBox`，手感一致、不自造滑杆。它的类型大多是 `internal`，靠 `TuneLab.GUI.csproj` 里的 `<InternalsVisibleTo Include="TuneLab.ExperimentalPatch" />` 开出来。**这仍然不是"引用宿主"**：`TuneLab.GUI` 没有 `<ProjectReference>` 到 `TuneLab`，补丁也依旧看不到 `Track` / `Project` / `AudioEngine` 这些宿主类型。
+
 ## 2. 锚点（anchor）
 
 **锚点 = 宿主在某个确定时机向补丁提供的接驳点。** 它由三件东西组成：
