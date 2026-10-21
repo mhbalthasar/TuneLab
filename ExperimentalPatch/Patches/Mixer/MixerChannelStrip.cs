@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -276,6 +276,11 @@ internal sealed class MixerChannelStrip : UserControl
 
     Control BuildFxButton()
     {
+        // Master 没有插入链：留一个点了只能打开空浮窗的按钮，用户只会去点「+ 添加效果」
+        // 然后撞上"Master 不支持插入"。所以这里直接不给它这个入口。
+        if (mIsMaster)
+            return new Control();
+
         return ConfigureCountButton(mFx, () => FxRequested?.Invoke(this));
     }
 
@@ -452,3 +457,4 @@ internal sealed class MixerChannelStrip : UserControl
         mChannel.RoutingChanged -= Refresh;
     }
 }
+

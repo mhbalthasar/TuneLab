@@ -239,7 +239,19 @@ public sealed class FxPopupWindow : Window
 
     void AddInsert(IMixerInsertFormat format, InsertPluginEntry plugin)
     {
-        var insert = mChannel.AddInsert(format);
+        // 兜底：这里是 UI 回调，抛出去就是未捕获异常 → 进程退出。
+        // 真正的拦截在 MixerWindow（Master 不给 canAdd），这条只是别再让它能带走进程。
+        IMixerInsert insert;
+
+        try
+        {
+            insert = mChannel.AddInsert(format);
+        }
+        catch (Exception ex)
+        {
+            mHost.LogError($"mixer: cannot add an insert to '{mChannel.Name}'", ex);
+            return;
+        }
 
         // 插件的定位信息（路径 / classId）写回数据槽位 —— 宿主据此建实例。
         if (insert is IInsertPluginTarget target)
@@ -388,6 +400,7 @@ public sealed class FxPopupWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
 
 
 

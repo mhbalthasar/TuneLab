@@ -610,7 +610,12 @@ public sealed class MixerWindow : Window
     void ShowFxPopup(MixerChannelStrip strip)
     {
         mFxPopup?.Close();
-        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost, mModel.SupportsInserts);
+        // Master 没有插入链（宿主的 Master 是纯汇总节点）。给它的浮窗传 canAdd = false：
+        // 否则用户点「+ 添加效果」会走到 Master 的 AddInsert，那里只能抛异常 ——
+        // 而那是 UI 回调里未捕获的异常，整个进程会直接退出。
+        bool canAdd = mModel.SupportsInserts && strip.Channel.Kind != MixerChannelKind.Master;
+
+        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost, canAdd);
         PlacePopup(popup, strip.FxAnchor);
         popup.Show();
         mFxPopup = popup;
@@ -720,6 +725,7 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
 
 
 
