@@ -824,7 +824,36 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 （控件库，不是宿主程序集），并靠它的 `InternalsVisibleTo(TuneLab.ExperimentalPatch)` 拿到
 这些 internal 类型。高通滑杆走对数刻度（0..1 → 20…2000 Hz），最左端 = 关。
 
-#### 5.7.23 乐器不进 FX 目录（2026-10-21）
+#### 5.7.23 VST3 的厂商名从哪来（2026-10-21）
+
+VST2 的厂商是桥探 `effGetVendorString` 拿到的，天然有；同一个产品的 VST3 版在 FX 菜单里
+却全挂"未知厂商"（Damien Zammit 是后来才被认识的）。因为**VST3 的厂商只在两处**：
+
+1. `Contents\Resources\moduleinfo.json` 的 `Factory Info.Vendor` —— 官方口径，插件自己写的
+   build 脚本生成。**只有少数插件有**（这台机器上 107 个 bundle 里 2 个）；
+2. 二进制里的工厂信息常量串，两种布局：
+   - **DPF 系**（Zam / Cardinal / Dragonfly…）：`name\0描述\0vendor\0url\0license\0`
+     编译成明文。vendor 紧贴在一个 URL 前面 —— 很好认；
+   - **JUCE 系**（Blue Cat / Surge XT / Voxengo…）：控制器里嵌一小块
+     `name\0vendor\0子类别\0`，或 `name\0vendor\0url\0`。
+
+都不能靠"问插件"：扫描时 load 插件会 abort 进程，也有插件 20 秒不返回（见
+`LooksLikeInstrument` 的注释里那两条实测）。所以 `Vst3BundleInfo` 按
+**moduleinfo.json → 二进制正则**的顺序尽力而为，两条都不中就空串，界面按"未知厂商"分组。
+
+二进制正则的坑（都踩过）：changelog 句子（"Fixed user interface freezing on Mac OS X 10.8."）
+形状和厂商一模一样，也紧跟在 URL 前；参数名（`dpf_mono` / `host-track-name` / `hpfreq`）也
+紧跟在文本后面。所以命中后要过 `IsPlausibleVendor`（不含句号结尾、不含 rewrite 类动词、
+连字符不超两段排除 GUID）加一份已知非厂商词表。
+
+这台机器上的覆盖率：107 个 bundle 里 **58 个**拿到厂商（17 个 Zam + 6 个 DPF 的 Cardinal 系、
+22 个 Blue Cat、ElephantDSP、Blue Wings Music、chowdsp…）。剩下的多是 JUCE 插件没在二进制里
+留下可辨认的串，属于信息本来就不在，不是读漏。
+
+缓存加 `CacheVersion`（3 = 带厂商）。旧缓存整份作废 —— 那一版 VST3 条目的 Vendor 全是空的，
+沿用只会让界面说"扫过了"还是一列未知厂商。
+
+#### 5.7.24 乐器不进 FX 目录（2026-10-21）
 
 插件的"是不是乐器"一直是有记录的（`InsertPluginEntry.IsInstrument`：VST3 看二进制的
 `Instrument|` 标记，VST2 走桥探 `effFlagsIsSynth`），但**只有界面在过滤** —— 扫描结果、

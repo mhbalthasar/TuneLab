@@ -243,6 +243,11 @@ public sealed class Vst3Backend : IInsertBackend
                     Format = "VST3",
                     PluginId = "vst3:" + Path.GetFileNameWithoutExtension(bundle),
                     Name = name,
+
+                    // 厂商从 Contents\Resources\moduleinfo.json 读（VST3 的二进制里没有它）。
+                    // VST2 那边靠桥探 effGetVendorString，同一产品两种格式不该差一截。读不到就空，
+                    // 界面按"未知厂商"分组 —— 与插件不带 moduleinfo.json 的现状一致。
+                    Vendor = Vst3BundleInfo.VendorOf(bundle),
                     Locator = bundle,
                     Category = is32Bit ? "32-bit (needs the bridge)" : string.Empty,
                     IsInstrument = isInstrument,

@@ -301,8 +301,9 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     }
 
     // 缓存格式版本。只有"扫描结果里有意义的那批字段"变了才加 1。
+    // 3 = VST3 开始从 moduleinfo.json 读厂商（同一产品的两种格式不再有厂商落差）。
     // 2 = 开始区分乐器（并且不再把乐器写进缓存）；1 / 0 = 老格式，读的时候当空表。
-    const int CurrentCacheVersion = 2;
+    const int CurrentCacheVersion = 3;
 
     static readonly JsonSerializerOptions JsonOptions = new()
     {

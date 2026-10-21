@@ -22,9 +22,11 @@ public class InsertPluginCacheTests
     [Fact]
     public void InstrumentsAreNotPartOfTheCatalog()
     {
+        // 3 = 当前格式（VST3 也从 moduleinfo.json / 二进制读厂商了）。
+        // 旧数字 = 旧格式，整份缓存忽略。
         WithCache("""
         {
-          "CacheVersion": 2,
+          "CacheVersion": 3,
           "Vst3Paths": [],
           "Vst2Paths": [],
           "LastScanUtc": "2026-10-21 00:00:00Z",
