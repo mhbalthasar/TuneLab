@@ -67,7 +67,9 @@ public sealed class InsertParameterWindow : Window
         Height = 540;
         MinWidth = 460;
         MinHeight = 240;
-        Background = new SolidColorBrush(Color.FromRgb(26, 26, 30));
+        // 用宿主面板色（INTERFACE），不要纯黑：滑杆的轨道画的是 TuneLab.GUI.Style.BACK，
+        // 背景与它一样深时轨道就看不见了（用户报的“不显示杆芯”）。
+        Background = new SolidColorBrush(TuneLab.GUI.Style.INTERFACE);
 
         Content = BuildContent();
 
@@ -121,7 +123,7 @@ public sealed class InsertParameterWindow : Window
     {
         var header = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(34, 34, 40)),
+            Background = new SolidColorBrush(TuneLab.GUI.Style.BACK),
             BorderBrush = new SolidColorBrush(Color.FromRgb(58, 58, 64)),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(10, 6),
@@ -129,7 +131,7 @@ public sealed class InsertParameterWindow : Window
             {
                 Text = mHeaderText,
                 FontSize = 11,
-                Foreground = new SolidColorBrush(Color.FromRgb(210, 210, 216)),
+                Foreground = new SolidColorBrush(TuneLab.GUI.Style.LIGHT_WHITE),
                 TextTrimming = TextTrimming.CharacterEllipsis,
             },
         };
@@ -137,7 +139,7 @@ public sealed class InsertParameterWindow : Window
         mEmpty.Text = "这个插件没有暴露任何参数";
         mEmpty.FontSize = 11;
         mEmpty.Margin = new Thickness(16);
-        mEmpty.Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 156));
+        mEmpty.Foreground = new SolidColorBrush(TuneLab.GUI.Style.TEXT_LABEL);
         mEmpty.IsVisible = false;
 
         var scroller = new ScrollViewer
@@ -193,7 +195,7 @@ public sealed class InsertParameterWindow : Window
         {
             Text = string.IsNullOrWhiteSpace(parameter.Name) ? "#" + parameter.Id : parameter.Name,
             FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(208, 208, 214)),
+            Foreground = new SolidColorBrush(TuneLab.GUI.Style.LIGHT_WHITE),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(2, 0, 8, 0),
@@ -308,4 +310,6 @@ public sealed class InsertParameterWindow : Window
         }
     }
 }
+
+
 
