@@ -62,6 +62,10 @@ public sealed class MixerWindow : Window
         BottomRight,
     }
 
+    // F3：请求宿主（MixerPatch）显示/隐藏本窗。焦点在本窗或它的浮窗上时由它们触发；
+    // 焦点在编辑器里时走宿主主窗口上的 KeyBinding。
+    public event Action? ToggleRequested;
+
     public MixerWindow(IMixerModel model, IHostServices host)
     {
         mModel = model;
@@ -104,6 +108,15 @@ public sealed class MixerWindow : Window
         // 这里把它透传回宿主（补丁不直接碰 AudioEngine），播放/暂停照旧。
         KeyDown += (_, e) =>
         {
+            // F3：焦点已经在混音台上时也要能收起它。主窗口上的 KeyBinding 管不到这里
+            // （按键只发给有焦点的窗口），所以本窗自己再处理一次。
+            if (e.Key == Key.F3)
+            {
+                ToggleRequested?.Invoke();
+                e.Handled = true;
+                return;
+            }
+
             if (e.Key != Key.Space)
                 return;
 
@@ -114,6 +127,19 @@ public sealed class MixerWindow : Window
         mModel.ChannelsChanged += Rebuild;
         mModel.MetersUpdated += PumpMeters;
         Rebuild();
+    }
+
+    // 浮窗也有焦点：F3 在它们上面同样要能收起混音台。
+    void HookPopupShortcut(Window popup)
+    {
+        popup.KeyDown += (_, e) =>
+        {
+            if (e.Key != Key.F3)
+                return;
+
+            e.Handled = true;
+            ToggleRequested?.Invoke();
+        };
     }
 
     // F3 用：连同两个浮窗一起收起来。隐藏**归属窗口**不会自动隐藏 owned window
@@ -613,6 +639,7 @@ public sealed class MixerWindow : Window
         PlacePopup(popup, strip.SendAnchor);
         // 归属到混音台：弹窗始终压在混音台之上，但不会跑到别的应用前面去。
         popup.Show(this);
+        HookPopupShortcut(popup);
         mSendPopup = popup;
     }
 
@@ -627,6 +654,7 @@ public sealed class MixerWindow : Window
         var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost, canAdd);
         PlacePopup(popup, strip.FxAnchor);
         popup.Show(this);
+        HookPopupShortcut(popup);
         mFxPopup = popup;
     }
 
@@ -734,6 +762,9 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
+
 
 
 

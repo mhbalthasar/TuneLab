@@ -93,6 +93,7 @@ public sealed class MixerPatch : IPatch
 
         var window = new MixerWindow(model, host);
         window.Closed += OnWindowClosed;   // 被真正关掉（不是隐藏）时清掉引用
+        window.ToggleRequested += Toggle;  // 焦点在混音台/浮窗上时按 F3
 
         mModel = model;
         mWindow = window;
@@ -220,4 +221,5 @@ public sealed class MixerPatch : IPatch
         mOwner = null;
     }
 }
+
 
