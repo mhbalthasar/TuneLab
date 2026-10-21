@@ -801,6 +801,27 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 **做法**：按 `(格式, PluginId)` 去重，保留扫描顺序里的第一条（= 路径清单里靠前的那个）。
 两处都排：`Scan` 落盘前，以及 `CachedPlugins` 读取时（老缓存不重扫也能立刻变干净）。
 
+#### 5.7.19 插入顺序可调（2026-10-21）
+
+处理顺序 = 列表顺序。FX 浮窗每行加了 ▲▼：到头的那个置灰（`CanMoveInsert` 判定），
+按一下走 `MoveInsert(insert, ±1)` —— `RemoveAt + Insert` 套一个 merge 作用域
+（一次移动 = 一步 undo），然后 `RaiseRoutingChanged` 重建图（顺序变了，节点下标与
+PDC 都要重算）。轨道 / AUX / Master 三处同一套语义。
+
+拖拽排序暂未做（▲▼ 已覆盖需求，拖拽要额外的 adorner 与命中测试）。
+
+#### 5.7.20 明确**不做**的范围（2026-10-21）
+
+下面这些是"知道缺、但这一轮不做"的，写下来免得每次都被当成漏做：
+
+- **自动化（automation）**：推子 / 声像 / 静音 / 独奏 / send / 插件参数全部不做曲线。
+  没有它只能做"静态混音"。这是与正规 DAW 差距最大的一项，但工作量也最大，暂缓。
+- **拖拽排序**（插入链 / 通道顺序）：目前用 ▲▼ 与右键菜单。
+- **VCA / DCA、Group 总线、侧链输入**：需要新的路由模型，不在当前结构里。
+- **多硬件输出 / 多通道设备**：v1 只有一个 Device；Cable 是禁用占位。
+- **响度表（LUFS）/ True Peak / 峰值保持**：目前只有 L/R 峰值。
+- **冻结 / 离线渲染（Freeze / Bounce in place）**。
+
 #### 5.7.18 Master 也有插入链（2026-10-21）
 
 Master 是"总轨"，效果器挂在它上面 = 总线效果。之前它的 `AddInsert` 只会抛
@@ -1242,6 +1263,7 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

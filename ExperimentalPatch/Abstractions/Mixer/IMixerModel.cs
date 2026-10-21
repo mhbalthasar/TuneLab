@@ -154,6 +154,10 @@ public interface IMixerChannel
     IMixerInsert AddInsert(IMixerInsertFormat format);
     void RemoveInsert(IMixerInsert insert);
 
+    // 插入链的顺序调整（处理顺序 = 列表顺序）。delta = -1 上移 / +1 下移。
+    // 返回 false 表示已经在头/尾（界面据此把 ▲▼ 置灰）。
+    bool CanMoveInsert(IMixerInsert insert, int delta);
+    void MoveInsert(IMixerInsert insert, int delta);
     // 峰值电平（dB）。null = 无信号 / 被静音 / 被 solo 压制 —— 即"此刻听不到"。
     (double LeftDb, double RightDb)? Peak { get; }
 
@@ -232,6 +236,7 @@ public interface IMixerInsertFormat
     // 不可用时给一句原因（"仅 Windows" / "尚未实现"），直接显示在菜单里。
     string? UnavailableReason { get; }
 }
+
 
 
 

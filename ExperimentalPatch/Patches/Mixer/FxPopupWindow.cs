@@ -333,6 +333,26 @@ public sealed class FxPopupWindow : Window
         nameRow.Children.Add(name);
         nameRow.Children.Add(format);
 
+        // 处理顺序 = 列表顺序。▲▼ 是最省事也最不会误操作的做法（拖拽以后再加）。
+        // 到头的那个置灰，而不是点了没反应。
+        var up = new ChromeButton
+        {
+            Text = "▲",
+            Width = 22,
+            Height = 20,
+            IsEnabled = mChannel.CanMoveInsert(insert, -1),
+        };
+        up.Click += () => mChannel.MoveInsert(insert, -1);
+
+        var down = new ChromeButton
+        {
+            Text = "▼",
+            Width = 22,
+            Height = 20,
+            IsEnabled = mChannel.CanMoveInsert(insert, 1),
+        };
+        down.Click += () => mChannel.MoveInsert(insert, 1);
+
         var bypass = new ChromeButton
         {
             Text = L("旁通", "Bypass"),
@@ -377,14 +397,18 @@ public sealed class FxPopupWindow : Window
         var remove = new ChromeButton { Text = "✕", Width = 26, Height = 26, HoverColor = Palette.CloseHover };
         remove.Click += () => mChannel.RemoveInsert(insert);
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,54,48,26"), Height = MixerMetrics.FxRowHeight };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,22,22,52,46,26"), Height = MixerMetrics.FxRowHeight };
         Grid.SetColumn(order, 0);
         Grid.SetColumn(nameRow, 1);
-        Grid.SetColumn(bypass, 2);
-        Grid.SetColumn(editor, 3);
-        Grid.SetColumn(remove, 4);
+        Grid.SetColumn(up, 2);
+        Grid.SetColumn(down, 3);
+        Grid.SetColumn(bypass, 4);
+        Grid.SetColumn(editor, 5);
+        Grid.SetColumn(remove, 6);
         row.Children.Add(order);
         row.Children.Add(nameRow);
+        row.Children.Add(up);
+        row.Children.Add(down);
         row.Children.Add(bypass);
         row.Children.Add(editor);
         row.Children.Add(remove);

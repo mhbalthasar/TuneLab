@@ -574,6 +574,45 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
     public abstract IDataProperty<MixerRoute> OutputProperty { get; }
     public abstract DataObjectList<Send> SendList { get; }
     public abstract DataObjectList<InsertSlot> InsertList { get; }
+    // 插入链的顺序（= 处理顺序）。▲▼ 用它，delta = -1 上移 / +1 下移。
+    public bool CanMoveInsert(IMixerInsert insert, int delta)
+    {
+        if (insert is not InsertSlotAdapter adapter)
+            return false;
+
+        int index = InsertList.IndexOf(adapter.Slot);
+        if (index < 0)
+            return false;
+
+        int target = index + delta;
+        return target >= 0 && target < InsertList.Count;
+    }
+
+    public void MoveInsert(IMixerInsert insert, int delta)
+    {
+        if (!CanMoveInsert(insert, delta) || insert is not InsertSlotAdapter adapter)
+            return;
+
+        int index = InsertList.IndexOf(adapter.Slot);
+        int target = index + delta;
+
+        // 一步 undo：RemoveAt + Insert 本来会记两步。
+        Data.BeginMergeNotify();
+        try
+        {
+            InsertList.RemoveAt(index);
+            InsertList.Insert(target, adapter.Slot);
+        }
+        finally
+        {
+            Data.EndMergeNotify();
+            Data.Commit();
+        }
+
+        // 顺序变了 = 链的先后变了 → 重建图（节点下标、PDC 都会跟着重算）。
+        RaiseRoutingChanged();
+    }
+
 
     internal IDataObject Data { get; }
 
@@ -1071,6 +1110,44 @@ internal sealed class MixerMasterChannel : IMixerChannel
         mOwner.RaiseRoutingChanged();
     }
 
+    // Master 的插入链顺序调整（与轨道 / AUX 同一套语义）。
+    public bool CanMoveInsert(IMixerInsert insert, int delta)
+    {
+        if (insert is not InsertSlotAdapter adapter)
+            return false;
+
+        int index = mOwner.Project.MasterInserts.IndexOf(adapter.Slot);
+        if (index < 0)
+            return false;
+
+        int target = index + delta;
+        return target >= 0 && target < mOwner.Project.MasterInserts.Count;
+    }
+
+    public void MoveInsert(IMixerInsert insert, int delta)
+    {
+        if (!CanMoveInsert(insert, delta) || insert is not InsertSlotAdapter adapter)
+            return;
+
+        var project = mOwner.Project;
+        int index = project.MasterInserts.IndexOf(adapter.Slot);
+        int target = index + delta;
+
+        project.BeginMergeNotify();
+        try
+        {
+            project.MasterInserts.RemoveAt(index);
+            project.MasterInserts.Insert(target, adapter.Slot);
+        }
+        finally
+        {
+            project.EndMergeNotify();
+            project.Commit();
+        }
+
+        mOwner.RaiseRoutingChanged();
+    }
+
     readonly MixerModelAdapter mOwner;
 }
 
@@ -1110,6 +1187,7 @@ internal sealed class MixerInsertFormat(string name, bool isAvailable, string? u
     public bool IsAvailable => isAvailable;
     public string? UnavailableReason => unavailableReason;
 }
+
 
 
 
