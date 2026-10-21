@@ -33,8 +33,14 @@ public interface IHostServices
     // 同样有默认实现：不接插入效果的宿主不该被迫实现它。
     IInsertPluginSettings? InsertPlugins => null;
 
+    // 注册一个**主窗口**快捷键（例如 "F3"）。补丁自己的窗口（混音台）没有输入焦点时，
+    // 按键只会到主窗口，所以开关这类窗口得由宿主在主窗口上挂。
+    // 解析不了 / 主窗口还没建好时静默忽略（默认实现也是空）。
+    void RegisterShortcut(string gesture, Action action) { }
+
     // 播放/暂停（空格）。混音台是独立窗口，焦点在它上面时按键不会到主窗 ——
     // 补丁侧经这里把"空格"透传回宿主。默认空实现，无头 harness 不必关心。
     void TogglePlayback() { }
 }
+
 

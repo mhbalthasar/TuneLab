@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -28,7 +28,13 @@ public sealed class MixerPatch : IPatch
     public void Attach(IAnchorTable anchors)
     {
         // 模型要等编辑器就绪才取得到，所以宿主句柄在 app.ready 才落袋；菜单命令是之后才点的。
-        anchors.OnAppReady(anchor => mHost = anchor.Host);
+        anchors.OnAppReady(anchor =>
+        {
+            mHost = anchor.Host;
+
+            // F3 开关混音台（含它的浮窗）。挂在主窗口上：焦点在编辑器里时按键才会到。
+            mHost.RegisterShortcut("F3", Toggle);
+        });
         anchors.AddCommand(new ExperimentalCommand("mixer.open", Label(anchors.Host), Open));
 
         // 插入效果的插件扫描路径：宿主「设置」窗里的一页（EP-MIXER-16）。
@@ -93,11 +99,31 @@ public sealed class MixerPatch : IPatch
         ShowWindow(window);
     }
 
+    // F3：有窗口就显示/隐藏，没有就先开一扇。
+    void Toggle()
+    {
+        if (mWindow == null)
+        {
+            Open();
+            return;
+        }
+
+        if (mWindow.IsVisible)
+        {
+            mWindow.HideWithPopups();
+            return;
+        }
+
+        BringToFront(mWindow);
+    }
+
     void BringToFront(Window window)
     {
         // 隐藏过的（点了 ✕）重新显示；已经可见的只要激活。
+        // 重新显示也要走 ShowWindow：它负责**重新挂上归属关系**，否则隐藏过一次之后
+        // 混音台就不再"始终在主窗口前面"了。
         if (!window.IsVisible)
-            window.Show();
+            ShowWindow(window);
 
         window.Activate();
     }
@@ -194,3 +220,4 @@ public sealed class MixerPatch : IPatch
         mOwner = null;
     }
 }
+

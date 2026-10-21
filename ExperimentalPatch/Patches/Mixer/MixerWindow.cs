@@ -116,6 +116,14 @@ public sealed class MixerWindow : Window
         Rebuild();
     }
 
+    // F3 用：连同两个浮窗一起收起来。隐藏**归属窗口**不会自动隐藏 owned window
+    // （Win32 只在最小化时连带），所以先显式关掉它们。
+    public void HideWithPopups()
+    {
+        ClosePopups();
+        Hide();
+    }
+
     // 宿主丢弃本窗时调用（关闭只是隐藏，不该在这里退订）。
     public void Detach()
     {
@@ -603,7 +611,8 @@ public sealed class MixerWindow : Window
         mSendPopup?.Close();
         var popup = new SendPopupWindow(strip.Channel, mModel.Outputs, mHost, mModel.SupportsSends);
         PlacePopup(popup, strip.SendAnchor);
-        popup.Show();
+        // 归属到混音台：弹窗始终压在混音台之上，但不会跑到别的应用前面去。
+        popup.Show(this);
         mSendPopup = popup;
     }
 
@@ -617,7 +626,7 @@ public sealed class MixerWindow : Window
 
         var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost, canAdd);
         PlacePopup(popup, strip.FxAnchor);
-        popup.Show();
+        popup.Show(this);
         mFxPopup = popup;
     }
 
@@ -725,6 +734,9 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
+
 
 
 

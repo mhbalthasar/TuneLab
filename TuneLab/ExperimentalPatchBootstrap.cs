@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Windows.Input;
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.FunctionHooker;
@@ -152,6 +155,38 @@ internal static class ExperimentalPatchBootstrap
         // 与打开的工程无关，所以做成静态单例而不随工程重建。
         public IInsertPluginSettings InsertPlugins => sInsertPlugins;
 
+        // 主窗口快捷键：补丁的窗口（混音台）没有焦点时，按键只会到主窗口。
+        public void RegisterShortcut(string gesture, Action action)
+        {
+            var main = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+            if (main == null)
+                return;
+
+            KeyGesture parsed;
+            try
+            {
+                parsed = KeyGesture.Parse(gesture);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            main.KeyBindings.Add(new KeyBinding
+            {
+                Gesture = parsed,
+                Command = new RelayCommand(action),
+            });
+        }
+
+        // Avalonia 的 KeyBinding 要一个 ICommand；这里只包一个无参回调。
+        sealed class RelayCommand(Action action) : ICommand
+        {
+            public event EventHandler? CanExecuteChanged { add { } remove { } }
+            public bool CanExecute(object? parameter) => true;
+            public void Execute(object? parameter) => action();
+        }
+
         // 混音台是独立窗口：焦点在它上面时按空格不会到主窗，补丁经这里透传回来。
         public void TogglePlayback()
         {
@@ -173,6 +208,7 @@ internal static class ExperimentalPatchBootstrap
         const string Prefix = "[ExperimentalPatch] ";
     }
 }
+
 
 
 
