@@ -1004,7 +1004,7 @@ internal sealed class MixerMasterChannel : IMixerChannel
             var list = new List<IMixerInsert>(mOwner.Project.MasterInserts.Count);
 
             foreach (var slot in mOwner.Project.MasterInserts)
-                list.Add(new InsertSlotAdapter(slot, mOwner.InsertFactory));
+                list.Add(new InsertSlotAdapter(slot, mOwner.InsertFactory, mOwner.RaiseRoutingChanged));
 
             return list;
         }
@@ -1054,7 +1054,7 @@ internal sealed class MixerMasterChannel : IMixerChannel
         // 所以这里自己重建图 + 通知界面。
         mOwner.RaiseRoutingChanged();
 
-        return new InsertSlotAdapter(slot, mOwner.InsertFactory);
+        return new InsertSlotAdapter(slot, mOwner.InsertFactory, mOwner.RaiseRoutingChanged);
     }
 
     public void RemoveInsert(IMixerInsert insert)
@@ -1110,6 +1110,7 @@ internal sealed class MixerInsertFormat(string name, bool isAvailable, string? u
     public bool IsAvailable => isAvailable;
     public string? UnavailableReason => unavailableReason;
 }
+
 
 
 
