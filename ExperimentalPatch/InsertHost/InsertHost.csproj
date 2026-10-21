@@ -40,6 +40,9 @@
   <ItemGroup>
     <Compile Include="..\VstBridge\BridgeProtocol.cs" Link="Bridge\BridgeProtocol.cs" />
     <Compile Include="..\VstBridge\BridgeSharedMemory.cs" Link="Bridge\BridgeSharedMemory.cs" />
+
+    <!-- OpenGL 兜底（Mesa 的 opengl32）：宿主进程里也要生效，所以与桥共用同一份源码。 -->
+    <Compile Include="..\VstBridge\OpenGlPatcher.cs" Link="Bridge\OpenGlPatcher.cs" />
   </ItemGroup>
 
   <!-- 原生 VST3 host（ownvst3）。三个平台各一份，运行时按 RID 选。
@@ -62,5 +65,6 @@
   </ItemGroup>
 
 </Project>
+
 
 

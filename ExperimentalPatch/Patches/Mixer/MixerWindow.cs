@@ -519,16 +519,60 @@ public sealed class MixerWindow : Window
             menu.Items.Add(PinItem(channel, MixerPin.None, L("取消固定", "Unpin")));
         }
 
-        if (channel.Kind == MixerChannelKind.Aux)
+        // 位置调整：只在所属组内（轨道组 / AUX 组）移动。顺序就是工程里的顺序，
+        // 主界面的轨道头会跟着变。
+        if (channel.Kind != MixerChannelKind.Master)
         {
             menu.Items.Add(new Separator());
 
+            menu.Items.Add(MoveItem(channel, MixerChannelMove.Up, L("上移", "Move up")));
+            menu.Items.Add(MoveItem(channel, MixerChannelMove.Down, L("下移", "Move down")));
+            menu.Items.Add(MoveItem(channel, MixerChannelMove.Top, L("置顶", "Move to top")));
+            menu.Items.Add(MoveItem(channel, MixerChannelMove.Bottom, L("置底", "Move to bottom")));
+            menu.Items.Add(MoveToItem(channel));
+        }
+
+        if (channel.Kind == MixerChannelKind.Aux)
+        {
+            menu.Items.Add(new Separator());
             var remove = new MenuItem { Header = L("删除此 AUX", "Delete this AUX") };
             remove.Click += (_, _) => mModel.RemoveAux(channel);
             menu.Items.Add(remove);
         }
 
         return menu;
+    }
+
+    MenuItem MoveItem(IMixerChannel channel, MixerChannelMove move, string header)
+    {
+        var item = new MenuItem
+        {
+            Header = header,
+            IsEnabled = mModel.CanMoveChannel(channel, move),
+        };
+
+        item.Click += (_, _) => mModel.MoveChannel(channel, move);
+        return item;
+    }
+
+    // "移动到…"：列同组的其它通道，点谁就移到谁现在的位置。
+    // 不列 Master（它不在组里），也不列自己。
+    MenuItem MoveToItem(IMixerChannel channel)
+    {
+        var sub = new MenuItem { Header = L("移动到…", "Move to…") };
+
+        foreach (var other in mModel.Channels)
+        {
+            if (other.Kind != channel.Kind || ReferenceEquals(other, channel))
+                continue;
+
+            var item = new MenuItem { Header = other.Name };
+            item.Click += (_, _) => mModel.MoveChannelTo(channel, other);
+            sub.Items.Add(item);
+        }
+
+        sub.IsEnabled = sub.Items.Count > 0;
+        return sub;
     }
 
     static MenuItem PinItem(IMixerChannel channel, MixerPin pin, string header)
@@ -676,4 +720,6 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
+
 

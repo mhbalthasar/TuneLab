@@ -17,6 +17,14 @@
 		<AvaloniaResource Include="Assets\**" />
 	</ItemGroup>
 
+	<!-- OpenGL 兜底（Mesa 的 opengl32）：仓库里的 runtimes/patcher/<arch>/ 跟着输出走，
+	     用户把 dll 丢进去（或安装后丢进程序目录）就生效。见 runtimes/patcher/README.md。 -->
+	<ItemGroup>
+		<None Include="..\runtimes\patcher\**\*"
+		      Link="runtimes\patcher\%(RecursiveDir)%(Filename)%(Extension)"
+		      CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
 	<ItemGroup>
 		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
 			<_Parameter1>TuneLab.Tests</_Parameter1>
@@ -154,3 +162,4 @@
 		</ItemGroup>
 	</Target>
 </Project>
+

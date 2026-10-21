@@ -801,6 +801,42 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 **做法**：按 `(格式, PluginId)` 去重，保留扫描顺序里的第一条（= 路径清单里靠前的那个）。
 两处都排：`Scan` 落盘前，以及 `CachedPlugins` 读取时（老缓存不重扫也能立刻变干净）。
 
+#### 5.7.16 通道位置调整（轨道头右键，2026-10-21）
+
+右键通道条 → 上移 / 下移 / 置顶 / 置底 / 移动到…（子菜单列出同组其它通道）。
+**只在所属组内移动**：轨道组（`Project.Tracks`）与 AUX 组（`Project.Auxes`）各自独立，
+轨道"置底"不会跑到 AUX 后面。改的是**工程里的顺序**，所以主界面轨道头会跟着变。
+
+实现：`IMixerModel.CanMoveChannel / MoveChannel / MoveChannelTo` →
+`Project.RemoveTrackAt + InsertTrack`（AUX 用新加的 `RemoveAuxAt + InsertAux`）。
+整段套 merge 作用域，一次移动 = 一步 undo。顺序变了节点下标也变，所以会重建混音图。
+
+#### 5.7.17 OpenGL 兜底：硬件优先，虚拟机才用软件渲染（2026-10-21）
+
+`runtimes/patcher/{x86,x64,arm64}/opengl32.dll`（Mesa3D llvmpipe）是给**没有硬件 OpenGL**
+的机器准备的：DPF / NanoVG 的编辑器（ZamDynamicEQ、Dragonfly）在虚拟机上会白屏。
+
+**判定必须在加载任何 GL 模块之前完成** —— Windows 的模块按**文件名唯一**，先加载谁就全进程
+用谁；一旦建过 GL 上下文，再 LoadLibrary 哪份 Mesa 都没用。所以这里**不探测 GL 版本**，
+只枚举显示适配器（`EnumDisplayDevices`）：
+
+- 有真显卡（NVIDIA / AMD / Intel …）→ **什么都不做**，用硬件；
+- 全是虚拟机 / 远程桌面 / 基础显示适配器（Hyper-V、Microsoft Basic Render、Virtual、
+  GameViewer、Parsec…）→ 才 `SetDllDirectory(目录)` + 预加载 `opengl32.dll`。
+
+**渲染后端也自动选**（Mesa 的 `GALLIUM_DRIVER`）：
+
+- 有**硬件 D3D12**（`D3D12CreateDevice` 用默认适配器能建出设备）→ `d3d12`，
+  OpenGL 转成 D3D12 跑在 GPU 上；
+- 没有 → `llvmpipe`，纯 CPU 光栅化。
+
+两者都在**加载 opengl32 之前**决定（Mesa 初始化时读这个环境变量）。判据用的是 D3D12 设备创建，
+不碰 OpenGL —— 理由同上：碰了就没法换模块了。
+
+生效时宿主日志里有一行 `insert: no hardware OpenGL detected; using the software OpenGL from …`；
+正常机器不会有任何输出。VST2 的桥进程在自己的 `Main` 里做同一件事（插件在哪个进程，GL 就在
+哪个进程里加载）。
+
 #### 5.7.15 切工程后 AUX 接线失效 / 改接线像卡死（2026-10-21）
 
 **症状**：打开另一个工程之后，轨道明明设成发往 AUX，声音却直接进 Master；再改一次
@@ -1192,6 +1228,8 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
+
 
 
 

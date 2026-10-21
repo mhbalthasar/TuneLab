@@ -25,6 +25,16 @@ namespace TuneLab.Audio;
 //   · 编译失败 / 被替换 —— 这里负责 Dispose，不能让原生句柄漏。
 internal sealed class InsertInstanceFactory
 {
+    // 宿主进程里也要在**第一个插件加载之前**把 OpenGL 兜底装上：DPF/NanoVG 的编辑器
+    // 只在虚拟机/远程桌面上会因为没有 GL 1.3 而白屏，而 opengl32 是"谁先加载谁生效"。
+    static InsertInstanceFactory()
+    {
+        TuneLab.ExperimentalPatch.VstBridge.OpenGlPatcher.EnsureApplied();
+
+        // 只在**真的换成软件渲染**时写一行：正常机器（硬件 GL 可用）什么都不说。
+        if (TuneLab.ExperimentalPatch.VstBridge.OpenGlPatcher.AppliedDirectory is { } directory)
+            HostLog.Info($"insert: no hardware OpenGL detected; using the software OpenGL from {directory} (driver {TuneLab.ExperimentalPatch.VstBridge.OpenGlPatcher.AppliedDriver})");
+    }
     readonly Dictionary<string, IMixInsert> mLive = [];
     readonly Vst3Backend mVst3 = new();
     readonly Vst2Backend mVst2 = new();
@@ -350,6 +360,9 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
         Changed?.Invoke();
     }
 }
+
+
+
 
 
 

@@ -8,6 +8,15 @@
 //
 // 【单一真相源】实现方（宿主适配器）直接读写 Track / Aux 的数据属性，所以本契约天然与编辑器、
 // 脚本、撤销栈同源。补丁侧**不得**缓存这些值，一切以每次读取为准。
+// 通道在组内的移动方式（轨道头右键菜单）。
+public enum MixerChannelMove
+{
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
 public interface IMixerModel
 {
     // 按显示顺序：先是所有轨，再是所有 AUX（不含 Master）。
@@ -41,7 +50,16 @@ public interface IMixerModel
     // AUX 的增删（走宿主的 undo）。
     void AddAux();
     void RemoveAux(IMixerChannel aux);
-}
+
+    // ── 通道位置（轨道头右键菜单）──
+    //
+    // 只在**所属组内**移动：轨道组（Project.Tracks）与 AUX 组（Project.Auxes）各自独立，
+    // 轨道不会因为"置底"跑到 AUX 后面去。顺序就是工程里的顺序，主界面的轨道头会跟着变。
+    bool CanMoveChannel(IMixerChannel channel, MixerChannelMove move);
+    void MoveChannel(IMixerChannel channel, MixerChannelMove move);
+
+    // "移动到.."：把 channel 移到 target 现在的位置（同组内才生效）。
+    void MoveChannelTo(IMixerChannel channel, IMixerChannel target);}
 
 public enum MixerChannelKind
 {
@@ -214,5 +232,7 @@ public interface IMixerInsertFormat
     // 不可用时给一句原因（"仅 Windows" / "尚未实现"），直接显示在菜单里。
     string? UnavailableReason { get; }
 }
+
+
 
 

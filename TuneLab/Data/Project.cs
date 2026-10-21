@@ -96,6 +96,24 @@ internal class Project : DataObject, IProject
 
     public bool RemoveAux(AuxBus aux) => mAuxes.Remove(aux);
 
+    // [EP-MIXER-5] AUX 的位置调整（混音台轨道头右键）。与轨道同一套原语：
+    // RemoveAt + Insert 会走列表的增删通知，AudioEngine 的 AUX 集合跟着变，
+    // 混音图因此重建 —— 顺序变了，节点的下标也会变，必须重建。
+    public void RemoveAuxAt(int index)
+    {
+        if ((uint)index >= mAuxes.Count)
+            throw new ArgumentOutOfRangeException(nameof(index));
+
+        mAuxes.RemoveAt(index);
+    }
+
+    public void InsertAux(int index, AuxBus aux)
+    {
+        if ((uint)index > mAuxes.Count)
+            throw new ArgumentOutOfRangeException(nameof(index));
+
+        mAuxes.Insert(index, aux);
+    }
     void OnAuxAdded(AuxBus aux) => AudioEngine.AddAux(aux);
 
     void OnAuxRemoved(AuxBus aux) => AudioEngine.RemoveAux(aux);
@@ -174,5 +192,6 @@ internal class Project : DataObject, IProject
     readonly DataObjectList<AuxBus> mAuxes;
     int mAuxSeq;
 }
+
 
 

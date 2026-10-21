@@ -100,6 +100,133 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
             HostLog.Warning($"mixer: removed AUX '{bus.Name.Value}', {repointed} route(s) now go to Master");
     }
 
+    // ── 通道位置（轨道头右键菜单）──
+    //
+    // 顺序就是工程里的顺序（Project.Tracks / Project.Auxes），所以这里改的是数据，
+    // 主界面的轨道头会跟着变。两组各自独立：轨道置底只到轨道组末尾，不会排到 AUX 后面。
+
+    public bool CanMoveChannel(IMixerChannel channel, MixerChannelMove move)
+    {
+        int index = GroupIndexOf(channel);
+        if (index < 0)
+            return false;
+
+        int count = GroupCount(channel);
+
+        return move switch
+        {
+            MixerChannelMove.Up => index > 0,
+            MixerChannelMove.Down => index < count - 1,
+            MixerChannelMove.Top => index > 0,
+            MixerChannelMove.Bottom => index < count - 1,
+            _ => false,
+        };
+    }
+
+    public void MoveChannel(IMixerChannel channel, MixerChannelMove move)
+    {
+        int index = GroupIndexOf(channel);
+        if (index < 0)
+            return;
+
+        int count = GroupCount(channel);
+
+        int target = move switch
+        {
+            MixerChannelMove.Up => index - 1,
+            MixerChannelMove.Down => index + 1,
+            MixerChannelMove.Top => 0,
+            MixerChannelMove.Bottom => count - 1,
+            _ => index,
+        };
+
+        if (target < 0 || target >= count || target == index)
+            return;
+
+        MoveToIndex(channel, target);
+    }
+
+    public void MoveChannelTo(IMixerChannel channel, IMixerChannel target)
+    {
+        // 只在同组内：轨道不会因为"移动到某条 AUX 的位置"而跨组。
+        if (channel.Kind != target.Kind)
+            return;
+
+        int from = GroupIndexOf(channel);
+        int to = GroupIndexOf(target);
+
+        if (from < 0 || to < 0 || from == to)
+            return;
+
+        MoveToIndex(channel, to);
+    }
+
+    int GroupCount(IMixerChannel channel)
+        => channel.Kind == MixerChannelKind.Track ? mProject.Tracks.Count : mProject.Auxes.Count;
+
+    int GroupIndexOf(IMixerChannel channel)
+    {
+        if (channel is not MixerChannelBase basis)
+            return -1;
+
+        int index = 0;
+
+        if (channel.Kind == MixerChannelKind.Track)
+        {
+            foreach (var track in mProject.Tracks)
+            {
+                if (ReferenceEquals(track, basis.Data))
+                    return index;
+
+                index++;
+            }
+        }
+        else
+        {
+            foreach (var aux in mProject.Auxes)
+            {
+                if (ReferenceEquals(aux, basis.Data))
+                    return index;
+
+                index++;
+            }
+        }
+
+        return -1;
+    }
+
+    // 整段一个 merge 作用域：一次移动 = 一步 undo（RemoveAt + Insert 本来会记两步）。
+    void MoveToIndex(IMixerChannel channel, int target)
+    {
+        if (channel is not MixerChannelBase basis)
+            return;
+
+        int from = GroupIndexOf(channel);
+        if (from < 0 || from == target)
+            return;
+
+        mProject.BeginMergeNotify();
+        try
+        {
+            if (channel.Kind == MixerChannelKind.Track)
+            {
+                var track = (ITrack)basis.Data;
+                mProject.RemoveTrackAt(from);
+                mProject.InsertTrack(target, track);
+            }
+            else
+            {
+                var aux = (AuxBus)basis.Data;
+                mProject.RemoveAuxAt(from);
+                mProject.InsertAux(target, aux);
+            }
+        }
+        finally
+        {
+            mProject.EndMergeNotify();
+            mProject.Commit();
+        }
+    }
     public void Dispose()
     {
         mProject.Tracks.MembershipModified.Unsubscribe(OnMembershipModified);
@@ -302,6 +429,14 @@ internal sealed class MixerModelFacade : IMixerModel, IDisposable
     public void AddAux() => mInner.AddAux();
     public void RemoveAux(IMixerChannel aux) => mInner.RemoveAux(aux);
 
+    public bool CanMoveChannel(IMixerChannel channel, MixerChannelMove move)
+        => mInner.CanMoveChannel(channel, move);
+
+    public void MoveChannel(IMixerChannel channel, MixerChannelMove move)
+        => mInner.MoveChannel(channel, move);
+
+    public void MoveChannelTo(IMixerChannel channel, IMixerChannel target)
+        => mInner.MoveChannelTo(channel, target);
     public void Dispose()
     {
         mDocument.ProjectHolder.Modified.Unsubscribe(OnProjectReplaced);
@@ -928,3 +1063,5 @@ internal sealed class MixerInsertFormat(string name, bool isAvailable, string? u
     public bool IsAvailable => isAvailable;
     public string? UnavailableReason => unavailableReason;
 }
+
+
