@@ -854,10 +854,26 @@ Master 是"总轨"，效果器挂在它上面 = 总线效果。之前它的 `Add
 现在 Master 的插入槽位挂在 **`Project.MasterInserts`**（与 `Tracks` / `Auxes` 同级），
 所以 undo、落盘都跟着工程走：
 
-- `Project` 构造时创建并交给 `AudioEngine.SetMasterInserts(...)`，编译时挂到 master 节点；
+- `Project` 只负责**拥有**它；把它接进音频图是 `ProjectDocument` 的事（见下）；
 - 装载/保存走 payload 的 `MasterInserts`（老文件没有该字段 → 空列表，行为不变）；
 - `MixerMasterChannel.Inserts / AddInsert / RemoveInsert` 与轨道 / AUX 同一套适配器；
 - 界面上 Master 的 FX 按钮回来了，`canAdd` 也恢复成全局的 `SupportsInserts`。
+
+**接驳点为什么在 `ProjectDocument` 而不是 `Project`（2026-10-21 修）**
+
+一开始是 `Project` 构造时 `SetMasterInserts(自己)`、`Dispose` 时 `SetMasterInserts(null)`。
+结果是 **Master 轨的 FX「界面」键永远是灰的**：`InsertSlotAdapter.HasEditor` 要求
+`InsertInstanceFactory.TryGetLive(slotId)` 有活实例，而活实例只在编译时创建。指针一为空，
+master 节点就没有插入链，槽位永远没有实例。两条日常路径都会把它弄空：
+
+1. **打开另一个工程**：新 `Project` 先构造（挂上自己的列表），旧 `Project` 随后
+   `Dispose`（清成 null）—— 顺序决定结果，新工程的 Master 插入从此失联；
+2. **导入轨道**：`TrackScrollView` 为了拿 `TempoManager` 临时 `new Project(...)`，
+   直接把全局指针抢到一张马上被丢弃的列表上。
+
+现在改为：`Project` 只管创建/持有列表，`ProjectDocument` 在持有者切换时先
+`SetMasterInserts(null)`、再 `SetMasterInserts(Project?.MasterInserts)`。
+语义变成"**当前文档的工程**"，临时工程抢不走了。
 
 #### 5.7.16 通道位置调整（轨道头右键，2026-10-21）
 

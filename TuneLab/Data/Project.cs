@@ -44,7 +44,8 @@ internal class Project : DataObject, IProject
         // [EP-MIXER-19] Master 的插入链：Master 是"总轨"，效果器挂在它上面 = 总线效果。
         // 数据挂在 Project 上（与 Tracks/Auxes 同级），所以 undo / 落盘都跟着工程走。
         MasterInserts = new DataObjectList<InsertSlot>(this);
-        AudioEngine.SetMasterInserts(MasterInserts);
+        // 注意：**不要**在这里接进音频图。见 ProjectDocument：Master 插入跟随"当前文档的工程"，
+        // 而不是"最后一次 new 出来的 Project"——后者会被临时工程（导入轨道的 TempoManager 等）抢走。
         mTracks.ItemAdded.Subscribe(OnTrackAdded);
         mTracks.ItemRemoved.Subscribe(OnTrackRemoved);
         mAuxes.ItemAdded.Subscribe(OnAuxAdded);
@@ -174,8 +175,6 @@ internal class Project : DataObject, IProject
 
     public void Dispose()
     {
-        // 工程没了：Master 的插入链也从音频图摘掉（否则下一个工程会用上旧槽位）。
-        AudioEngine.SetMasterInserts(null);
         foreach (var track in mTracks)
         {
             track.Deactivate();
