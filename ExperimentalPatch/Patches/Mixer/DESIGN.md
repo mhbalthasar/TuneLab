@@ -801,6 +801,29 @@ PluginId，且 **Locator 没有重复** —— 也就是说同一份插件真的
 **做法**：按 `(格式, PluginId)` 去重，保留扫描顺序里的第一条（= 路径清单里靠前的那个）。
 两处都排：`Scan` 落盘前，以及 `CachedPlugins` 读取时（老缓存不重扫也能立刻变干净）。
 
+#### 5.7.15 切工程后 AUX 接线失效 / 改接线像卡死（2026-10-21）
+
+**症状**：打开另一个工程之后，轨道明明设成发往 AUX，声音却直接进 Master；再改一次
+接线会长时间卡住（音频断续）。
+
+**根因（三层，叠在一起）**：
+
+1. `AudioGraph` 是**进程级**的（`AudioEngine` 的静态成员），而 AUX 的 id 每个工程都从
+   `aux-1` 开始。`Project.Dispose()` 只 `Deactivate` 了轨道，**没有摘 AUX** ——
+   于是切一次工程，图里就多留一组旧的 `aux-1/aux-2…`。
+2. 新工程的 `aux-1` 与旧的撞 id，`MixGraphBuilder.AddNode` 抛
+   `duplicate node id`，整张图编译失败 → `SetSnapshot(null)` → **退回旧混音路径**。
+   旧路径没有 AUX 概念，所以"接线看起来设了、声音还是进 Master"。
+3. `RebuildMixerGraph` 在 `mTrackLockObject` **里面**编译，而编图会加载插件
+   （VST3 初始化、VST2 过桥，几十毫秒到几秒）。那个锁是音频回调每块都要拿的 ——
+   持锁编译会把音频线程整段钉住，听感就是卡死/爆音。
+
+**修法**：
+
+- `Project.Dispose()` 同时把 AUX 从音频图里摘掉（与轨道同一条纪律）；
+- 编译器遇到重复 id 只跳过并记日志，**绝不让整张图失败**（一张图建不出来比丢一条 AUX 严重）；
+- `AudioGraph` 只在锁里拷一份结构快照，编译与换快照都在锁外。
+
 #### 5.7.14 多平台：与 vendored 包装层对齐（2026-10-21）
 
 `OwnVST3.cs` 里已经写好了三平台的文件名：Windows `ownvst3.tlhost.dll`、
@@ -1169,6 +1192,7 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
 
 
 

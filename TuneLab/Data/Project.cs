@@ -153,6 +153,19 @@ internal class Project : DataObject, IProject
         {
             track.Deactivate();
         }
+
+        // [EP-MIXER-5] AUX 也必须从音频图里摘掉。
+        //
+        // AudioGraph 是**进程级**的（AudioEngine 的静态成员），而 AUX 的 id 每个工程都从
+        // aux-1 开始。只 Deactivate 轨道、不摘 AUX 的话，切一次工程图里就多留一组旧的
+        // aux-1/aux-2…；新工程的 aux-1 与它撞 id，MixGraphBuilder.AddNode 抛
+        // "duplicate node id"，整张图编译失败 → 退回旧混音路径 ——
+        // 表现就是"工程里的 AUX 接线全失效、声音直接进 Master"，而且每改一次接线都要
+        // 再编译一次、再失败一次（看起来像卡死）。
+        foreach (var aux in mAuxes)
+        {
+            AudioEngine.RemoveAux(aux);
+        }
     }
 
     TempoManager mTempoManager;
@@ -161,3 +174,5 @@ internal class Project : DataObject, IProject
     readonly DataObjectList<AuxBus> mAuxes;
     int mAuxSeq;
 }
+
+

@@ -152,6 +152,15 @@ internal static class ExperimentalPatchBootstrap
         // 与打开的工程无关，所以做成静态单例而不随工程重建。
         public IInsertPluginSettings InsertPlugins => sInsertPlugins;
 
+        // 混音台是独立窗口：焦点在它上面时按空格不会到主窗，补丁经这里透传回来。
+        public void TogglePlayback()
+        {
+            if (TuneLab.Audio.AudioEngine.IsPlaying)
+                TuneLab.Audio.AudioEngine.Pause();
+            else
+                TuneLab.Audio.AudioEngine.Play();
+        }
+
         static readonly InsertPluginSettings sInsertPlugins = new();
 
         // 插入实例的定位与插件扫描共用同一份清单：工厂按 PluginId 找 Locator 时先查缓存。
@@ -164,5 +173,7 @@ internal static class ExperimentalPatchBootstrap
         const string Prefix = "[ExperimentalPatch] ";
     }
 }
+
+
 
 

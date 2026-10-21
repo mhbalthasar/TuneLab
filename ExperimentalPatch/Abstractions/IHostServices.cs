@@ -1,4 +1,4 @@
-namespace TuneLab.ExperimentalPatch.Abstractions;
+﻿namespace TuneLab.ExperimentalPatch.Abstractions;
 
 // 宿主开给补丁的基础能力面。这是补丁能看到宿主的【全部】入口——刻意收窄，
 // 每多一个成员都等于多一处上游变更会波及补丁的耦合面，按需再加（见 .agents/AGENTS.md）。
@@ -32,4 +32,9 @@ public interface IHostServices
     // 插入效果器的插件扫描设置（宿主持有的本机设置 + 扫描缓存）。
     // 同样有默认实现：不接插入效果的宿主不该被迫实现它。
     IInsertPluginSettings? InsertPlugins => null;
+
+    // 播放/暂停（空格）。混音台是独立窗口，焦点在它上面时按键不会到主窗 ——
+    // 补丁侧经这里把"空格"透传回宿主。默认空实现，无头 harness 不必关心。
+    void TogglePlayback() { }
 }
+

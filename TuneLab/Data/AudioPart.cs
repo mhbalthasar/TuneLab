@@ -43,14 +43,9 @@ internal class AudioPart : Part, IAudioPart
 
     public override AudioPartInfo GetInfo()
     {
-        var path = Path.Value;
-        if (!string.IsNullOrEmpty(BaseDirectory.Value))
-        {
-            if (path.StartsWith(BaseDirectory.Value))
-            {
-                path = ".." + path[BaseDirectory.Value.Length..];
-            }
-        }
+        // [EP-MIXER-18] 路径格式收进单独的 Patcher（见 ExperimentalPatchAudioPartPath）：
+        // 旧写法在工程位于盘符根目录时会存出 ..Insts\…，重新打开定位必失败。
+        var path = ExperimentalPatchAudioPartPath.ToStored(Path.Value, BaseDirectory.Value);
 
         return new()
         {
@@ -136,7 +131,9 @@ internal class AudioPart : Part, IAudioPart
                 return;
             }
 
-            path = System.IO.Path.Combine(BaseDirectory.Value, path[3..]);
+            // [EP-MIXER-18] 统一交给 Patcher：它同时容忍老文件那种少了分隔符的
+            // ..Insts\…（见 ExperimentalPatchAudioPartPath 的注释）。
+            path = ExperimentalPatchAudioPartPath.FromStored(path, BaseDirectory.Value);
         }
         int samplingRate = AudioEngine.SampleRate.Value;
 
@@ -208,3 +205,5 @@ internal class AudioPart : Part, IAudioPart
 
     readonly ActionEvent mAudioChanged = new();
 }
+
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using TuneLab.Data;
@@ -49,6 +49,15 @@ internal sealed class MixerGraphCompiler
 
         foreach (var aux in auxList)
         {
+            // 防御：进程级的 AudioGraph 里若还留着上一个工程的 AUX（id 都从 aux-1 起），
+            // 这里会撞 id。撞了只跳过这一条并记日志，绝不让整张图编译失败 ——
+            // 一张图建不出来会退回旧混音路径，等于"所有接线突然失效"，比丢一条 AUX 严重得多。
+            if (nodes.ContainsKey(aux.Id))
+            {
+                HostLog.Warning($"mixer: duplicate aux id '{aux.Id}' (stale bus from a previous project?); skipped");
+                continue;
+            }
+
             var state = new AuxChannelState(aux);
             auxStates.Add(state);
             nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null,
@@ -304,3 +313,4 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
+

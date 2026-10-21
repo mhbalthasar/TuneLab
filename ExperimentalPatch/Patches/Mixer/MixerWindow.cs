@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -99,6 +99,17 @@ public sealed class MixerWindow : Window
 
         Content = BuildContent();
         LoadGeometry();
+
+        // 混音台是独立窗口：点进来之后焦点就在它上面，空格不会再传到主窗。
+        // 这里把它透传回宿主（补丁不直接碰 AudioEngine），播放/暂停照旧。
+        KeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Space)
+                return;
+
+            mHost.TogglePlayback();
+            e.Handled = true;
+        };
 
         mModel.ChannelsChanged += Rebuild;
         mModel.MetersUpdated += PumpMeters;
@@ -665,3 +676,4 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+

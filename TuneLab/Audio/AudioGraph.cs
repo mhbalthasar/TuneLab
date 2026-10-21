@@ -36,38 +36,34 @@ internal class AudioGraph()
     public void AddTrack(IAudioTrack track)
     {
         lock (mTrackLockObject)
-        {
             mTracks.Add(track);
-            RebuildSnapshot();
-        }
+
+        RebuildSnapshot();
     }
 
     public void RemoveTrack(IAudioTrack track)
     {
         lock (mTrackLockObject)
-        {
             mTracks.Remove(track);
-            RebuildSnapshot();
-        }
+
+        RebuildSnapshot();
     }
 
     // [EP-MIXER-5] AUX 总线：与轨并列的结构成员。
     public void AddAux(AuxBus aux)
     {
         lock (mTrackLockObject)
-        {
             mAuxes.Add(aux);
-            RebuildSnapshot();
-        }
+
+        RebuildSnapshot();
     }
 
     public void RemoveAux(AuxBus aux)
     {
         lock (mTrackLockObject)
-        {
             mAuxes.Remove(aux);
-            RebuildSnapshot();
-        }
+
+        RebuildSnapshot();
     }
 
     public void AddData(IAudioTrack track, int position, int endPosition, bool isStereo, float[] buffer, int offset)
@@ -186,23 +182,30 @@ internal class AudioGraph()
     }
 
     // [EP-MIXER-1] 结构变化（加删轨 / 加删 AUX / 改路由）才重建快照；推子/声像/静音是活值，每块现读。
-    internal void RebuildMixerGraph()
-    {
-        lock (mTrackLockObject)
-        {
-            RebuildSnapshot();
-        }
-    }
+    internal void RebuildMixerGraph() => RebuildSnapshot();
 
+    // 【不要在锁里编译】编图会**加载插件**（VST3 初始化、VST2 过桥），一次几十毫秒到几秒。
+    // 而 mTrackLockObject 是音频回调每块都要拿的锁 —— 持锁编译会把音频线程整段钉住，
+    // 听感是卡顿/爆音，严重时（插件加载里再去等 UI 线程）直接互相等死。
+    // 所以：锁里只拷一份结构快照，编译与换快照都在锁外。
     void RebuildSnapshot()
     {
+        IAudioTrack[] tracks;
+        AuxBus[] auxes;
+
+        lock (mTrackLockObject)
+        {
+            tracks = [.. mTracks];
+            auxes = [.. mAuxes];
+        }
+
         try
         {
-            mMixer.SetSnapshot(mCompiler.Compile(this, mTracks, mAuxes));
+            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes));
         }
         catch (Exception ex)
         {
-            // 图建不出来（理论上不该发生）→ 退回旧路径，至少还能出声。
+            // 图建不出来 → 退回旧路径，至少还能出声。
             mMixer.SetSnapshot(null);
             Log.Error("failed to build mixer graph: " + ex);
         }
@@ -238,3 +241,5 @@ internal class AudioGraph()
     readonly Mixer mMixer = new() { LimiterEnabled = true };
     readonly MixerGraphCompiler mCompiler = new();
 }
+
+
