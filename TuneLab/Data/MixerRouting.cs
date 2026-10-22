@@ -119,6 +119,18 @@ internal class InsertSlot : DataObject
     // 旁通 = 音频直通，槽位与顺序都不变。与"从链里删掉"是两件事。
     public DataProperty<bool> IsBypassed { get; }
 
+    // [EP-MIXER-23] 湿/干混合。1 = 全湿（默认，插件输出全部通过）；
+    // 0 = 全干（插件照样跑以保持内部状态，但输出完全用干信号）。
+    //
+    // 为什么全干时插件仍然要跑：混响的尾巴得继续衰减。直接旁通会掐断尾巴，
+    // 听感上是"突变"而不是"淡出"。
+    public DataProperty<double> Mix { get; }
+
+    // [EP-MIXER-23] 插入自身的增益微调（dB）。0 = 不变。
+    // 用来把插件的电平匹配回原位，否则 A/B 对比听到的差异里混着电平差，
+    // 人耳会把更响的那个当成更好的。
+    public DataProperty<double> GainDb { get; }
+
     // 插件的私有状态（getState 的原样字节）。null = 还没存过 / 插件没报状态。
     public byte[]? State { get; set; }
 
@@ -134,5 +146,10 @@ internal class InsertSlot : DataObject
         PluginId = new DataString(this, pluginId);
         Name = new DataString(this, name);
         IsBypassed = new DataStruct<bool>(this);
+
+        // 默认：全湿 + 0 dB 增益 = 包装器完全透明（一次乘法都不做）。
+        Mix = new DataStruct<double>(this);
+        GainDb = new DataStruct<double>(this);
+        Mix.SetInfo(1);
     }
 }

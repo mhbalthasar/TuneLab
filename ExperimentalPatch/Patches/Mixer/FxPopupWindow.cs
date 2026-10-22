@@ -11,6 +11,8 @@ using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
 using TuneLab.ExperimentalPatch.UI;
+using TuneLab.GUI.Components;
+using TuneLabSlider = TuneLab.GUI.Components.Slider;
 
 namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
@@ -412,7 +414,103 @@ public sealed class FxPopupWindow : Window
         row.Children.Add(bypass);
         row.Children.Add(editor);
         row.Children.Add(remove);
-        return row;
+
+        // ── 次级行：湿/干 + 增益微调（EP-MIXER-23）──
+        //
+        // 与主行分开的理由：主行已经满了（序号 + 名字 + ▲▼ + 旁通 + 界面 + 删除），
+        // 而这两个是"调好了就不动"的参数，放二级不容易误触。
+        // TuneLab 的 Slider 用 SetRange + ValueChanged（不是 Avalonia 的 Minimum/Maximum/Value），
+        // 与参数面板的用法一致 —— 同一套控件同一套手感。
+        var mixSlider = new TuneLabSlider
+        {
+            Height = 18,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(22, 0, 6, 0),
+        };
+        mixSlider.SetRange(0, 1);
+        mixSlider.Display(insert.Mix);
+        var mixReadout = new TextBlock
+        {
+            Text = FormatMix(insert.Mix),
+            FontSize = 9,
+            FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
+            Foreground = Palette.Brush(Palette.TextLabel),
+            VerticalAlignment = VerticalAlignment.Center,
+            Width = 40,
+        };
+        mixSlider.ValueChanged.Subscribe(() =>
+        {
+            double mix = mixSlider.Value;
+            insert.Mix = mix;
+            mixReadout.Text = FormatMix(mix);
+        });
+
+        var gainBox = new DraggableNumberBox
+        {
+            MinValue = -24,
+            MaxValue = 24,
+            Width = 56,
+            Height = 20,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 0, 0, 0),
+        };
+        gainBox.Display(insert.GainDb);
+        gainBox.ValueChanged.Subscribe(() =>
+        {
+            insert.GainDb = gainBox.Value;
+        });
+
+        var secondary = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,Auto,*,Auto,Auto") };
+        var mixLabel = new TextBlock
+        {
+            Text = L("湿/干", "Mix"),
+            FontSize = 9,
+            Foreground = Palette.Brush(Palette.TextLabel),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(22, 0, 4, 0),
+        };
+        var gainLabel = new TextBlock
+        {
+            Text = L("增益", "Trim"),
+            FontSize = 9,
+            Foreground = Palette.Brush(Palette.TextLabel),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 4, 0),
+        };
+        var gainUnit = new TextBlock
+        {
+            Text = "dB",
+            FontSize = 9,
+            Foreground = Palette.Brush(Palette.TextLabel),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(3, 0, 0, 0),
+        };
+
+        Grid.SetColumn(mixLabel, 0);
+        Grid.SetColumn(mixSlider, 1);
+        Grid.SetColumn(mixReadout, 2);
+        Grid.SetColumn(gainLabel, 3);
+        Grid.SetColumn(gainBox, 4);
+        Grid.SetColumn(gainUnit, 5);
+        secondary.Children.Add(mixLabel);
+        secondary.Children.Add(mixSlider);
+        secondary.Children.Add(mixReadout);
+        secondary.Children.Add(gainLabel);
+        secondary.Children.Add(gainBox);
+        secondary.Children.Add(gainUnit);
+
+        var panel = new StackPanel { Spacing = 2 };
+        panel.Children.Add(row);
+        panel.Children.Add(secondary);
+        return panel;
+    }
+
+    // 湿/干读数：0% / 100% 是整数，其余四舍五入到 5% 的倍数 ——
+    // 百分比精度再高也没有听感意义，反而让读数抖个不停。
+    static string FormatMix(double mix)
+    {
+        int percent = (int)Math.Round(mix * 100);
+        return percent + "%";
     }
 
     protected override void OnClosed(EventArgs e)
@@ -424,6 +522,7 @@ public sealed class FxPopupWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
 
 
 

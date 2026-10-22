@@ -164,7 +164,31 @@ internal sealed class MixerGraphCompiler
                 continue;
             }
 
-            chain.Add(insert);
+            // [EP-MIXER-23] 湿/干与增益微调包在外面。包装顺序是**有意的**：
+            // 增益在湿/干**之后** —— trim 作用在混合后的信号上。
+            //
+            // 为什么这样定：trim 的用途是"这个插入让电平变了，把它调回原位"。
+            // 那个"变了"的量本来就是混合后的结果，所以 trim 也该在混合之后。
+            // 反过来（trim 只作用在湿信号上）意味着 mix = 0 时 trim 完全失效 ——
+            // 用户把 mix 从 0.5 拖到 0，插入的电平匹配突然就不起作用了，
+            // 这正是"旋钮在某个位置莫名失效"的典型投诉。
+            //
+            // 两个包装器在默认值上都是完全透明的（mix = 1 时连干信号拷贝都跳过，
+            // gain = 0 dB 时连一次乘法都不做），所以"没用这两个功能"的工程
+            // 与旧路径逐位相同。
+            IMixInsert wrapped = insert;
+
+            if (slot.Mix.Value < 1)
+                wrapped = new WetDryInsert(wrapped, factory.MaxBlockSize) { Mix = (float)slot.Mix.Value };
+
+            if (slot.GainDb.Value != 0)
+                wrapped = new TrimInsert(wrapped, slot.GainDb.Value);
+
+            // 登记链上那一环：界面上改 mix / 增益时要能推到正在跑的包装器
+            // （不必重建图，与旁通、send 推子同一条纪律）。
+            factory.RegisterWrapped(slot.Id, wrapped);
+
+            chain.Add(wrapped);
         }
 
         return chain;
@@ -361,6 +385,7 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
+
 
 
 

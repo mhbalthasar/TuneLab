@@ -34,7 +34,8 @@ internal static class MixerMetrics
     public const double PopupRowHeight = 30;
 
     // 插入效果浮窗的行更高：一行里有旁通/界面/删除三个键，挤在 30 里会贴边。
-    public const double FxRowHeight = 40;
+    // EP-MIXER-23 之后是**两条子行**（主行 + 湿/干·增益行），所以 = 40 + 24。
+    public const double FxRowHeight = 64;
 
     // send 浮窗的一行 = 增益子行 + pre/post·pan·mute 子行。两条都按 30 算，
     // 中间 2 的间距由 StackPanel 出 —— 所以这里是 62。

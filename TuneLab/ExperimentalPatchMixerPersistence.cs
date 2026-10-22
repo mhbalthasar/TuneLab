@@ -303,6 +303,11 @@ internal static class MixerPersistence
 
             slot.IsBypassed.SetInfo(dto.Bypass);
 
+            // [EP-MIXER-23] 湿/干与增益微调。老工程没有这两个字段 →
+            // DTO 的缺省值（全湿 + 0 dB）= 包装器透明，与旧行为一致。
+            slot.Mix.SetInfo(dto.Mix);
+            slot.GainDb.SetInfo(dto.GainDb);
+
             if (!string.IsNullOrEmpty(dto.State))
             {
                 try
@@ -393,6 +398,10 @@ internal static class MixerPersistence
                 State = slot.State == null || slot.State.Length == 0
                     ? null
                     : Convert.ToBase64String(slot.State),
+
+                // [EP-MIXER-23] 湿/干与增益微调
+                Mix = slot.Mix.Value,
+                GainDb = slot.GainDb.Value,
             });
         }
 
@@ -484,6 +493,11 @@ internal static class MixerPersistence
         public string? Name { get; set; }
         public bool Bypass { get; set; }
         public string? State { get; set; }
+
+        // [EP-MIXER-23] 湿/干与增益微调。缺省值 = 全湿 + 0 dB（= 包装器透明），
+        // 所以老工程读进来与旧行为一致。
+        public double Mix { get; set; } = 1;
+        public double GainDb { get; set; }
     }
 
     class RouteDto

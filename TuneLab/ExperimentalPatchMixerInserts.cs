@@ -26,6 +26,10 @@ namespace TuneLab.Audio;
 internal sealed class InsertInstanceFactory
 {
     readonly Dictionary<string, IMixInsert> mLive = [];
+
+    // [EP-MIXER-23] 链上那一环（湿/干 / 增益微调包装后的）。与 mLive 分开：
+    // mLive 面向"插件本身"，这张表面向"图里跑的那一环"。
+    readonly Dictionary<string, object> mWrapped = [];
     readonly Vst3Backend mVst3 = new();
     readonly Vst2Backend mVst2 = new();
 
@@ -167,6 +171,38 @@ internal sealed class InsertInstanceFactory
             insert.SetBypassed(bypassed);
     }
 
+    // [EP-MIXER-23] 湿/干是活值：写进图里那个包装器。
+    //
+    // 【为什么另建一张表】`mLive` 存的是工厂造出的**裸插件**（编辑器、参数面板、
+    // 旁通都要用它），而湿/干包装器是编译期包在外面的那一层，只活在混音图里。
+    // 两个表分开：一个面向"插件本身"，一个面向"链上那一环"。
+    //
+    // 【查不到怎么办】静默返回。编译还没发生过（工程刚打开、还没播过）时包装器
+    // 不存在，这完全正常 —— 下一次编图会用数据槽位里的当前值建包装器。
+    public void SetMix(string slotId, double mix)
+    {
+        if (mWrapped.TryGetValue(slotId, out var wrapper) && wrapper is WetDryInsert wet)
+            wet.Mix = (float)mix;
+    }
+
+    public void SetGainDb(string slotId, double gainDb)
+    {
+        if (mWrapped.TryGetValue(slotId, out var wrapper) && wrapper is TrimInsert trim)
+            trim.GainDb = gainDb;
+    }
+
+    /// <summary>编译期把链上那一环登记进来（湿/干 / 增益微调要能推给它）。</summary>
+    public void RegisterWrapped(string slotId, IMixInsert wrapped)
+    {
+        mWrapped[slotId] = wrapped;
+    }
+
+    /// <summary>槽位被图放弃了：包装器一起丢掉（下一次编图会重建）。</summary>
+    public void UnregisterWrapped(string slotId)
+    {
+        mWrapped.Remove(slotId);
+    }
+
     /// <summary>某个槽位的实例被图放弃了：先关编辑器，再放掉原生句柄。</summary>
     public void Release(string slotId)
     {
@@ -283,6 +319,34 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
             // 只写数据的话，旁通要等下一次结构变化才生效 —— 用户按下去就是"没反应"。
             slot.IsBypassed.Set(value);
             factory.SetBypassed(slot.Id, value);
+            Changed?.Invoke();
+        }
+    }
+
+    // [EP-MIXER-23] 湿/干与增益微调。与旁通不同：这两个是**每块现读**的活值，
+    // 不需要重建图 —— 写进数据槽位（undo / 落盘）就够了，音频线程下一块就看到。
+    // 前提是编译期建的包装器还活着，而它确实活着：包装器包着插件实例，
+    // 实例由工厂持有，与图同寿命。
+    public double Mix
+    {
+        get => slot.Mix.Value;
+        set
+        {
+            slot.Mix.Set(value);
+
+            // 活值：直接推到正在跑的包装器上，不必等下一次编图。
+            factory.SetMix(slot.Id, value);
+            Changed?.Invoke();
+        }
+    }
+
+    public double GainDb
+    {
+        get => slot.GainDb.Value;
+        set
+        {
+            slot.GainDb.Set(value);
+            factory.SetGainDb(slot.Id, value);
             Changed?.Invoke();
         }
     }

@@ -347,6 +347,11 @@ internal sealed class MixerChannelStrip : UserControl
         mMeter.Width = mIsMaster ? 26 : StereoMeter.CompactWidth;
         mMeter.Margin = new Thickness(2, 0, 0, 0);
 
+        // 点电平表 = 复位峰值保持线。这是硬件台的肌肉记忆（按一下 Clear 归零），
+        // 而且峰值保持线是**纯视图状态**，复位它不该碰任何工程数据、不该进 undo。
+        mMeter.Cursor = new Cursor(StandardCursorType.Hand);
+        mMeter.PointerPressed += OnMeterPressed;
+
         var grid = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,Auto"),
@@ -358,6 +363,15 @@ internal sealed class MixerChannelStrip : UserControl
         grid.Children.Add(mFader);
         grid.Children.Add(mMeter);
         return grid;
+    }
+
+    void OnMeterPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        mMeter.Reset();
+        e.Handled = true;
     }
 
     Control BuildReadout()
