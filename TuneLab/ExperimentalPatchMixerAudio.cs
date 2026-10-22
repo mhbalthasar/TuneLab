@@ -107,7 +107,7 @@ internal sealed class MixerGraphCompiler
             builder.Connect(node, Resolve(track.Output));
 
             foreach (var send in track.Sends)
-                builder.Connect(node, Resolve(send.Target.Value), 1f, 0, new SendEdgeGain(send));
+                builder.Connect(node, Resolve(send.Target.Value), 1f, 0, new SendEdgeGain(send), send.IsPreFader.Value);
         }
 
         foreach (var aux in auxList)
@@ -117,7 +117,7 @@ internal sealed class MixerGraphCompiler
             builder.Connect(node, Resolve(aux.Output.Value));
 
             foreach (var send in aux.Sends)
-                builder.Connect(node, Resolve(send.Target.Value), 1f, 0, new SendEdgeGain(send));
+                builder.Connect(node, Resolve(send.Target.Value), 1f, 0, new SendEdgeGain(send), send.IsPreFader.Value);
         }
 
         var snapshot = builder.Build();
@@ -224,10 +224,39 @@ internal sealed class MixerGraphCompiler
     }
 }
 
-// 一条 send 的活增益：读 Send.Gain（dB）现换算成线性。
+// 一条 send 的活增益：读 Send 的四个字段现算（dB → 线性、声向、静音）。
+//
+// 为什么左右分开算：send 可以有自己的声向（与通道条那个无关）。同一路送进两个 AUX 时，
+// 一个偏左一个偏右，不必拆两条轨道。公式与通道条同构：l = v(1−p)、r = v(1+p)，
+// 这样 pan 在正中央时左右都是 v，与"没有声向"逐位相同。
 internal sealed class SendEdgeGain(Send send) : IMixEdgeGain
 {
     public float Gain => (float)MusicTheory.dB2Level(send.Gain.Value);
+
+    public float LeftGain
+    {
+        get
+        {
+            if (send.IsMute.Value)
+                return 0f;
+
+            return (float)(MusicTheory.dB2Level(send.Gain.Value) * (1 - send.Pan.Value));
+        }
+    }
+
+    public float RightGain
+    {
+        get
+        {
+            if (send.IsMute.Value)
+                return 0f;
+
+            return (float)(MusicTheory.dB2Level(send.Gain.Value) * (1 + send.Pan.Value));
+        }
+    }
+
+    // 静音直接跳过整条边 —— 不给目标贡献任何东西，连"写 0"都不做。
+    public bool IsSilent => send.IsMute.Value;
 }
 
 // 一条轨的活状态：直接读 Track，不做缓存（单一真相源）。
@@ -332,6 +361,7 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
+
 
 
 

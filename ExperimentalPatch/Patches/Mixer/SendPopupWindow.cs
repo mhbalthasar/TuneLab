@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls;
@@ -202,6 +202,11 @@ public sealed class SendPopupWindow : Window
         mRows.IsVisible = mChannel.Sends.Count > 0;
     }
 
+    // 一行 send：目标名 / 增益 / 读数，下面一小排 pre/post、声向、静音。
+    //
+    // 为什么分两行：一行放不下（名字 + 滑杆 + 读数 + 三个开关 + 删除键），
+    // 而且 pre/post、pan、mute 是次级信息，跟增益分开更不容易误触。
+    // 高度用 MixerMetrics.SendRowHeight（两条子行合计），别和 strip 上的行高混用。
     Control BuildRow(IMixerSend send)
     {
         var name = new TextBlock
@@ -231,7 +236,7 @@ public sealed class SendPopupWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
         };
 
-        var remove = new ChromeButton { Text = "✕", Width = 18, Height = 18, HoverColor = Palette.CloseHover, Margin = new Thickness(4, 0, 0, 0) };
+        var remove = new ChromeButton { Text = "X", Width = 18, Height = 18, HoverColor = Palette.CloseHover, Margin = new Thickness(4, 0, 0, 0) };
         remove.Click += () => mChannel.RemoveSend(send);
 
         slider.ValueEdited += value =>
@@ -240,17 +245,83 @@ public sealed class SendPopupWindow : Window
             readout.Text = Controls.Fader.FormatDb(value);
         };
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("64,*,44,20"), Height = MixerMetrics.PopupRowHeight };
+        var top = new Grid { ColumnDefinitions = new ColumnDefinitions("64,*,44,20"), Height = MixerMetrics.PopupRowHeight };
         Grid.SetColumn(name, 0);
         Grid.SetColumn(slider, 1);
         Grid.SetColumn(readout, 2);
         Grid.SetColumn(remove, 3);
-        row.Children.Add(name);
-        row.Children.Add(slider);
-        row.Children.Add(readout);
-        row.Children.Add(remove);
-        return row;
+        top.Children.Add(name);
+        top.Children.Add(slider);
+        top.Children.Add(readout);
+        top.Children.Add(remove);
+
+        // ---- 次级行：pre/post、声向、静音 ----
+        var pre = new MixerToggle
+        {
+            Text = send.IsPreFader ? "PRE" : "POST",
+            IsChecked = send.IsPreFader,
+            CheckedColor = Palette.HighLight,
+            Width = 46,
+            Height = 18,
+        };
+        pre.Toggled += on =>
+        {
+            send.IsPreFader = on;
+            pre.Text = on ? "PRE" : "POST";
+        };
+
+        var pan = new PanKnob
+        {
+            Value = send.Pan,
+            Width = 30,
+            Height = 30,
+        };
+
+        var panReadout = new TextBlock
+        {
+            Text = FormatPan(send.Pan),
+            FontSize = 9,
+            FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
+            Foreground = Palette.Brush(Palette.TextLabel),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 6, 0),
+        };
+
+        pan.PanEdited += value =>
+        {
+            send.Pan = value;
+            panReadout.Text = FormatPan(value);
+        };
+
+        var mute = new MixerToggle
+        {
+            Text = "M",
+            IsChecked = send.IsMute,
+            CheckedColor = Palette.MuteChecked,
+            Width = 24,
+            Height = 18,
+        };
+        mute.Toggled += on => send.IsMute = on;
+
+        var bottom = new Grid { ColumnDefinitions = new ColumnDefinitions("46,Auto,Auto,24,*") };
+        Grid.SetColumn(pre, 0);
+        Grid.SetColumn(pan, 1);
+        Grid.SetColumn(panReadout, 2);
+        Grid.SetColumn(mute, 3);
+        bottom.Children.Add(pre);
+        bottom.Children.Add(pan);
+        bottom.Children.Add(panReadout);
+        bottom.Children.Add(mute);
+
+        var panel = new StackPanel { Spacing = 2 };
+        panel.Children.Add(top);
+        panel.Children.Add(bottom);
+        return panel;
     }
+
+    // 与通道条的声向读数同一口径：中央 C，两边 L20..R20。
+    static string FormatPan(double pan)
+        => Math.Abs(pan) < 0.02 ? "C" : (pan < 0 ? "L" : "R") + Math.Round(Math.Abs(pan) * 20);
 
     protected override void OnClosed(EventArgs e)
     {

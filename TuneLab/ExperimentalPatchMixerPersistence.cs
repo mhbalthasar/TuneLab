@@ -272,6 +272,12 @@ internal static class MixerPersistence
             var send = new Send(list);
             send.Target.SetInfo(FromDto(dto));
             send.Gain.SetInfo(dto.Gain);
+
+            // [EP-MIXER-21] 老工程的 send 只有 Target + Gain，新字段取默认值 ——
+            // post-fader / 声向居中 / 不静音，与旧行为逐项一致。
+            send.IsPreFader.SetInfo(dto.IsPreFader);
+            send.Pan.SetInfo(dto.Pan);
+            send.IsMute.SetInfo(dto.IsMute);
             list.Add(send);
         }
     }
@@ -332,6 +338,11 @@ internal static class MixerPersistence
                 Id = send.Target.Value.Id ?? string.Empty,
                 Name = send.Target.Value.Name ?? string.Empty,
                 Gain = send.Gain.Value,
+
+                // [EP-MIXER-21] send 的推子前/后、声向、静音
+                IsPreFader = send.IsPreFader.Value,
+                Pan = send.Pan.Value,
+                IsMute = send.IsMute.Value,
             });
         }
 
@@ -485,8 +496,14 @@ internal static class MixerPersistence
     sealed class SendDto : RouteDto
     {
         public double Gain { get; set; }
+
+        // [EP-MIXER-21] send 的推子前/后、声向、静音
+        public bool IsPreFader { get; set; }
+        public double Pan { get; set; }
+        public bool IsMute { get; set; }
     }
 }
+
 
 
 

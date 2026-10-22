@@ -118,8 +118,23 @@ public sealed class Mixer
                 else
                 {
                     // 与宿主旧路径同一公式、同一顺序：lv = v(1−p)、rv = v(1+p)。
-                    float left = (float)(state.Volume * (1 - state.Pan));
-                    float right = (float)(state.Volume * (1 + state.Pan));
+                    //
+                    // 有 pre-fader 的 send 时**不能**在这里折叠推子 —— 那条 send 要读
+                    // 推子之前的信号。改用 unity 读，推子留到 TapPreFader 之后再上
+                    // （见下面 "pre-fader 的 send 要在推子之前取走信号" 那段）。
+                    float left;
+                    float right;
+
+                    if (node.HasPreFaderOutput)
+                    {
+                        left = 1f;
+                        right = 1f;
+                    }
+                    else
+                    {
+                        left = (float)(state.Volume * (1 - state.Pan));
+                        right = (float)(state.Volume * (1 + state.Pan));
+                    }
 
                     // 提前播放的补偿（DESIGN.md §3.11）：延迟插件使 out[t] = source[t−X]，
                     // 于是播放头走到 t 时听到的是 t−X 的内容。读 t+X 就把它拉回 t。
@@ -163,6 +178,22 @@ public sealed class Mixer
             if (!hasSignal)
                 continue;
 
+            // pre-fader 的 send 要在推子之前取走信号，所以推子必须**现在**才上：
+            // 旧路径把推子折进 Source.AddData 的左右增益里，那样 buffer 一诞生就带推子，
+            // 再也取不回推子前的信号。没有 pre-fader 边时走折叠路径，与旧版逐位相同。
+            //
+            // 顺序：先 tap（读未推子的 target）→ 再上推子 → 插入链 → post-fader 分发。
+            bool hasPreFader = TapPreFader(node, runtime, i, target, targetOffset, count);
+
+            if (hasPreFader)
+            {
+                // 有 pre-fader 边：推子现在才上（Track 连声向一起，AUX 复用 ApplyGain）。
+                if (node.Kind == MixNodeKind.Track)
+                    ApplyTrackFader(node.State, target, targetOffset, count);
+                else if (node.Kind == MixNodeKind.Aux)
+                    ApplyGain(node.State, target, targetOffset, count);
+            }
+
             // 插入链：在推子之后、分发之前就地处理（DESIGN.md §3.2）。
             // 跳过旁通的插入：**旁通是活值**（写入后下一块就生效），引擎这里每块现读一次
             // IsBypassed，所以按状态直接 continue。实现方仍然应该自己判直通路径 ——
@@ -180,17 +211,27 @@ public sealed class Mixer
             for (int e = 0; e < edges.Count; e++)
             {
                 var edge = edges[e];
+
+                // pre-fader 的边已经在 TapPreFader 里取过了，这里跳过（否则一份信号送两遍）。
+                if (edge.IsPreFader)
+                    continue;
+
                 var destination = runtime.Buffers[edge.TargetIndex];
                 const int destinationOffset = 0;
-                float gain = edge.CurrentGain;
+
+                // 这条 send 被静音 → 整条边跳过（不给目标贡献任何东西）。
+                if (edge.IsEdgeSilent)
+                    continue;
 
                 if (edge.DelaySamples > 0)
                 {
-                    runtime.DelayLines[i][e]!.Process(target, targetOffset, destination, destinationOffset, count, gain);
+                    runtime.DelayLines[i][e]!.Process(target, targetOffset, destination, destinationOffset, count,
+                        edge.LeftGain, edge.RightGain);
                 }
                 else
                 {
-                    Accumulate(target, targetOffset, destination, destinationOffset, count, gain);
+                    Accumulate(target, targetOffset, destination, destinationOffset, count,
+                        edge.LeftGain, edge.RightGain);
                 }
             }
         }
@@ -201,7 +242,7 @@ public sealed class Mixer
         for (int i = 0; i < nodes.Count; i++)
         {
             if (IsSink(nodes[i]))
-                Accumulate(runtime.Buffers[i], 0, output, outputOffset, count, 1f);
+                Accumulate(runtime.Buffers[i], 0, output, outputOffset, count, 1f, 1f);
         }
     }
 
@@ -260,6 +301,70 @@ public sealed class Mixer
             runtime.Hpf[nodeIndex].Process(buffer, offset, count, SampleRate, hpf);
     }
 
+    // Track 的推子 + 声向。与 ApplyGain 同一公式，单独一个方法是因为调用点不同：
+    // 有 pre-fader 边时它必须在 tap 之后才跑（旧路径是折进 AddData 的增益里的）。
+    static void ApplyTrackFader(IMixChannelState? state, float[] buffer, int offset, int count)
+    {
+        if (state == null)
+            return;
+
+        float left = (float)(state.Volume * (1 - state.Pan));
+        float right = (float)(state.Volume * (1 + state.Pan));
+
+        if (left == 1f && right == 1f)
+            return;
+
+        for (int i = 0; i < count; i++)
+        {
+            buffer[offset + i * 2] *= left;
+            buffer[offset + i * 2 + 1] *= right;
+        }
+    }
+
+    // 把这条节点上所有 pre-fader 的边在这一块里取走信号。
+    //
+    // 【为什么单独一遍】post-fader 的边在函数末尾统一分发（读的是推子后的 buffer）；
+    // pre-fader 的边必须在推子之前读，所以只能在这里先走一遍。两条路读的是同一份
+    // target，只是时机不同。
+    //
+    // 【返回值】有没有 pre-fader 边。false = 调用方走原来的折叠路径（推子折进 AddData），
+    // 这样"没有任何 pre-fader send"的工程与旧版逐位相同。
+    static bool TapPreFader(MixNode node, Runtime runtime, int nodeIndex, float[] source, int sourceOffset, int count)
+    {
+        var edges = node.Outputs;
+
+        bool any = false;
+        for (int e = 0; e < edges.Count; e++)
+        {
+            if (!edges[e].IsPreFader)
+                continue;
+
+            any = true;
+
+            var edge = edges[e];
+
+            // 静音的 send 整条边跳过（与 post-fader 那条同样的规矩）。
+            if (edge.IsEdgeSilent)
+                continue;
+
+            var destination = runtime.Buffers[edge.TargetIndex];
+            const int destinationOffset = 0;
+
+            if (edge.DelaySamples > 0)
+            {
+                runtime.DelayLines[nodeIndex][e]!.Process(source, sourceOffset, destination, destinationOffset, count,
+                    edge.LeftGain, edge.RightGain);
+            }
+            else
+            {
+                Accumulate(source, sourceOffset, destination, destinationOffset, count,
+                    edge.LeftGain, edge.RightGain);
+            }
+        }
+
+        return any;
+    }
+
     static void ApplyGain(IMixChannelState? state, float[] buffer, int offset, int count)
     {
         if (state == null)
@@ -279,19 +384,32 @@ public sealed class Mixer
         }
     }
 
-    static void Accumulate(float[] source, int sourceOffset, float[] destination, int destinationOffset, int count, float gain)
+    static void Accumulate(float[] source, int sourceOffset, float[] destination, int destinationOffset, int count,
+        float leftGain, float rightGain)
     {
-        int samples = count * 2;
+        if (leftGain == rightGain)
+        {
+            float gain = leftGain;
+            int samples = count * 2;
 
-        if (gain == 1f)
-        {
-            for (int i = 0; i < samples; i++)
-                destination[destinationOffset + i] += source[sourceOffset + i];
+            if (gain == 1f)
+            {
+                for (int i = 0; i < samples; i++)
+                    destination[destinationOffset + i] += source[sourceOffset + i];
+            }
+            else
+            {
+                for (int i = 0; i < samples; i++)
+                    destination[destinationOffset + i] += source[sourceOffset + i] * gain;
+            }
+
+            return;
         }
-        else
+
+        for (int i = 0; i < count; i++)
         {
-            for (int i = 0; i < samples; i++)
-                destination[destinationOffset + i] += source[sourceOffset + i] * gain;
+            destination[destinationOffset + i * 2] += source[sourceOffset + i * 2] * leftGain;
+            destination[destinationOffset + i * 2 + 1] += source[sourceOffset + i * 2 + 1] * rightGain;
         }
     }
 

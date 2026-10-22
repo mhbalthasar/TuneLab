@@ -13,17 +13,36 @@ internal readonly record struct MixerRoute(MixerOutputKind Kind, string Id, stri
     public static MixerRoute Master => new(MixerOutputKind.Master, "master", "Master");
 }
 
-// 一条 send：目的地 + 自己的增益（dB，post-fader）。
-// 挂在轨或 AUX 上；加删走 DataObjectList（一步 undo），改增益走 DataProperty（一步 undo）。
+// 一条 send：目的地 + 自己的增益（dB）+ 推子前/后 + 声向 + 静音。
+// 挂在轨或 AUX 上；加删走 DataObjectList（一步 undo），改字段走 DataProperty（一步 undo）。
 internal class Send : DataObject
 {
     public DataProperty<MixerRoute> Target { get; }
+
+    // dB，-∞..+12。0 = 原样推送。
     public DataProperty<double> Gain { get; }
+
+    // true = 推子前（pre-fader）：不受本通道推子影响。
+    //
+    // 为什么两种都要：post-fader（默认）拉低推子 send 也跟着小 —— 做混响尾音时
+    // 一拉推子尾音就断了；pre-fader 保持独立，推子只影响直达声。侧链总线、
+    // 耳机混音都依赖 pre-fader。引擎侧见 MixEdge.IsPreFader。
+    public DataProperty<bool> IsPreFader { get; }
+
+    // -1..+1，0 = 中央。send 自己的声向（与通道条那个无关）——
+    // 把同一路送进两个 AUX 时，可以一个偏左一个偏右，不必拆两条轨道。
+    public DataProperty<double> Pan { get; }
+
+    // true = 这条 send 自己哑掉（不影响同通道的其他 send）。
+    public DataProperty<bool> IsMute { get; }
 
     public Send(IDataObject parent) : base(parent)
     {
         Target = new DataStruct<MixerRoute>(this);
         Gain = new DataStruct<double>(this);
+        IsPreFader = new DataStruct<bool>(this);
+        Pan = new DataStruct<double>(this);
+        IsMute = new DataStruct<bool>(this);
     }
 }
 

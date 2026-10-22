@@ -891,6 +891,39 @@ PluginScanner.ScanAsync(PluginFormat.Vst3, ScanMode.Full)
 
 完整实测记录（含边界组合表）在 `NOTES-vst3-vendor.md`。
 
+#### 5.7.26 send 的 pre/post、声向、静音（2026-10-22）
+
+`Send` 原来只有 `Target + Gain`，且固定 post-fader。现在四个字段：
+`Target` / `Gain` / `IsPreFader` / `Pan` / `IsMute`。
+
+**为什么要 pre-fader**：post-fader 的 send 跟着通道推子一起变小 —— 做混响尾音时
+一拉推子尾音就断了，而那里要的正是"直达声下去、尾音留着"。反过来，侧链总线与
+耳机混音又必须用 pre-fader（它们的输入不能受推子影响）。两种都是真实需求。
+
+**为什么 send 要有自己的声向**：把同一路送进两个 AUX 时（比如一个管混响、一个管延迟），
+常常想要一个偏左一个偏右。以前只能拆两条轨道，现在 send 自己带 pan 就行。
+公式与通道条同构：`l = v(1−p)`、`r = v(1+p)`，所以 pan 居中时与"没有声向"逐位相同。
+
+**引擎侧的关键决定**：pre-fader 的抽头必须能读到**推子之前**的信号。旧路径把推子折进
+`Source.AddData` 的左右增益里（`lv = v(1−p)`、`rv = v(1+p)`），那样 buffer 一诞生
+就带推子，再也取不回推子前的值。所以：
+
+- `MixNode.HasPreFaderOutput`（建图时算一次，音频线程只读）决定走哪条路；
+- 有 pre-fader 边时 `AddData` 用 unity 读，推子留到 tap 之后才上；
+- 没有 pre-fader 边时**完全走旧的折叠路径** —— 这是 DESIGN.md §7.2 的硬验收：
+  退化图与无混音器的旧渲染逐位相同（`DegenerateGraph_IsBitIdenticalToLegacyMix` 钉住）。
+
+`IMixEdgeGain` 因此多了 `LeftGain` / `RightGain` / `IsSilent` 三个成员，都带 DIM 默认值
+（分别 = `Gain` / `Gain` / `false`），所以已有的实现（测试替身）不受影响。
+
+**一个真实的坑**：post-fader 的分发循环原先遍历节点所有出边。加上 pre-fader 之后
+必须 `if (edge.IsPreFader) continue;` —— 否则同一条边被取两遍，AUX 收到双份信号。
+`MixerSendStageTests` 里 `PreFaderSend_IgnoresTheChannelFader` 断言的是精确值，
+双份会立刻浮出来（0.5005 而不是 0.5）。
+
+落盘走 `SendDto` 的新字段；老工程没有它们 → 缺省值 = post-fader / 居中 / 不静音，
+与旧行为逐项一致。
+
 #### 5.7.24 乐器不进 FX 目录（2026-10-21）
 
 插件的"是不是乐器"一直是有记录的（`InsertPluginEntry.IsInstrument`：VST3 看二进制的

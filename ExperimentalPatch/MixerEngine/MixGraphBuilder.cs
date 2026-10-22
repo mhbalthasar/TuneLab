@@ -51,7 +51,7 @@ public sealed class MixGraphBuilder
         }
     }
 
-    internal readonly record struct EdgeDraft(NodeDraft Target, float Gain, int DelaySamples, IMixEdgeGain? LiveGain);
+    internal readonly record struct EdgeDraft(NodeDraft Target, float Gain, int DelaySamples, IMixEdgeGain? LiveGain, bool IsPreFader);
 
     readonly List<NodeDraft> mNodes = [];
 
@@ -72,7 +72,9 @@ public sealed class MixGraphBuilder
 
     // gain 是线性增益；delaySamples 是这条边要补的延迟（PDC，M6 起才会非零）。
     // liveGain 非 null 时以它为准（send 的推子），从而拖推子不必重建图。
-    public void Connect(NodeDraft from, NodeDraft to, float gain = 1f, int delaySamples = 0, IMixEdgeGain? liveGain = null)
+    // isPreFader = true 表示这条边在推子之前取信号（pre-fader send，见 MixEdge.IsPreFader）。
+    public void Connect(NodeDraft from, NodeDraft to, float gain = 1f, int delaySamples = 0,
+        IMixEdgeGain? liveGain = null, bool isPreFader = false)
     {
         ArgumentNullException.ThrowIfNull(from);
         ArgumentNullException.ThrowIfNull(to);
@@ -83,7 +85,7 @@ public sealed class MixGraphBuilder
         if (delaySamples < 0)
             throw new ArgumentOutOfRangeException(nameof(delaySamples));
 
-        from.Edges.Add(new EdgeDraft(to, gain, delaySamples, liveGain));
+        from.Edges.Add(new EdgeDraft(to, gain, delaySamples, liveGain, isPreFader));
     }
 
     public MixSnapshot Build()
@@ -218,7 +220,7 @@ public sealed class MixGraphBuilder
                 int target = topoIndex[edge.Target];
                 int delay = maxLatency - own[i] - down[edge.Target.Index];
 
-                list.Add(new MixEdge(target, edge.Gain, Math.Max(0, delay), edge.LiveGain));
+                list.Add(new MixEdge(target, edge.Gain, Math.Max(0, delay), edge.LiveGain, edge.IsPreFader));
             }
 
             nodes.Add(new MixNode(draft.Id, draft.Kind, draft.State, draft.Source, draft.Inserts, list));

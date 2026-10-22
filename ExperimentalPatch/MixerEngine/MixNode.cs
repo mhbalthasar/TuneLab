@@ -29,15 +29,35 @@ public sealed class MixEdge
     // 延迟补偿：这条边要补的样本数（M6 接入插入后才会 > 0）。
     public int DelaySamples { get; }
 
-    internal MixEdge(int targetIndex, float gain, int delaySamples, IMixEdgeGain? liveGain)
+    // true = 这条边在**推子之前**取信号（pre-fader send）。
+    //
+    // 为什么需要：send 的"推子前/后"决定它受不受通道推子影响。post-fader（默认）
+    // 拉低推子 send 也跟着小 —— 做混响尾音时一拉推子尾音就断了；pre-fader 则保持独立，
+    // 推子只影响直达声。两种都要有：侧链总线、耳机混音都依赖 pre-fader。
+    //
+    // 代价：pre-fader 的取信号点在推子之前，所以宿主不能再把推子折进
+    // Source.AddData 的左右增益里（那样 buffer 一诞生就带推子了），必须先按 unity 读、
+    // tap 完再上推子。**没有 pre-fader 边时走原来的折叠路径**，与旧版逐位相同。
+    public bool IsPreFader { get; }
+
+    internal MixEdge(int targetIndex, float gain, int delaySamples, IMixEdgeGain? liveGain, bool isPreFader)
     {
         TargetIndex = targetIndex;
         Gain = gain;
         DelaySamples = delaySamples;
         LiveGain = liveGain;
+        IsPreFader = isPreFader;
     }
 
     internal float CurrentGain => LiveGain?.Gain ?? Gain;
+
+    // 左右声道各自的增益（LiveGain 支持声向时分开，否则都等于 CurrentGain）。
+    internal float LeftGain => LiveGain?.LeftGain ?? Gain;
+
+    internal float RightGain => LiveGain?.RightGain ?? Gain;
+
+    // 这条边这一块是否完全不出声（send 被静音）。
+    internal bool IsEdgeSilent => LiveGain is { IsSilent: true };
 }
 
 public sealed class MixNode
@@ -58,6 +78,10 @@ public sealed class MixNode
 
     public IReadOnlyList<MixEdge> Outputs { get; }
 
+    // 这条节点上有没有 pre-fader 的边（= 有 send 设在推子之前）。
+    // 建图时算一次，音频线程只读 —— 它决定 Source.AddData 用 unity 还是直接用推子折叠。
+    public bool HasPreFaderOutput { get; }
+
     internal MixNode(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
         IReadOnlyList<IMixInsert> inserts, IReadOnlyList<MixEdge> outputs)
     {
@@ -67,5 +91,14 @@ public sealed class MixNode
         Source = source;
         Inserts = inserts;
         Outputs = outputs;
+
+        for (int i = 0; i < outputs.Count; i++)
+        {
+            if (outputs[i].IsPreFader)
+            {
+                HasPreFaderOutput = true;
+                break;
+            }
+        }
     }
 }

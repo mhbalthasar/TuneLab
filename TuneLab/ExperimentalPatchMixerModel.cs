@@ -1224,7 +1224,27 @@ internal sealed class MixerSendAdapter(MixerModelAdapter model, Send send) : IMi
         set => send.Gain.Set(value);
     }
 
+    // [EP-MIXER-21] pre/post、声向、静音。都是 DataProperty，一步一个 undo。
+    public bool IsPreFader
+    {
+        get => send.IsPreFader.Value;
+        set => send.IsPreFader.Set(value);
+    }
+
+    public double Pan
+    {
+        get => send.Pan.Value;
+        set => send.Pan.Set(value);
+    }
+
+    public bool IsMute
+    {
+        get => send.IsMute.Value;
+        set => send.IsMute.Set(value);
+    }
+
     // 只在"目的地"这种结构变化时触发；推子拖动不该重建浮窗（否则拖到一半控件被换掉）。
+    // pre/post、声向、静音同理：它们是值变化，改完刷一下浮窗自己的显示就够了。
     public event Action? Changed;
 }
 

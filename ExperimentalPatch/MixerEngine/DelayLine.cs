@@ -21,16 +21,43 @@ public sealed class DelayLine
 
     public int DelaySamples => mDelayFrames;
 
-    // dst[..] += (D 帧前的 src) * gain。
+    // dst[..] += (D 帧前的 src) * gain。左右同一个 gain。
     public void Process(float[] src, int srcOffset, float[] dst, int dstOffset, int count, float gain)
+        => Process(src, srcOffset, dst, dstOffset, count, gain, gain);
+
+    // dst[..] += (D 帧前的 src) * 左右各自的 gain（send 带自己声向时用）。
+    public void Process(float[] src, int srcOffset, float[] dst, int dstOffset, int count,
+        float leftGain, float rightGain)
     {
+        if (leftGain == rightGain)
+        {
+            float gain = leftGain;
+
+            for (int i = 0; i < count; i++)
+            {
+                int read = mWrite * 2;
+
+                // 环形缓冲长度 = D 帧：即将被覆盖的这一格，装的正是 D 帧前写进来的样本。
+                dst[dstOffset + i * 2] += mBuffer[read] * gain;
+                dst[dstOffset + i * 2 + 1] += mBuffer[read + 1] * gain;
+
+                mBuffer[read] = src[srcOffset + i * 2];
+                mBuffer[read + 1] = src[srcOffset + i * 2 + 1];
+
+                mWrite++;
+                if (mWrite == mDelayFrames)
+                    mWrite = 0;
+            }
+
+            return;
+        }
+
         for (int i = 0; i < count; i++)
         {
             int read = mWrite * 2;
 
-            // 环形缓冲长度 = D 帧：即将被覆盖的这一格，装的正是 D 帧前写进来的样本。
-            dst[dstOffset + i * 2] += mBuffer[read] * gain;
-            dst[dstOffset + i * 2 + 1] += mBuffer[read + 1] * gain;
+            dst[dstOffset + i * 2] += mBuffer[read] * leftGain;
+            dst[dstOffset + i * 2 + 1] += mBuffer[read + 1] * rightGain;
 
             mBuffer[read] = src[srcOffset + i * 2];
             mBuffer[read + 1] = src[srcOffset + i * 2 + 1];

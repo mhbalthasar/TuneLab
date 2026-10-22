@@ -28,7 +28,7 @@
 
 ## 2. 队列（按执行顺序）
 
-### ✅ 2.1 通道输入级：Trim / Ø / HPF（已完成，DESIGN §5.7.22）
+### ✅ 通道输入级：Trim / Ø / HPF（已完成，DESIGN §5.7.22）
 
 **为什么排第一**：每个混音都用；只动"源混进通道缓冲 → 推子"这一段，不碰路由结构，风险低。
 
@@ -40,12 +40,21 @@
 - 落盘：epMixer payload
 - 单测：Trim 增益、Ø 取反、HPF 直流衰减 + 44.1k/48k 系数切换
 
-### 🔜 2.2 Send pre/post（以及 send pan / mute）
+### ✅ 2.2 Send pre/post（以及 send pan / mute）（已完成，DESIGN §5.7.26）
 
-现在 `Send` 只有 `Target + Gain`，且**固定 post-fader**。
-pre-fader 需要在混音器里给节点加"推子前抽头"的第二条缓冲（结构性改动，放在 2.1 之后）。
+`Send` 原来只有 `Target + Gain`，且**固定 post-fader**。现在四个字段全齐：
+`Target` / `Gain` / `IsPreFader` / `Pan` / `IsMute`。
 
-### ⏳ 2.3 响度表（LUFS / True Peak）+ 表头点击复位
+- `IsPreFader` = true 时 send 在推子之前取信号，不受通道推子影响
+- `Pan` = send 自己的声向（与通道条那个无关），同一路送两个 AUX 可以一左一右
+- `IsMute` = 这条 send 自己哑掉，不影响同通道的其他 send
+- 引擎：`MixEdge.IsPreFader` + `MixNode.HasPreFaderOutput`。有 pre-fader 边时
+  `Source.AddData` 改用 unity 读、推子留到 tap 之后才上（否则取不回推子前的信号）；
+  没有 pre-fader 边时走原折叠路径，**退化图与旧版逐位相同**
+- 测试：`MixerSendStageTests`（6 条）钉住 pre/post 的推子关系、send 声向、静音、
+  直达不受影响
+
+### 🔜 2.3 响度表（LUFS / True Peak）+ 表头点击复位
 
 纯测量，**零音频风险**，可与 2.1/2.2 并行。K 加权 + 400ms 块 + 门限。
 

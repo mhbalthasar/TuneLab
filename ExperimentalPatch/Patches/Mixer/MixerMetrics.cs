@@ -35,6 +35,10 @@ internal static class MixerMetrics
 
     // 插入效果浮窗的行更高：一行里有旁通/界面/删除三个键，挤在 30 里会贴边。
     public const double FxRowHeight = 40;
+
+    // send 浮窗的一行 = 增益子行 + pre/post·pan·mute 子行。两条都按 30 算，
+    // 中间 2 的间距由 StackPanel 出 —— 所以这里是 62。
+    public const double SendRowHeight = 62;
     public const double PopupHeaderHeight = 30;
     public const double PopupPadding = 10;
 }

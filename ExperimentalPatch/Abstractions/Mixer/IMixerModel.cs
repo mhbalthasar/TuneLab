@@ -187,6 +187,20 @@ public interface IMixerSend
     // −∞..+12 dB。增益与减益是同一个参数。
     double GainDb { get; set; }
 
+    // true = 推子前（pre-fader）：不受本通道推子影响。
+    //
+    // 为什么两种都要：post-fader（默认）拉低推子 send 也跟着小 —— 做混响尾音时
+    // 一拉推子尾音就断了；pre-fader 保持独立，推子只影响直达声。侧链总线、
+    // 耳机混音都依赖 pre-fader。引擎侧见 MixEdge.IsPreFader。
+    bool IsPreFader { get; set; }
+
+    // −1..+1，0 = 中央。send 自己的声向（与通道条那个无关）——
+    // 把同一路送进两个 AUX 时，可以一个偏左一个偏右，不必拆两条轨道。
+    double Pan { get; set; }
+
+    // true = 这条 send 自己哑掉（不影响同通道的其他 send）。
+    bool IsMute { get; set; }
+
     event Action? Changed;
 }
 
