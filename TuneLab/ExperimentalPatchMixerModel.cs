@@ -685,6 +685,11 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 
     public abstract (double LeftDb, double RightDb)? Peak { get; }
 
+    // 响度读数（EP-MIXER-22）。默认实现 = 没有（后端没接响度表时不该崩）。
+    public virtual double? Lufs => null;
+
+    public virtual double? TruePeakDb => null;
+
     public event Action? StateChanged;
     public event Action? RoutingChanged;
 
@@ -897,6 +902,24 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         }
     }
 
+    public override double? Lufs
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeTrackLoudness(mTrack, out var lufs, out _);
+            return double.IsNegativeInfinity(lufs) ? null : lufs;
+        }
+    }
+
+    public override double? TruePeakDb
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeTrackLoudness(mTrack, out _, out var truePeakDb);
+            return double.IsNegativeInfinity(truePeakDb) ? null : truePeakDb;
+        }
+    }
+
     protected override void Unsubscribe()
     {
         mTrack.Gain.Modified.Unsubscribe(OnStateModified);
@@ -1009,6 +1032,24 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         }
     }
 
+    public override double? Lufs
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeChannelLoudness(Id, out var lufs, out _);
+            return double.IsNegativeInfinity(lufs) ? null : lufs;
+        }
+    }
+
+    public override double? TruePeakDb
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeChannelLoudness(Id, out _, out var truePeakDb);
+            return double.IsNegativeInfinity(truePeakDb) ? null : truePeakDb;
+        }
+    }
+
     protected override void Unsubscribe()
     {
         Bus.Gain.Modified.Unsubscribe(OnStateModified);
@@ -1118,6 +1159,25 @@ internal sealed class MixerMasterChannel : IMixerChannel
         {
             AudioEngine.InvokeRealtimeChannelAmplitude("master", out var amplitude);
             return amplitude == null ? null : (amplitude.Item1, amplitude.Item2);
+        }
+    }
+
+    // Master 的响度读数最有用：整首曲子的整体响度就是这里（EP-MIXER-22）。
+    public double? Lufs
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeChannelLoudness("master", out var lufs, out _);
+            return double.IsNegativeInfinity(lufs) ? null : lufs;
+        }
+    }
+
+    public double? TruePeakDb
+    {
+        get
+        {
+            AudioEngine.InvokeRealtimeChannelLoudness("master", out _, out var truePeakDb);
+            return double.IsNegativeInfinity(truePeakDb) ? null : truePeakDb;
         }
     }
 

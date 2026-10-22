@@ -221,6 +221,13 @@ internal class AudioGraph()
     public bool TryGetChannelPeak(string channelId, out double leftDb, out double rightDb)
         => mMixer.TryGetPeakDb(channelId, out leftDb, out rightDb);
 
+    // [EP-MIXER-22] 响度读数。透传到混音器（节点 id 与峰值同一个 Index）。
+    public bool TryGetChannelLufs(string channelId, out double lufs)
+        => mMixer.TryGetLufs(channelId, out lufs);
+
+    public bool TryGetChannelTruePeakDb(string channelId, out double truePeakDb)
+        => mMixer.TryGetTruePeakDb(channelId, out truePeakDb);
+
     void ApplyPreviewAndMasterGain(int count, float[] buffer, int offset, IMixSource masterInput)
     {
         masterInput.AddData(0, count, buffer, offset, 1f, 1f);

@@ -167,6 +167,18 @@ public interface IMixerChannel
     // 峰值电平（dB）。null = 无信号 / 被静音 / 被 solo 压制 —— 即"此刻听不到"。
     (double LeftDb, double RightDb)? Peak { get; }
 
+    // ── 响度读数（EP-MIXER-22）──
+    //
+    // LUFS（K 加权）与 True Peak（4× 过采样）。两者回答峰值表回答不了的问题：
+    // 人耳对 2~5 kHz 远比对低频敏感，一个低频很重的混音峰值很高、听着却不够响；
+    // 而样本间的波形可能超出满刻度，DA 转换时真的削波。
+    //
+    // null = 还没有读数（K 加权要 400 ms 才出第一块，两级门限还要再等几块），
+    // 或不在播放。界面该显示占位符而不是 0。
+    double? Lufs { get; }
+
+    double? TruePeakDb { get; }
+
     // 交互式编辑会话：拖动开始时 BeginEdit()、结束时 EndEdit()。
     // 中间的多次 set 会被宿主合并成**一步 undo**（与轨道头滑杆同一套 merge 机制）。
     // 不调也安全：单次 set 就是一步 undo。

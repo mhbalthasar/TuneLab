@@ -38,6 +38,7 @@ internal sealed class MixerChannelStrip : UserControl
     readonly Fader mFader = new();
     readonly StereoMeter mMeter = new();
     readonly TextBlock mReadout = new();
+    readonly TextBlock mLufsReadout = new();
     readonly OutputSelector mOutput = new();
     readonly Border mSelectionBar = new() { Width = 3, Background = Palette.Brush(Palette.HighLight), IsVisible = false };
 
@@ -366,7 +367,25 @@ internal sealed class MixerChannelStrip : UserControl
         mReadout.Foreground = Palette.Brush(Palette.TextLight);
         mReadout.HorizontalAlignment = HorizontalAlignment.Center;
         mReadout.VerticalAlignment = VerticalAlignment.Center;
-        return mReadout;
+
+        // 响度读数：与推子读数同一行，左右分开（推子在左、LUFS 在右）。
+        // 只有 Master 显示 —— 轨道的 LUFS 在缩混过程中意义不大，而"整首曲子多响"
+        // 是所有人都要看的。真要给轨道加，把 IsVisible 的条件放宽即可。
+        mLufsReadout.FontSize = 9;
+        mLufsReadout.FontFamily = new FontFamily("Consolas, Microsoft YaHei UI");
+        mLufsReadout.Foreground = Palette.Brush(Palette.TextLabel);
+        mLufsReadout.HorizontalAlignment = HorizontalAlignment.Right;
+        mLufsReadout.VerticalAlignment = VerticalAlignment.Center;
+        mLufsReadout.Margin = new Thickness(0, 0, 4, 0);
+        mLufsReadout.IsVisible = mIsMaster;
+        mLufsReadout.Text = "-- LUFS";
+
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(mReadout, 0);
+        Grid.SetColumn(mLufsReadout, 1);
+        grid.Children.Add(mReadout);
+        grid.Children.Add(mLufsReadout);
+        return grid;
     }
 
     Control BuildOutput()
@@ -422,12 +441,37 @@ internal sealed class MixerChannelStrip : UserControl
     {
         mMeter.SetValue(mChannel.Peak);
         RefreshInputButton();
+        RefreshLufsReadout();
+    }
+
+    // LUFS 读数：一位小数就够（响度是趋势量，不是精确量）。
+    // 没有读数时显示占位符 —— 刚开始播放的那半秒本来就没有，
+    // 显示 0 会让人以为"这首曲子是静音"。
+    void RefreshLufsReadout()
+    {
+        if (!mIsMaster)
+            return;
+
+        var lufs = mChannel.Lufs;
+
+        if (lufs == null)
+        {
+            mLufsReadout.Text = "-- LUFS";
+            mLufsReadout.Foreground = Palette.Brush(Palette.TextLabel);
+            return;
+        }
+
+        mLufsReadout.Text = lufs.Value.ToString("F1") + " LUFS";
+
+        // 超过 −9 LUFS 就该警惕了（流媒体常见的上限），换个色提醒。
+        mLufsReadout.Foreground = Palette.Brush(lufs.Value > -9 ? Palette.AmpPeak : Palette.TextLabel);
     }
 
     // 静态占位（还没播过、或工程刚装载）：把表硬清零，别留上一次的残影。
     public void ResetMeter()
     {
         mMeter.Reset();
+        mLufsReadout.Text = "-- LUFS";
     }
 
     void Refresh()

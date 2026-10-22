@@ -45,7 +45,7 @@ public sealed class Mixer
 
     public void SetSnapshot(MixSnapshot? snapshot)
     {
-        mRuntime = snapshot == null ? null : new Runtime(snapshot, mMaxBlockSize);
+        mRuntime = snapshot == null ? null : new Runtime(snapshot, mMaxBlockSize, SampleRate);
     }
 
     // 把 [position, position + count) 渲染进 buffer（交织立体声，写起点 offset）。
@@ -86,6 +86,48 @@ public sealed class Mixer
         leftDb = ToDb(runtime.PeakLeft[index]);
         rightDb = ToDb(runtime.PeakRight[index]);
         return true;
+    }
+
+    /// <summary>
+    /// 取一条通道的 LUFS 读数。false = 没有快照 / 没有这个节点（调用方照旧显示占位）。
+    /// </summary>
+    /// <remarks>
+    /// 读数可能还没有（−inf）：K 加权要 400 ms 才出一个块，两级门限还要再等几块。
+    /// 刚开始播放的那半秒读数不存在是正常的，界面该显示占位符而不是 0。
+    /// </remarks>
+    public bool TryGetLufs(string nodeId, out double lufs)
+    {
+        lufs = double.NegativeInfinity;
+
+        var runtime = mRuntime;
+        if (runtime == null || !runtime.Index.TryGetValue(nodeId, out int index))
+            return false;
+
+        lufs = runtime.Loudness[index].Lufs;
+        return true;
+    }
+
+    /// <summary>取一条通道的 True Peak（dBFS）。同上，false = 没有这个节点。</summary>
+    public bool TryGetTruePeakDb(string nodeId, out double truePeakDb)
+    {
+        truePeakDb = double.NegativeInfinity;
+
+        var runtime = mRuntime;
+        if (runtime == null || !runtime.Index.TryGetValue(nodeId, out int index))
+            return false;
+
+        truePeakDb = runtime.Loudness[index].TruePeakDb;
+        return true;
+    }
+
+    /// <summary>清掉一条通道的响度历史（停止播放 / 换工程时）。</summary>
+    public void ResetLoudness(string nodeId)
+    {
+        var runtime = mRuntime;
+        if (runtime == null || !runtime.Index.TryGetValue(nodeId, out int index))
+            return;
+
+        runtime.Loudness[index].Reset();
     }
 
     static double ToDb(float amplitude) => amplitude <= 0 ? double.NegativeInfinity : 20 * Math.Log10(amplitude);
@@ -173,7 +215,14 @@ public sealed class Mixer
             // 电平抽头：Track / AUX / Master 同一口径 —— 推子与声像**之后**、插入链之前。
             // Track 也要测：通道条的表必须能反映声像（左右两根柱子各走各的）。
             if (node.Kind is MixNodeKind.Track or MixNodeKind.Aux or MixNodeKind.Master)
+            {
                 MeasurePeak(target, targetOffset, count, runtime, i);
+
+                // 响度表与峰值表同一口径、同一时机：读的是推子后的通道信号。
+                // 放在插入链之前 —— 表要反映"这条通道收到了什么"，而不是
+                // "插件把它变成了什么"（后者看插件自己的表更直接）。
+                runtime.Loudness[i].Process(target, targetOffset, count);
+            }
 
             if (!hasSignal)
                 continue;
@@ -421,6 +470,10 @@ public sealed class Mixer
         // 输入级高通：每个节点一份（双声道状态）。构造期分配，音频线程只跑滤波。
         public readonly HighPassFilter[] Hpf;
 
+        // 响度表：每个节点一份。与 Hpf 同一套分配纪律（构造期分配、音频线程只读）。
+        // 只在混音器持有快照期间活着 —— 换快照时旧的全部丢掉（读数从零开始攒）。
+        public readonly LoudnessMeter[] Loudness;
+
         public readonly float[] PeakLeft;
         public readonly float[] PeakRight;
         public readonly Dictionary<string, int> Index;
@@ -429,7 +482,7 @@ public sealed class Mixer
         // 每块的读取是一次字段访问而不是一次接口跳转。
         public readonly int SeekOffset;
 
-        public Runtime(MixSnapshot snapshot, int maxBlockSize)
+        public Runtime(MixSnapshot snapshot, int maxBlockSize, double sampleRate)
         {
             Snapshot = snapshot;
             SeekOffset = snapshot.MaxLatencySamples;
@@ -437,6 +490,7 @@ public sealed class Mixer
             DelayLines = new DelayLine?[snapshot.Nodes.Count][];
             PeakLeft = new float[snapshot.Nodes.Count];
             Hpf = new HighPassFilter[snapshot.Nodes.Count];
+            Loudness = new LoudnessMeter[snapshot.Nodes.Count];
             PeakRight = new float[snapshot.Nodes.Count];
             Index = new Dictionary<string, int>(snapshot.Nodes.Count);
 
@@ -445,6 +499,7 @@ public sealed class Mixer
                 Buffers[i] = new float[maxBlockSize * 2];
                 DelayLines[i] = new DelayLine?[snapshot.Nodes[i].Outputs.Count];
                 Hpf[i] = new HighPassFilter();
+                Loudness[i] = new LoudnessMeter(sampleRate);
                 Index[snapshot.Nodes[i].Id] = i;
 
                 for (int e = 0; e < snapshot.Nodes[i].Outputs.Count; e++)

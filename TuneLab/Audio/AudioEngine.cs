@@ -278,11 +278,48 @@ internal static class AudioEngine
         amplitude = new Tuple<double, double>(left, right);
     }
 
+    // [EP-MIXER-22] 响度读数（LUFS / True Peak）。与峰值同一套规矩：
+    // 只有播放中才有意义 —— 停着的时候表该回零，不该停在最后的读数上。
+    public static void InvokeRealtimeChannelLoudness(string channelId, out double lufs, out double truePeakDb)
+    {
+        lufs = double.NegativeInfinity;
+        truePeakDb = double.NegativeInfinity;
+
+        if (!IsPlaying)
+            return;
+
+        AudioGraph.TryGetChannelLufs(channelId, out lufs);
+        AudioGraph.TryGetChannelTruePeakDb(channelId, out truePeakDb);
+    }
+
     // [EP-MIXER-3] 轨道的电平，取自混音图的轨道节点（推子与声像**之后**，与 AUX / Master 同口径）。
     //
     // 为什么不用上面的 InvokeRealtimeAmplitude：那个读的是音源本身（pre-fader / pre-pan），
     // 于是调音台上推子推到底表不动、声像拧到一边两根柱子还是一样高——表就成了摆设。
     // 轨道节点 id 是编译时的序号（track-<i>），所以按图的轨道顺序找下标。
+    public static void InvokeRealtimeTrackLoudness(IAudioTrack track, out double lufs, out double truePeakDb)
+    {
+        lufs = double.NegativeInfinity;
+        truePeakDb = double.NegativeInfinity;
+
+        if (!IsPlaying)
+            return;
+
+        // 与 InvokeRealtimeTrackAmplitude 同一套下标算法：第 i 条轨 = 图里的 "track-i"。
+        int index = 0;
+        foreach (var candidate in AudioGraph.Tracks)
+        {
+            if (ReferenceEquals(candidate, track))
+            {
+                AudioGraph.TryGetChannelLufs("track-" + index, out lufs);
+                AudioGraph.TryGetChannelTruePeakDb("track-" + index, out truePeakDb);
+                return;
+            }
+
+            index++;
+        }
+    }
+
     public static void InvokeRealtimeTrackAmplitude(IAudioTrack track, out Tuple<double, double>? amplitude)
     {
         amplitude = null;
