@@ -41,6 +41,17 @@ public interface IHostServices
     // 播放/暂停（空格）。混音台是独立窗口，焦点在它上面时按键不会到主窗 ——
     // 补丁侧经这里把"空格"透传回宿主。默认空实现，无头 harness 不必关心。
     void TogglePlayback() { }
+
+    // [EP-MIXER-24] 声向法则（roadmap 2.5）。全局听感设置，混音台标题栏上选。
+    //
+    // 为什么走这里而不是让补丁直接读引擎：补丁工程**不引用** MixerEngine
+    // （那是独立工程，只有宿主引用它）。所以这里用字符串而非枚举，
+    // 取值 "linear" / "power3" / "power4.5"。
+    //
+    // 默认值 = "linear"（上游老公式），没接这个能力的宿主保持原样。
+    string PanLaw => "linear";
+
+    void SetPanLaw(string law) { }
 }
 
 

@@ -28,6 +28,9 @@ public sealed class Mixer
     // 输入级高通要用。由宿主在采样率变化时设置（AudioGraph.SampleRate）。
     public double SampleRate { get; set; } = 44100;
 
+    // 声向法则（roadmap 2.5）。默认 Linear0Db = 上游老公式，逐位相同的保证靠它。
+    public PanLaw PanLaw { get; set; } = PanLaw.Linear0Db;
+
     public bool HasSnapshot => mRuntime != null;
 
     public MixSnapshot? Snapshot => mRuntime?.Snapshot;
@@ -174,8 +177,14 @@ public sealed class Mixer
                     }
                     else
                     {
-                        left = (float)(state.Volume * (1 - state.Pan));
-                        right = (float)(state.Volume * (1 + state.Pan));
+                        // 声向法则：默认线性 = 上游老公式（逐位相同的保证）。
+                        // 只有宿主显式切到等功率时才走另一条路。
+                        (double l, double r) = PanLaw == PanLaw.Linear0Db
+                            ? (state.Volume * (1 - state.Pan), state.Volume * (1 + state.Pan))
+                            : PanLawMath.Resolve(state.Volume, state.Pan, PanLaw);
+
+                        left = (float)l;
+                        right = (float)r;
                     }
 
                     // 提前播放的补偿（DESIGN.md §3.11）：延迟插件使 out[t] = source[t−X]，
@@ -193,7 +202,12 @@ public sealed class Mixer
             {
                 // 预览音在 Master 增益之前混进来 —— 与旧路径（MixData → AddData(预览) → MasterGain）同序。
                 masterInput?.AddData(position, count, target, targetOffset, 1f, 1f);
-                ApplyGain(node.State, target, targetOffset, count);
+
+                // Master **没有声向**（它是总线，不是通道），所以永远走线性语义 ——
+                // 用 PanLaw 的话，pan = 0 在等功率法则下会算出 0.7071，
+                // 于是 Master 推子变成额外的 −3 dB 衰减，整条母线都被压低。
+                // 这不是"pan law 生效"，是把一个不存在的 pan 用错了地方。
+                ApplyGain(node.State, target, targetOffset, count, PanLaw.Linear0Db);
             }
             else if (node.Kind == MixNodeKind.Device)
             {
@@ -208,7 +222,7 @@ public sealed class Mixer
                 {
                     // AUX：输入级在推子之前，与轨道同一套语义。
                     ApplyInputStage(state, target, targetOffset, count, runtime, i);
-                    ApplyGain(state, target, targetOffset, count);
+                    ApplyGain(state, target, targetOffset, count, PanLaw);
                 }
             }
 
@@ -240,7 +254,7 @@ public sealed class Mixer
                 if (node.Kind == MixNodeKind.Track)
                     ApplyTrackFader(node.State, target, targetOffset, count);
                 else if (node.Kind == MixNodeKind.Aux)
-                    ApplyGain(node.State, target, targetOffset, count);
+                    ApplyGain(node.State, target, targetOffset, count, PanLaw);
             }
 
             // 插入链：在推子之后、分发之前就地处理（DESIGN.md §3.2）。
@@ -352,13 +366,28 @@ public sealed class Mixer
 
     // Track 的推子 + 声向。与 ApplyGain 同一公式，单独一个方法是因为调用点不同：
     // 有 pre-fader 边时它必须在 tap 之后才跑（旧路径是折进 AddData 的增益里的）。
-    static void ApplyTrackFader(IMixChannelState? state, float[] buffer, int offset, int count)
+    void ApplyTrackFader(IMixChannelState? state, float[] buffer, int offset, int count)
     {
         if (state == null)
             return;
 
-        float left = (float)(state.Volume * (1 - state.Pan));
-        float right = (float)(state.Volume * (1 + state.Pan));
+        // pre-fader 的 send 存在时推子必须现在才上（见 RenderChunk 里的说明），
+        // 这里同样按声向法则算 —— 两条路必须一致，否则"有没有 pre-fader send"
+        // 会变成听得出差别的开关。
+        float left;
+        float right;
+
+        if (PanLaw == PanLaw.Linear0Db)
+        {
+            left = (float)(state.Volume * (1 - state.Pan));
+            right = (float)(state.Volume * (1 + state.Pan));
+        }
+        else
+        {
+            (double l, double r) = PanLawMath.Resolve(state.Volume, state.Pan, PanLaw);
+            left = (float)l;
+            right = (float)r;
+        }
 
         if (left == 1f && right == 1f)
             return;
@@ -414,13 +443,25 @@ public sealed class Mixer
         return any;
     }
 
-    static void ApplyGain(IMixChannelState? state, float[] buffer, int offset, int count)
+    static void ApplyGain(IMixChannelState? state, float[] buffer, int offset, int count, PanLaw law)
     {
         if (state == null)
             return;
 
-        float left = (float)(state.Volume * (1 - state.Pan));
-        float right = (float)(state.Volume * (1 + state.Pan));
+        float left;
+        float right;
+
+        if (law == PanLaw.Linear0Db)
+        {
+            left = (float)(state.Volume * (1 - state.Pan));
+            right = (float)(state.Volume * (1 + state.Pan));
+        }
+        else
+        {
+            (double l, double r) = PanLawMath.Resolve(state.Volume, state.Pan, law);
+            left = (float)l;
+            right = (float)r;
+        }
 
         // 乘 1 是逐位恒等的，直接跳过（MasterGain = 0 dB 是最常见的情形）。
         if (left == 1f && right == 1f)
@@ -512,6 +553,7 @@ public sealed class Mixer
         }
     }
 }
+
 
 
 

@@ -62,11 +62,11 @@
 
 在插入包装层做（dry 副本 + 混合），不动引擎结构。
 
-### 🔜 2.5 Pan law 选项 / 等功率 pan
+### ✅ 2.5 Pan law 选项 / 等功率 pan（已完成，DESIGN §5.7.29）
 
 现在是 0 dB 定律（`left = Vol*(1-pan)`），没有 -3 / -4.5 可选。
 
-### ⏳ 2.6 Solo-safe / 独占 solo
+### 🔜 2.6 Solo-safe / 独占 solo
 
 小改动，纯模型 + 界面。
 

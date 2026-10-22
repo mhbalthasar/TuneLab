@@ -196,6 +196,24 @@ internal static class ExperimentalPatchBootstrap
                 TuneLab.Audio.AudioEngine.Play();
         }
 
+        // [EP-MIXER-24] 声向法则。用字符串而不是枚举：补丁工程看不到 MixerEngine 的类型。
+        public string PanLaw => TuneLab.Audio.AudioEngine.PanLaw switch
+        {
+            TuneLab.ExperimentalPatch.MixerEngine.PanLaw.ConstantPower3Db => "power3",
+            TuneLab.ExperimentalPatch.MixerEngine.PanLaw.ConstantPower4_5Db => "power4.5",
+            _ => "linear",
+        };
+
+        public void SetPanLaw(string law)
+        {
+            TuneLab.Audio.AudioEngine.PanLaw = law switch
+            {
+                "power3" => TuneLab.ExperimentalPatch.MixerEngine.PanLaw.ConstantPower3Db,
+                "power4.5" => TuneLab.ExperimentalPatch.MixerEngine.PanLaw.ConstantPower4_5Db,
+                _ => TuneLab.ExperimentalPatch.MixerEngine.PanLaw.Linear0Db,
+            };
+        }
+
         static readonly InsertPluginSettings sInsertPlugins = new();
 
         // 插入实例的定位与插件扫描共用同一份清单：工厂按 PluginId 找 Locator 时先查缓存。
@@ -208,6 +226,7 @@ internal static class ExperimentalPatchBootstrap
         const string Prefix = "[ExperimentalPatch] ";
     }
 }
+
 
 
 

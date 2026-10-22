@@ -11,6 +11,14 @@ namespace TuneLab.Audio;
 
 internal class AudioGraph()
 {
+    // [EP-MIXER-24] 声向法则。透推到混音器：切它必须立刻听见，
+    // 不能等下一次编图（它不是结构变化，和推子同一条纪律）。
+    public PanLaw PanLaw
+    {
+        get => mMixer.PanLaw;
+        set => mMixer.PanLaw = value;
+    }
+
     public int SampleRate 
     {
         get => mSampleRate;

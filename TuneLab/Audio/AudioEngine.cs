@@ -9,6 +9,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using MeltySynth;
 using TuneLab.Audio.SDL2;
+using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Foundation;
 using TuneLab.Utils;
 
@@ -22,6 +23,16 @@ internal static class AudioEngine
     public static INotifiableProperty<int> SampleRate { get; } = new NotifiableProperty<int>(44100);
     public static double CurrentTime => mAudioSampleProvider.CurrentTime;
     public static double MasterGain { get; set; } = 0;
+
+    // [EP-MIXER-24] 声向法则（roadmap 2.5）。默认线性 = 上游老公式
+    // （left = v(1-p)、right = v(1+p)，硬偏时那一侧 +6 dB）。
+    // 等功率法则（−3 / −4.5 dB）是给用户的选项：pan 移动时音量听起来不变。
+    // 切它会立刻改变所有通道的声音，所以必须能立刻推到混音器上（见 setter）。
+    public static PanLaw PanLaw
+    {
+        get => AudioGraph.PanLaw;
+        set => AudioGraph.PanLaw = value;
+    }
     public static double EndTime => AudioGraph.EndTime;
     public static INotifiableProperty<int> BufferSize { get; } = new NotifiableProperty<int>(1024);
     public static INotifiableProperty<string> CurrentDriver { get; } = new NotifiableProperty<string>(string.Empty);

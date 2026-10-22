@@ -40,6 +40,10 @@ public sealed class MixerWindow : Window
     readonly ChromeButton mTopmost = new() { Text = "置顶", Width = 44, Height = 22 };
     readonly ChromeButton mAddAux = new() { Text = "+ AUX", Width = 52, Height = 22 };
 
+    // 声向法则（roadmap 2.5）。全局设置，所以放在标题栏而不是某条通道上。
+    // 文字里带当前值 —— 少一次点击就知道现在是什么法则。
+    readonly ChromeButton mPanLaw = new() { Text = "Pan: 0dB", Width = 68, Height = 22 };
+
     readonly List<MixerChannelStrip> mStripViews = new();
     IMixerChannel? mMasterChannel;
     MixerChannelStrip? mMasterView;
@@ -243,6 +247,9 @@ public sealed class MixerWindow : Window
         // 宿主还没接 AUX（阶段一）→ 直接不画这个按钮，而不是画一个点了没反应的。
         mAddAux.IsVisible = mModel.SupportsAux;
 
+        SyncPanLawButton();
+        mPanLaw.Click += ShowPanLawMenu;
+
         var close = new ChromeButton
         {
             Text = "✕",
@@ -264,6 +271,7 @@ public sealed class MixerWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0),
         };
+        buttons.Children.Add(mPanLaw);
         buttons.Children.Add(mAddAux);
         buttons.Children.Add(mTopmost);
         buttons.Children.Add(close);
@@ -780,6 +788,56 @@ public sealed class MixerWindow : Window
         mInputPopup = popup;
     }
 
+    // ── 声向法则（roadmap 2.5）──
+    //
+    // 三个选项，菜单里当前项打勾。选完立刻生效（引擎每块现读，不是烘进快照的）。
+    //
+    // 走 IHostServices 而不是直接读引擎：补丁工程不引用 MixerEngine（独立工程，
+    // 只有宿主引用），所以这里用字符串 "linear" / "power3" / "power4.5"。
+    void ShowPanLawMenu()
+    {
+        var menu = new ContextMenu();
+        string current = mHost.PanLaw;
+
+        foreach (var (law, label) in new[]
+        {
+            ("linear", L("线性 0 dB（与旧版一致）", "Linear 0 dB (matches previous versions)")),
+            ("power3", L("等功率 −3 dB（pan 移动音量不变）", "Constant power −3 dB (level stays put)")),
+            ("power4.5", L("等功率 −4.5 dB（补偿更强）", "Constant power −4.5 dB (stronger)")),
+        })
+        {
+            var item = new MenuItem
+            {
+                Header = label,
+                IsChecked = current == law,
+            };
+
+            var captured = law;
+            item.Click += (_, _) =>
+            {
+                mHost.SetPanLaw(captured);
+                SyncPanLawButton();
+            };
+
+            menu.Items.Add(item);
+        }
+
+        menu.Open(mPanLaw);
+    }
+
+    void SyncPanLawButton()
+    {
+        mPanLaw.Text = mHost.PanLaw switch
+        {
+            "power3" => L("Pan: −3dB", "Pan: −3dB"),
+            "power4.5" => L("Pan: −4.5dB", "Pan: −4.5dB"),
+            _ => L("Pan: 0dB", "Pan: 0dB"),
+        };
+
+        // 非默认法则时高亮：全局听感设置被改过，应该一眼看得出来。
+        mPanLaw.IsChecked = mHost.PanLaw != "linear";
+    }
+
     void ClosePopups()
     {
         mSendPopup?.Close();
@@ -807,6 +865,7 @@ public sealed class MixerWindow : Window
     string L(string zh, string en)
         => mHost.UiLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? zh : en;
 }
+
 
 
 
