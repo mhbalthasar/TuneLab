@@ -1,4 +1,4 @@
-using TuneLab.ExperimentalPatch.Abstractions;
+﻿using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Foundation;
 
 namespace TuneLab.Data;
@@ -57,6 +57,9 @@ internal class AuxBus : DataObject
     public DataProperty<double> Pan { get; }
     public DataProperty<bool> IsMute { get; }
     public DataProperty<bool> IsSolo { get; }
+
+    // [EP-MIXER-25] Solo 安全（与 Track 同一语义）。
+    public DataProperty<bool> IsSoloSafe { get; }
     public DataProperty<MixerRoute> Output { get; }
     public DataObjectList<Send> Sends { get; }
     public DataObjectList<InsertSlot> Inserts { get; }
@@ -75,6 +78,7 @@ internal class AuxBus : DataObject
         Pan = new DataStruct<double>(this);
         IsMute = new DataStruct<bool>(this);
         IsSolo = new DataStruct<bool>(this);
+        IsSoloSafe = new DataStruct<bool>(this);
         Output = new DataStruct<MixerRoute>(this);
 
         // 构造期尚未接上 document，这条命令会被丢弃、只落值（见 DataProperty.SetInfo）。
@@ -153,3 +157,4 @@ internal class InsertSlot : DataObject
         Mix.SetInfo(1);
     }
 }
+

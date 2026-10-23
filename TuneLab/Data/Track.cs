@@ -20,6 +20,13 @@ internal class Track : DataObject, ITrack
     public DataProperty<string> Name { get; }
     public DataProperty<bool> IsMute { get; }
     public DataProperty<bool> IsSolo { get; }
+
+    // [EP-MIXER-25] Solo 安全：别人 solo 时**不被压制**。
+    //
+    // 用途很具体：对讲麦、节拍器、必须一直听得见的参考轨。它们不该因为
+    // "我在 solo 主唱"就被静音 —— 而混音时又确实要 solo 主唱。
+    // 与"自己被静音"无关：IsMute 仍然照常生效。
+    public DataProperty<bool> IsSoloSafe { get; }
     public DataProperty<bool> AsRefer { get; }
     public DataProperty<double> Gain { get; }
     public DataProperty<double> Pan { get; }
@@ -48,6 +55,7 @@ internal class Track : DataObject, ITrack
     IDataProperty<bool> ITrack.IsMute => IsMute;
 
     IDataProperty<bool> ITrack.IsSolo => IsSolo;
+    IDataProperty<bool> ITrack.IsSoloSafe => IsSoloSafe;
 
     IDataProperty<bool> ITrack.AsRefer => AsRefer;
 
@@ -69,6 +77,7 @@ internal class Track : DataObject, ITrack
         Name = new DataString(this, string.Empty);
         IsMute = new DataStruct<bool>(this);
         IsSolo = new DataStruct<bool>(this);
+        IsSoloSafe = new DataStruct<bool>(this);
         AsRefer = new DataStruct<bool>(this);
         Gain = new DataStruct<double>(this);
         Pan = new DataStruct<double>(this);
@@ -210,3 +219,4 @@ internal class Track : DataObject, ITrack
     readonly ActionEvent mSelectionChanged = new();
     bool mIsSelected = false;
 }
+

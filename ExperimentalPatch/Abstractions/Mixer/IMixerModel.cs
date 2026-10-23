@@ -39,6 +39,13 @@ public interface IMixerModel
     bool SupportsInserts { get; }
 
     // 轨 / AUX 增删、换序、换工程 → 整表重建。轨数在人类尺度上很小，重建比增量 diff 更不容易错。
+    // [EP-MIXER-25] 独占 solo：solo 一条通道时自动清掉其他通道的 solo。
+    //
+    // 这是工作流开关，不是音频参数（solo 的判据仍然是"有任一轨 solo"）。
+    // 关掉时是加法式 solo（可以 solo 多条做 A/B），打开时是"只有这一条"。
+    // 两种都是真实需求：加法式用来拼一组要一起听的轨道，独占式用来快速独听一条。
+    bool ExclusiveSolo { get; set; }
+
     event Action? ChannelsChanged;
 
     // 图结构变了（output / send / 插入增删）→ 各条刷新自己的标签，但不用重建。
@@ -135,6 +142,15 @@ public interface IMixerChannel
     // Track 的 solo 与 AUX 的 solo 是**两个独立域**：轨 solo 只压未 solo 的轨，
     // AUX solo 只压未 solo 的 AUX，互不影响，也都不影响 Master。
     bool IsSolo { get; set; }
+
+    // [EP-MIXER-25] Solo 安全：别人 solo 时这条通道**不被压制**。
+    //
+    // 用途很具体：对讲麦、节拍器、必须一直听得见的参考轨。它们不该因为
+    // "我在 solo 主唱"就被静音 —— 而混音时又确实要 solo 主唱。
+    //
+    // 与"自己被静音"无关：IsMute 仍然照常生效。solo-safe 豁免的只是
+    // "被别人的 solo 压制"这一条。
+    bool IsSoloSafe { get; set; }
 
     // 单选出入口。默认 Master；Master 自己的 output 只能是设备。
     IMixerOutput Output { get; set; }

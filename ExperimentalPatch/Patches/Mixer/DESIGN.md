@@ -1032,6 +1032,38 @@ mix = 0 时 trim 完全失效 —— 用户把 mix 拖到 0，电平匹配突然
 补丁工程看不到 `MixerEngine` 的类型（独立工程，只有宿主引用），所以契约上是
 `IHostServices.PanLaw` / `SetPanLaw(string)`，取值 "linear" / "power3" / "power4.5"。
 
+#### 5.7.30 Solo 安全与独占 solo（2026-10-24）
+
+两条都是**工作流**功能，不是音频路径的改动。
+
+**Solo 安全**（`IsSoloSafe`）：别人 solo 时这条通道不被压制。用途很具体 ——
+对讲麦、节拍器、必须一直听得见的参考轨。它们不该因为"我在 solo 主唱"就被静音，
+而混音时又确实要 solo 主唱。
+
+判据从 `!IsSolo && (IsMute || HasSolo)` 变成
+`!IsSolo && (IsMute || (HasSolo && !IsSoloSafe))`。**注意括号**：safe 只豁免
+"被别人的 solo 压制"，**不**豁免自己的静音 —— 对讲麦标了 safe 之后仍然可以被静音，
+那才符合直觉。`SoloSemanticsTests` 用一条专门的用例钉住这个边界。
+
+判据只存在于宿主（`TrackChannelState.IsSilent` / `AuxChannelState.IsSilent`），
+引擎侧不认识 solo —— 引擎只读 `IsSilent` 这个布尔。
+
+界面：**右键 S** = 切换 solo 安全。不新加按钮的理由是通道条只有 84px 宽，M/S
+已经占满；而"安全"在语义上就是 S 的一个修饰态（Pro Tools 里是 Ctrl+点 S）。
+安全态用 `MixerToggle.IsMarked` 画一个右上角小三角 —— 它是与 `IsChecked` **正交**
+的视觉态，因为"solo 中的安全通道"两者同时为真，换底色表达不了。
+
+**独占 solo**（`ExclusiveSolo`）：solo 一条时自动清掉其他。
+
+这是**运行期开关，不落工程** —— 它是工作流偏好，跟工程内容无关（与 pan law 同一类）。
+关掉时是加法式 solo（可以 solo 多条做 A/B），打开时是"只有这一条"。两种都是真实需求。
+
+`ClearOtherSolos` 只清**同域**：Track↔Track、AUX↔AUX。两个 solo 域本来就是独立的
+（轨 solo 不压 AUX，反之亦然），所以清的时候也不能跨域 —— solo 一条轨把 AUX 的
+solo 也清掉是意料之外的副作用。顺序上先清后写自己，否则自己也会被清掉。
+
+界面：标题栏一个 `Solo+` / `Solo 独占` 开关按钮（按下去高亮）。
+
 #### 5.7.24 乐器不进 FX 目录（2026-10-21）
 
 插件的"是不是乐器"一直是有记录的（`InsertPluginEntry.IsInstrument`：VST3 看二进制的

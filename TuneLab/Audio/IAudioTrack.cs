@@ -12,6 +12,10 @@ internal interface IAudioTrack
 {
     bool IsMute { get; }
     bool IsSolo { get; }
+
+    // [EP-MIXER-25] Solo 安全：别人 solo 时这条通道不被压制。
+    // 默认 false —— 没实现这个能力的实现者行为不变。
+    bool IsSoloSafe => false;
     double Volume { get; }
     double Pan { get; }
     double EndTime { get; }

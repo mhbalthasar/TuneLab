@@ -44,6 +44,9 @@ public sealed class MixerWindow : Window
     // 文字里带当前值 —— 少一次点击就知道现在是什么法则。
     readonly ChromeButton mPanLaw = new() { Text = "Pan: 0dB", Width = 68, Height = 22 };
 
+    // [EP-MIXER-25] 独占 solo 开关。默认关（加法式：可以 solo 多条做 A/B）。
+    readonly ChromeButton mExclusiveSolo = new() { Text = "Solo+", Width = 52, Height = 22 };
+
     readonly List<MixerChannelStrip> mStripViews = new();
     IMixerChannel? mMasterChannel;
     MixerChannelStrip? mMasterView;
@@ -250,6 +253,15 @@ public sealed class MixerWindow : Window
         SyncPanLawButton();
         mPanLaw.Click += ShowPanLawMenu;
 
+        // [EP-MIXER-25] 独占 solo：按下去 = solo 一条时自动清掉其他。
+        // 与 pan law 不同，它是**工作流**偏好，所以用开关（IsChecked）而不是菜单。
+        SyncExclusiveSoloButton();
+        mExclusiveSolo.Click += () =>
+        {
+            mModel.ExclusiveSolo = !mModel.ExclusiveSolo;
+            SyncExclusiveSoloButton();
+        };
+
         var close = new ChromeButton
         {
             Text = "✕",
@@ -272,6 +284,7 @@ public sealed class MixerWindow : Window
             Margin = new Thickness(0, 0, 8, 0),
         };
         buttons.Children.Add(mPanLaw);
+        buttons.Children.Add(mExclusiveSolo);
         buttons.Children.Add(mAddAux);
         buttons.Children.Add(mTopmost);
         buttons.Children.Add(close);
@@ -836,6 +849,16 @@ public sealed class MixerWindow : Window
 
         // 非默认法则时高亮：全局听感设置被改过，应该一眼看得出来。
         mPanLaw.IsChecked = mHost.PanLaw != "linear";
+    }
+
+    void SyncExclusiveSoloButton()
+    {
+        mExclusiveSolo.IsChecked = mModel.ExclusiveSolo;
+
+        // 开着时高亮（IsChecked 自带底色），文字说明"现在是独占"。
+        mExclusiveSolo.Text = mModel.ExclusiveSolo
+            ? L("Solo 独占", "Solo 1")
+            : L("Solo+", "Solo+");
     }
 
     void ClosePopups()

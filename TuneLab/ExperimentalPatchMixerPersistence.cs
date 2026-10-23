@@ -65,6 +65,7 @@ internal static class MixerPersistence
                 Pan = aux.Pan.Value,
                 Mute = aux.IsMute.Value,
                 Solo = aux.IsSolo.Value,
+                SoloSafe = aux.IsSoloSafe.Value,
                 Output = ToDto(aux.Output.Value),
                 Sends = ToDtos(aux.Sends),
                 Pin = aux.Pinned.Value.ToString(),
@@ -90,6 +91,7 @@ internal static class MixerPersistence
                 Inserts = ToInsertDtos(track.Inserts),
 
                 // [EP-MIXER-20] 输入级
+                SoloSafe = track.IsSoloSafe.Value,
                 TrimDb = track.TrimDb.Value,
                 PhaseInvert = track.PhaseInvert.Value,
                 HpfHz = track.HpfHz.Value,
@@ -191,6 +193,7 @@ internal static class MixerPersistence
             aux.Pan.SetInfo(dto.Pan);
             aux.IsMute.SetInfo(dto.Mute);
             aux.IsSolo.SetInfo(dto.Solo);
+            aux.IsSoloSafe.SetInfo(dto.SoloSafe);
             aux.Output.SetInfo(FromDto(dto.Output));
             aux.Pinned.SetInfo(ParsePin(dto.Pin));
 
@@ -225,6 +228,7 @@ internal static class MixerPersistence
             track.Pinned.SetInfo(ParsePin(dto.Pin));
 
             // [EP-MIXER-20] 输入级（老工程没有这几个字段 → 默认值 = 关闭）
+            track.IsSoloSafe.SetInfo(dto.SoloSafe);
             track.TrimDb.SetInfo(dto.TrimDb);
             track.PhaseInvert.SetInfo(dto.PhaseInvert);
             track.HpfHz.SetInfo(dto.HpfHz);
@@ -457,6 +461,10 @@ internal static class MixerPersistence
         public double Pan { get; set; }
         public bool Mute { get; set; }
         public bool Solo { get; set; }
+
+        // [EP-MIXER-25] Solo 安全（老工程没有这个字段 → false = 普通通道）
+        public bool SoloSafe { get; set; }
+
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
         public string? Pin { get; set; }
@@ -472,6 +480,10 @@ internal static class MixerPersistence
     {
         public int Index { get; set; }
         public string? Name { get; set; }
+
+        // [EP-MIXER-25] Solo 安全（Track 的 solo 本身由宿主原生格式管，这里只存新字段）
+        public bool SoloSafe { get; set; }
+
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
         public string? Pin { get; set; }
@@ -517,6 +529,8 @@ internal static class MixerPersistence
         public bool IsMute { get; set; }
     }
 }
+
+
 
 
 

@@ -66,11 +66,11 @@
 
 现在是 0 dB 定律（`left = Vol*(1-pan)`），没有 -3 / -4.5 可选。
 
-### 🔜 2.6 Solo-safe / 独占 solo
+### ✅ 2.6 Solo-safe / 独占 solo（已完成，DESIGN §5.7.30）
 
 小改动，纯模型 + 界面。
 
-### ⏳ 2.7 Group 总线 / VCA
+### 🔜 2.7 Group 总线 / VCA
 
 需要新的路由模型（现在是 Track→AUX/Master/Device 的扁平结构）。工作量大，风险高。
 

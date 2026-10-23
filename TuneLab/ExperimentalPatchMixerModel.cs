@@ -46,6 +46,33 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     public bool SupportsSends => true;
     public bool SupportsInserts => true;
 
+    // [EP-MIXER-25] 独占 solo：清掉**同域**其他通道的 solo。
+    //
+    // 同域 = Track 与 Track 之间、AUX 与 AUX 之间。两个域本来就是独立的
+    // （轨 solo 不压 AUX，反之亦然），所以清的时候也不能跨域 ——
+    // solo 一条轨把 AUX 的 solo 也清掉，是意料之外的副作用。
+    internal void ClearOtherSolos(IMixerChannel keep)
+    {
+        if (!ExclusiveSolo)
+            return;
+
+        foreach (var channel in mChannels)
+        {
+            if (ReferenceEquals(channel, keep))
+                continue;
+
+            if (channel.Kind != keep.Kind)
+                continue;
+
+            if (channel.IsSolo)
+                channel.IsSolo = false;
+        }
+    }
+
+    // [EP-MIXER-25] 独占 solo：solo 一条时清掉其他。运行期开关（不落工程）——
+    // 它是工作流偏好，跟工程内容无关。
+    public bool ExclusiveSolo { get; set; }
+
     public event Action? ChannelsChanged;
     public event Action? RoutingChanged;
     public event Action? MetersUpdated;
@@ -432,6 +459,14 @@ internal sealed class MixerModelFacade : IMixerModel, IDisposable
     public bool SupportsSends => mInner.SupportsSends;
     public bool SupportsInserts => mInner.SupportsInserts;
 
+    // [EP-MIXER-25] 独占 solo 的开关在 Adapter 上（通道适配器要通过 Owner 读它），
+    // 门面只做转发。
+    public bool ExclusiveSolo
+    {
+        get => mInner.ExclusiveSolo;
+        set => mInner.ExclusiveSolo = value;
+    }
+
     public event Action? ChannelsChanged;
     public event Action? RoutingChanged;
     public event Action? MetersUpdated;
@@ -577,6 +612,10 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
     public abstract double Pan { get; set; }
     public abstract bool IsMute { get; set; }
     public abstract bool IsSolo { get; set; }
+
+    // [EP-MIXER-25] Solo 安全。默认实现 = 不支持（Master 直接实现 IMixerChannel，
+    // 不走这条基类路径），子类覆盖。
+    public virtual bool IsSoloSafe { get; set; }
 
     public abstract IDataProperty<MixerRoute> OutputProperty { get; }
     public abstract DataObjectList<Send> SendList { get; }
@@ -864,6 +903,13 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         set => Edit.Write(mTrack.IsSolo, value);
     }
 
+    // [EP-MIXER-25] Solo 安全：别人 solo 时这条不被压制。
+    public override bool IsSoloSafe
+    {
+        get => mTrack.IsSoloSafe.Value;
+        set => Edit.Write(mTrack.IsSoloSafe, value);
+    }
+
     public override IDataProperty<MixerRoute> OutputProperty => mTrack.Output;
     public override DataObjectList<Send> SendList => ((Track)mTrack).Sends;
     public override DataObjectList<InsertSlot> InsertList => ((Track)mTrack).Inserts;
@@ -995,7 +1041,17 @@ internal sealed class MixerAuxChannel : MixerChannelBase
     public override bool IsSolo
     {
         get => Bus.IsSolo.Value;
-        set => Edit.Write(Bus.IsSolo, value);
+        set
+        {
+            if (value) Owner.ClearOtherSolos(this);
+            Edit.Write(Bus.IsSolo, value);
+        }
+    }
+
+    public override bool IsSoloSafe
+    {
+        get => Bus.IsSoloSafe.Value;
+        set => Edit.Write(Bus.IsSoloSafe, value);
     }
 
     public override IDataProperty<MixerRoute> OutputProperty => Bus.Output;
@@ -1113,6 +1169,13 @@ internal sealed class MixerMasterChannel : IMixerChannel
     }
 
     public bool IsSolo
+    {
+        get => false;
+        set { }
+    }
+
+    // Master 没有 solo，也就没有 solo-safe。
+    public bool IsSoloSafe
     {
         get => false;
         set { }
@@ -1327,6 +1390,9 @@ internal sealed class MixerInsertFormat(string name, bool isAvailable, string? u
     public bool IsAvailable => isAvailable;
     public string? UnavailableReason => unavailableReason;
 }
+
+
+
 
 
 

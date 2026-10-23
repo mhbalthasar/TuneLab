@@ -304,7 +304,7 @@ internal sealed class TrackChannelState : IMixChannelState
 
     // 与旧路径 MixData 的判据**逐字一致**：`!IsSolo && (IsMute || hasSolo)` 才跳过。
     // 注意上游的既有语义：solo 会盖过同一条轨的 mute（solo 时不看 IsMute）——照抄，不"修正"。
-    public bool IsSilent => !mTrack.IsSolo && (mTrack.IsMute || HasSolo);
+    public bool IsSilent => !mTrack.IsSolo && (mTrack.IsMute || (HasSolo && !mTrack.IsSoloSafe));
 
     // 输入级：读的是数据槽位（活值，不重建图）。
     public double TrimDb => mTrack.TrimDb;
@@ -330,7 +330,7 @@ internal sealed class AuxChannelState : IMixChannelState
 
     public double Pan => mAux.Pan.Value;
 
-    public bool IsSilent => !mAux.IsSolo.Value && (mAux.IsMute.Value || HasSolo);
+    public bool IsSilent => !mAux.IsSolo.Value && (mAux.IsMute.Value || (HasSolo && !mAux.IsSoloSafe.Value));
 
     public double TrimDb => mAux.TrimDb.Value;
     public bool PhaseInvert => mAux.PhaseInvert.Value;
@@ -385,6 +385,7 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
+
 
 
 

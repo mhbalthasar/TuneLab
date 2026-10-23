@@ -448,6 +448,22 @@ internal sealed class MixerChannelStrip : UserControl
             if (!mSyncing)
                 mChannel.IsSolo = value;
         };
+
+        // [EP-MIXER-25] 右键 S = 切换 solo 安全。
+        //
+        // 为什么挂在 S 上而不是新加一个键：通道条只有 84px 宽，M/S 已经占满；
+        // 而"安全"在语义上就是 S 的一个修饰态（Pro Tools 里是 Ctrl+点 S）。
+        // 右键菜单是唯一不挤占宽度、又能写清楚含义的地方。
+        mSolo.PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(mSolo).Properties.IsRightButtonPressed)
+                return;
+
+            e.Handled = true;
+
+            mChannel.IsSoloSafe = !mChannel.IsSoloSafe;
+            Refresh();
+        };
     }
 
     // 电平由窗口在 MetersUpdated 时统一推过来（一次事件 + 拉取，见 IMixerModel）。
@@ -507,6 +523,9 @@ internal sealed class MixerChannelStrip : UserControl
                 mPan.Value = mChannel.Pan;
                 mMute.IsChecked = mChannel.IsMute;
                 mSolo.IsChecked = mChannel.IsSolo;
+
+                // [EP-MIXER-25] solo-safe 的角标。Master 没有 solo，也不走这里。
+                mSolo.IsMarked = mChannel.IsSoloSafe;
 
                 int sends = mChannel.Sends.Count;
                 mSend.Text = $"Send {sends}";

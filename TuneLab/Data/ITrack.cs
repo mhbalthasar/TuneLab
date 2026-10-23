@@ -18,6 +18,9 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     IDataProperty<string> Name { get; }
     new IDataProperty<bool> IsMute { get; }
     new IDataProperty<bool> IsSolo { get; }
+
+    // [EP-MIXER-25] Solo 安全：别人 solo 时不被压制。
+    new IDataProperty<bool> IsSoloSafe { get; }
     IDataProperty<bool> AsRefer { get; }
     IDataProperty<double> Gain { get; }
     new IDataProperty<double> Pan { get; }
@@ -48,6 +51,9 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
 
     bool IAudioTrack.IsMute => IsMute.Value;
     bool IAudioTrack.IsSolo => IsSolo.Value;
+
+    // [EP-MIXER-25] 默认 false = 普通通道（会被别人的 solo 压制）。
+    bool IAudioTrack.IsSoloSafe => IsSoloSafe.Value;
     double IAudioTrack.Volume => MusicTheory.dB2Level(Gain.Value);
     double IAudioTrack.Pan => Pan.Value;
 

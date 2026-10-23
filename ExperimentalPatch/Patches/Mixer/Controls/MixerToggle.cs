@@ -21,6 +21,18 @@ public sealed class MixerToggle : Control
     public static readonly StyledProperty<Color> CheckedColorProperty =
         AvaloniaProperty.Register<MixerToggle, Color>(nameof(CheckedColor));
 
+    // [EP-MIXER-25] 角标：开关本身没亮，但"有个附加状态开着"。
+    // 用于 solo-safe —— S 没按下去（没在 solo），但这条通道是安全的。
+    // 不占用额外宽度（画在右上角），所以 M/S 两键的排布不用改。
+    public static readonly StyledProperty<bool> IsMarkedProperty =
+        AvaloniaProperty.Register<MixerToggle, bool>(nameof(IsMarked));
+
+    public bool IsMarked
+    {
+        get => GetValue(IsMarkedProperty);
+        set => SetValue(IsMarkedProperty, value);
+    }
+
     public bool IsChecked
     {
         get => GetValue(IsCheckedProperty);
@@ -81,7 +93,8 @@ public sealed class MixerToggle : Control
     {
         base.OnPropertyChanged(change);
 
-        if (change.Property == IsCheckedProperty || change.Property == TextProperty || change.Property == CheckedColorProperty)
+        if (change.Property == IsCheckedProperty || change.Property == TextProperty ||
+            change.Property == CheckedColorProperty || change.Property == IsMarkedProperty)
             InvalidateVisual();
     }
 
@@ -99,6 +112,22 @@ public sealed class MixerToggle : Control
         var letter = IsChecked ? Palette.White : Palette.LightWhite;
 
         context.DrawRectangle(Palette.Brush(background), null, new Rect(0, 0, width, height), 3, 3);
+
+        // 角标：右上角一个小三角。用"形状"而不是"换个底色" —— 底色已经被
+        // IsChecked 占用，而这两件事可以同时为真（solo 中的安全通道）。
+        if (IsMarked)
+        {
+            var mark = new Avalonia.Media.StreamGeometry();
+            using (var geo = mark.Open())
+            {
+                geo.BeginFigure(new Point(width - 1, 1), true);
+                geo.LineTo(new Point(width - 1, 7));
+                geo.LineTo(new Point(width - 7, 1));
+                geo.EndFigure(true);
+            }
+
+            context.DrawGeometry(Palette.Brush(Palette.SoloChecked), null, mark);
+        }
 
         if (string.IsNullOrEmpty(Text))
             return;
