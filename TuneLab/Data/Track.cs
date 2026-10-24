@@ -27,9 +27,6 @@ internal class Track : DataObject, ITrack
     // "我在 solo 主唱"就被静音 —— 而混音时又确实要 solo 主唱。
     // 与"自己被静音"无关：IsMute 仍然照常生效。
     public DataProperty<bool> IsSoloSafe { get; }
-
-    // [EP-MIXER-26] 所属 VCA 的 id。空 = 不属于任何 VCA。
-    public DataProperty<string> VcaId { get; }
     public DataProperty<bool> AsRefer { get; }
     public DataProperty<double> Gain { get; }
     public DataProperty<double> Pan { get; }
@@ -59,7 +56,6 @@ internal class Track : DataObject, ITrack
 
     IDataProperty<bool> ITrack.IsSolo => IsSolo;
     IDataProperty<bool> ITrack.IsSoloSafe => IsSoloSafe;
-    IDataProperty<string> ITrack.VcaId => VcaId;
 
     IDataProperty<bool> ITrack.AsRefer => AsRefer;
 
@@ -82,7 +78,6 @@ internal class Track : DataObject, ITrack
         IsMute = new DataStruct<bool>(this);
         IsSolo = new DataStruct<bool>(this);
         IsSoloSafe = new DataStruct<bool>(this);
-        VcaId = new DataString(this);
         AsRefer = new DataStruct<bool>(this);
         Gain = new DataStruct<double>(this);
         Pan = new DataStruct<double>(this);
@@ -224,6 +219,4 @@ internal class Track : DataObject, ITrack
     readonly ActionEvent mSelectionChanged = new();
     bool mIsSelected = false;
 }
-
-
 

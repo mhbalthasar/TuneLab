@@ -28,9 +28,6 @@ internal class ProjectDocument : DataDocument
         {
             // [EP-MIXER-19] 换工程：先把 Master 插入从音频图摘下来，新工程随后挂上自己那份。
             AudioEngine.SetMasterInserts(null);
-
-            // [EP-MIXER-26] VCA 同理会指向即将销毁的工程 —— 一并摘掉。
-            AudioEngine.SetVcas(null);
             Project?.Detach();
             Project?.Dispose();
         });
@@ -45,10 +42,6 @@ internal class ProjectDocument : DataDocument
             //   2. 导入轨道：TrackScrollView 为了拿 TempoManager 临时 new 一个 Project，直接把指针抢走。
             // 指针一空，master 节点就没有插入实例，Master 轨 FX 的「界面」键永远是灰的。
             AudioEngine.SetMasterInserts(Project?.MasterInserts);
-
-            // [EP-MIXER-26] VCA 也跟随当前文档。它是活列表 —— 增删 VCA 不需要重编图，
-            // 但成员归属于哪个 VCA 需要（编译器在快照里解析 VcaId → 对象）。
-            AudioEngine.SetVcas(Project?.Vcas);
         });
 
         mProject.When(project => project.Tracks.ItemAdded).Subscribe(track =>

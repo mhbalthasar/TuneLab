@@ -32,9 +32,6 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
 
         mProject.Tracks.MembershipModified.Subscribe(OnMembershipModified);
         mProject.Auxes.MembershipModified.Subscribe(OnMembershipModified);
-
-        // [EP-MIXER-26] VCA 的增删也要重建通道表（它是通道列表里的一条）。
-        mProject.Vcas.MembershipModified.Subscribe(OnMembershipModified);
         AudioEngine.CurrentDevice.Modified.Subscribe(OnDeviceModified);
         AudioEngine.ProgressChanged += OnProgressChanged;
     }
@@ -130,59 +127,8 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
             HostLog.Warning($"mixer: removed AUX '{bus.Name.Value}', {repointed} route(s) now go to Master");
     }
 
-    // [EP-MIXER-26] VCA 的增删。
-    //
-    // 删除时把成员的 VcaId 清掉（同一个 merge 作用域 = 一步 undo），理由：
-    // 不清的话工程里会留下一堆指向已删 VCA 的脏 id，落盘也跟着脏。
-    // 清掉之后撤销删除会把成员关系一起还原。
-    public void AddVca()
-    {
-        mProject.AddVca("VCA " + (mProject.Vcas.Count + 1));
-        mProject.Commit();
-    }
-
-    public void RemoveVca(IMixerChannel vca)
-    {
-        if (vca is not MixerVcaChannel channel)
-            return;
-
-        var bus = channel.Bus;
-        int detached = 0;
-
-        mProject.BeginMergeNotify();
-        try
-        {
-            foreach (var other in mChannels)
-            {
-                if (other.Kind is not (MixerChannelKind.Track or MixerChannelKind.Aux))
-                    continue;
-
-                if (other.VcaId != bus.Id)
-                    continue;
-
-                // 用 raw 写入：这是批量操作，最后统一重建一次图。
-                (other as MixerChannelBase)?.SetVcaIdRaw(string.Empty);
-                detached++;
-            }
-
-            mProject.RemoveVca(bus);
-        }
-        finally
-        {
-            mProject.EndMergeNotify();
-            mProject.Commit();
-        }
-
-        // 【必须重建图】状态里握着 VcaBus 的**对象引用**，删掉列表条目并不会让它松手。
-        // 不重建的话，成员会继续乘着那条已删 VCA 的增益 —— 用户看到的是
-        // "删了 VCA，推子回到 0，音量却没回来"。
-        RaiseRoutingChanged();
-
-        if (detached > 0)
-            HostLog.Info($"mixer: removed VCA '{bus.Name.Value}', {detached} channel(s) detached");
-    }
-
     // ── 通道位置（轨道头右键菜单）──
+    //
     // 顺序就是工程里的顺序（Project.Tracks / Project.Auxes），所以这里改的是数据，
     // 主界面的轨道头会跟着变。两组各自独立：轨道置底只到轨道组末尾，不会排到 AUX 后面。
 
@@ -319,7 +265,6 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     {
         mProject.Tracks.MembershipModified.Unsubscribe(OnMembershipModified);
         mProject.Auxes.MembershipModified.Unsubscribe(OnMembershipModified);
-        mProject.Vcas.MembershipModified.Unsubscribe(OnMembershipModified);
         AudioEngine.CurrentDevice.Modified.Unsubscribe(OnDeviceModified);
         AudioEngine.ProgressChanged -= OnProgressChanged;
 
@@ -471,11 +416,6 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
 
         foreach (var aux in mProject.Auxes)
             mChannels.Add(new MixerAuxChannel(this, aux));
-
-        // [EP-MIXER-26] VCA 排在 AUX 之后：它们是控制组，不是信号路径的一部分，
-        // 放在最右边（离 Master 最近）符合"越靠右越是总结性控件"的直觉。
-        foreach (var vca in mProject.Vcas)
-            mChannels.Add(new MixerVcaChannel(this, vca));
     }
 
     readonly Project mProject;
@@ -533,9 +473,6 @@ internal sealed class MixerModelFacade : IMixerModel, IDisposable
 
     public void AddAux() => mInner.AddAux();
     public void RemoveAux(IMixerChannel aux) => mInner.RemoveAux(aux);
-
-    public void AddVca() => mInner.AddVca();
-    public void RemoveVca(IMixerChannel vca) => mInner.RemoveVca(vca);
 
     public bool CanMoveChannel(IMixerChannel channel, MixerChannelMove move)
         => mInner.CanMoveChannel(channel, move);
@@ -730,28 +667,6 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 
 
     internal IDataObject Data { get; }
-
-    // [EP-MIXER-26] 所属 VCA。子类覆盖（Master / VCA 自身不在这个基类里）。
-    //
-    // 写 VcaId 必须重建图：编译器在快照里把 id 解析成 VcaBus 对象，
-    // 只改字符串不会让已有状态换到新 VCA。
-    public string VcaId
-    {
-        get => VcaIdProperty.Value;
-        set
-        {
-            if (VcaIdProperty.Value == value)
-                return;
-
-            Edit.Write(VcaIdProperty, value);
-            Owner.RaiseRoutingChanged();
-        }
-    }
-
-    // 批量操作（删 VCA 时清成员）用：只写值，不逐条重建图 —— 调用方最后统一重建一次。
-    internal void SetVcaIdRaw(string id) => VcaIdProperty.Set(id);
-
-    internal abstract IDataProperty<string> VcaIdProperty { get; }
 
     public IMixerOutput Output
     {
@@ -985,13 +900,7 @@ internal sealed class MixerTrackChannel : MixerChannelBase
     public override bool IsSolo
     {
         get => mTrack.IsSolo.Value;
-        set
-        {
-            // [EP-MIXER-25] 独占 solo：先清掉同域的其他 solo，再写自己。
-            // 顺序重要 —— 先清后写，否则自己的 solo 也会被清掉。
-            if (value) Owner.ClearOtherSolos(this);
-            Edit.Write(mTrack.IsSolo, value);
-        }
+        set => Edit.Write(mTrack.IsSolo, value);
     }
 
     // [EP-MIXER-25] Solo 安全：别人 solo 时这条不被压制。
@@ -1000,9 +909,6 @@ internal sealed class MixerTrackChannel : MixerChannelBase
         get => mTrack.IsSoloSafe.Value;
         set => Edit.Write(mTrack.IsSoloSafe, value);
     }
-
-    // [EP-MIXER-26] 所属 VCA。
-    internal override IDataProperty<string> VcaIdProperty => mTrack.VcaId;
 
     public override IDataProperty<MixerRoute> OutputProperty => mTrack.Output;
     public override DataObjectList<Send> SendList => ((Track)mTrack).Sends;
@@ -1148,9 +1054,6 @@ internal sealed class MixerAuxChannel : MixerChannelBase
         set => Edit.Write(Bus.IsSoloSafe, value);
     }
 
-    // [EP-MIXER-26] 所属 VCA。
-    internal override IDataProperty<string> VcaIdProperty => Bus.VcaId;
-
     public override IDataProperty<MixerRoute> OutputProperty => Bus.Output;
     public override DataObjectList<Send> SendList => Bus.Sends;
     public override DataObjectList<InsertSlot> InsertList => Bus.Inserts;
@@ -1224,119 +1127,6 @@ internal sealed class MixerAuxChannel : MixerChannelBase
 }
 
 // Master 条：推子就是 AudioEngine.MasterGain（不是 DataProperty → 不进 undo、不序列化）。
-// [EP-MIXER-26] 一条 VCA 的视图。
-//
-// 它长得像通道条，但**没有音频**：没有音源、没有 output、没有 send、没有插入、没有 pan。
-// 界面上只留名字 + 推子 + M —— 其余行如果画出来就是假的。
-internal sealed class MixerVcaChannel : IMixerChannel
-{
-    public MixerVcaChannel(MixerModelAdapter owner, VcaBus bus)
-    {
-        mOwner = owner;
-        mBus = bus;
-        mEdit = new EditSession(bus);
-    }
-
-    public MixerChannelKind Kind => MixerChannelKind.Vca;
-    public string Id => mBus.Id;
-
-    // 模型内部用（删 VCA 时要读它的名字 / id）。
-    internal VcaBus Bus => mBus;
-
-    public string Name
-    {
-        get => mBus.Name.Value;
-        set => mEdit.Write(mBus.Name, value);
-    }
-
-    // VCA 不在轨道组里，没有"顺序"可言。
-    public MixerPin Pin
-    {
-        get => MixerPin.None;
-        set { }
-    }
-
-    public string ColorHex => string.Empty;
-    public bool IsSelected => false;
-
-    public double GainDb
-    {
-        get => mBus.Gain.Value;
-        set => mEdit.Write(mBus.Gain, value);
-    }
-
-    // 没有声像：VCA 只乘增益，不动声像（动了就变成"声像也绑在一起"，
-    // 而成员各自的声像位置本来就是它们存在的理由）。
-    public double Pan
-    {
-        get => 0;
-        set { }
-    }
-
-    public bool IsMute
-    {
-        get => mBus.IsMute.Value;
-        set => mEdit.Write(mBus.IsMute, value);
-    }
-
-    // VCA 没有 solo：solo 一条 VCA 意味着"solo 它的全部成员"，
-    // 而成员可能还各自被别的 VCA 管着 —— 语义会立刻变复杂。先不做。
-    public bool IsSolo
-    {
-        get => false;
-        set { }
-    }
-
-    public bool IsSoloSafe
-    {
-        get => false;
-        set { }
-    }
-
-    // VCA 自己不能被别的 VCA 控制（否则要处理环）。
-    public string VcaId
-    {
-        get => string.Empty;
-        set { }
-    }
-
-    public IMixerOutput Output
-    {
-        get => mOwner.MasterOutput;
-        set { }
-    }
-
-    public IReadOnlyList<IMixerSend> Sends => [];
-    public bool HasInputStage => false;
-    public double TrimDb { get => 0; set { } }
-    public bool PhaseInvert { get => false; set { } }
-    public double HpfHz { get => 0; set { } }
-    public IReadOnlyList<IMixerInsert> Inserts => [];
-
-    // VCA 没有自己的音频，也就没有电平 / 响度。null = 如实说"没有读数"。
-    public (double LeftDb, double RightDb)? Peak => null;
-    public double? Lufs => null;
-    public double? TruePeakDb => null;
-
-    public event Action? StateChanged;
-    public event Action? RoutingChanged;
-
-    public void BeginEdit() => mEdit.Begin();
-    public void EndEdit() => mEdit.End();
-
-    public IMixerSend AddSend(IMixerOutput target) => throw new NotSupportedException("VCA cannot have sends");
-    public void RemoveSend(IMixerSend send) => throw new NotSupportedException("VCA cannot have sends");
-    public bool CanSendTo(IMixerOutput target) => false;
-    public IMixerInsert AddInsert(IMixerInsertFormat format) => throw new NotSupportedException("VCA cannot have inserts");
-    public void RemoveInsert(IMixerInsert insert) => throw new NotSupportedException("VCA cannot have inserts");
-    public bool CanMoveInsert(IMixerInsert insert, int delta) => false;
-    public void MoveInsert(IMixerInsert insert, int delta) { }
-
-    readonly MixerModelAdapter mOwner;
-    readonly VcaBus mBus;
-    readonly EditSession mEdit;
-}
-
 internal sealed class MixerMasterChannel : IMixerChannel
 {
     public MixerMasterChannel(MixerModelAdapter owner)
@@ -1388,13 +1178,6 @@ internal sealed class MixerMasterChannel : IMixerChannel
     public bool IsSoloSafe
     {
         get => false;
-        set { }
-    }
-
-    // Master 不能被 VCA 控制：它是总轨，乘上控制组增益会让整首曲子莫名其妙变小。
-    public string VcaId
-    {
-        get => string.Empty;
         set { }
     }
 

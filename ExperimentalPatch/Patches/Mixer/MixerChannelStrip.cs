@@ -24,7 +24,6 @@ internal sealed class MixerChannelStrip : UserControl
     readonly IMixerChannel mChannel;
     readonly string mLabel;
     readonly bool mIsMaster;
-    readonly bool mIsVca;
 
     readonly Border mHeaderBar = new();
     readonly TextBlock mIndex = new();
@@ -67,7 +66,6 @@ internal sealed class MixerChannelStrip : UserControl
         mChannel = channel;
         mLabel = label;
         mIsMaster = channel.Kind == MixerChannelKind.Master;
-        mIsVca = channel.Kind == MixerChannelKind.Vca;
 
         Width = mIsMaster ? MixerMetrics.MasterWidth : MixerMetrics.StripWidth;
         Background = Palette.Brush(Palette.Dark);
@@ -81,11 +79,6 @@ internal sealed class MixerChannelStrip : UserControl
 
     Control BuildContent()
     {
-        // [EP-MIXER-26] VCA 是控制组，不是信号路径：画 pan / send / FX / output 只会是假的。
-        // 它用一套自己的行，但**高度总和与普通条相同**，推子仍然落在同一高度。
-        if (mIsVca)
-            return BuildVcaContent();
-
         var rows = new Grid
         {
             // 固定行合计 192；* 给推子。三种通道行数一致 → 推子对齐。
@@ -119,74 +112,6 @@ internal sealed class MixerChannelStrip : UserControl
     {
         Grid.SetRow(control, row);
         return control;
-    }
-
-    // [EP-MIXER-26] VCA 的行：标题 / 空白 / M / 推子 / 空白。
-    //
-    // 空白行不是懒：普通条在这些位置有 IN / pan / Send / FX / 读数 / output，
-    // 高度必须留着，否则 VCA 的推子会跟别人错位 —— 而"推子对齐"正是
-    // 一眼比较电平的前提（DESIGN §6.1）。
-    Control BuildVcaContent()
-    {
-        double above = MixerMetrics.IndexHeight + MixerMetrics.NameHeight
-            + MixerMetrics.InputHeight + MixerMetrics.PanHeight
-            + MixerMetrics.CountButtonHeight + MixerMetrics.CountButtonHeight;
-
-        var rows = new Grid
-        {
-            RowDefinitions = new RowDefinitions(
-                $"{above},{MixerMetrics.ToggleHeight},*,{MixerMetrics.ReadoutHeight + MixerMetrics.OutputHeight}"),
-        };
-
-        var header = new Grid
-        {
-            RowDefinitions = new RowDefinitions($"{MixerMetrics.IndexHeight},{MixerMetrics.NameHeight}"),
-
-            // 只占"标题 + 名字"两行的高度，**不能**撑满整个空白区 ——
-            // 否则琥珀底色会一路盖到 Send / FX 那几行，看起来像一块色块而不是一条通道头。
-            Height = MixerMetrics.IndexHeight + MixerMetrics.NameHeight,
-            VerticalAlignment = VerticalAlignment.Top,
-            Background = Palette.Brush(Palette.VcaBar),
-        };
-
-        mIndex.Text = "VCA";
-        mIndex.FontSize = 10.5;
-        mIndex.Foreground = Palette.Brush(Palette.Dark);
-        mIndex.HorizontalAlignment = HorizontalAlignment.Center;
-        mIndex.VerticalAlignment = VerticalAlignment.Center;
-        header.Children.Add(Place(mIndex, 0));
-
-        var name = BuildName();
-
-        // 琥珀底色上用深色字（与标题同一套），浅色字在黄底上读不清。
-        mName.Foreground = Palette.Brush(Palette.Dark);
-
-        header.Children.Add(Place(name, 1));
-
-        rows.Children.Add(Place(header, 0));
-        rows.Children.Add(Place(BuildVcaToggles(), 1));
-        rows.Children.Add(Place(BuildFader(), 2));
-
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
-        Grid.SetColumn(mSelectionBar, 0);
-        Grid.SetColumn(rows, 1);
-        grid.Children.Add(mSelectionBar);
-        grid.Children.Add(rows);
-        return grid;
-    }
-
-    // VCA 只有 M（没有 S：solo 一条 VCA 的语义是"solo 全部成员"，先不做）。
-    Control BuildVcaToggles()
-    {
-        var panel = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("*,*"),
-            Margin = new Thickness(6, 2, 6, 2),
-        };
-
-        Grid.SetColumn(mMute, 0);
-        panel.Children.Add(mMute);
-        return panel;
     }
 
     Control BuildHeader()

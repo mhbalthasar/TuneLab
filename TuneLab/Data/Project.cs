@@ -24,10 +24,6 @@ internal class Project : DataObject, IProject
     // AUX 总线（DESIGN.md §4.1）。**暂不落盘**：见 §9 与 Patches/Mixer/DESIGN.md 的说明——
     // 打开另一个工程时这里会被清空（它们属于上一个工程），UI 上有明确提示。
     public IReadOnlyDataObjectList<AuxBus> Auxes => mAuxes;
-
-    // [EP-MIXER-26] VCA 控制组。与 Auxes 并列存放，随工程落盘。
-    // 它不进音频图（见 VcaBus 的注释），所以没有 Activate / Deactivate 那套。
-    public IReadOnlyDataObjectList<VcaBus> Vcas => mVcas;
     public string ExportPath { get; set; } = string.Empty;
     public string ExportFileName { get; set; } = string.Empty;
     public string ExportFormat { get; set; } = "wav";
@@ -44,7 +40,6 @@ internal class Project : DataObject, IProject
         mTempoManager = new(this);
         mTracks = new(this);
         mAuxes = new(this);
-        mVcas = new(this);
 
         // [EP-MIXER-19] Master 的插入链：Master 是"总轨"，效果器挂在它上面 = 总线效果。
         // 数据挂在 Project 上（与 Tracks/Auxes 同级），所以 undo / 落盘都跟着工程走。
@@ -108,24 +103,6 @@ internal class Project : DataObject, IProject
     }
 
     public bool RemoveAux(AuxBus aux) => mAuxes.Remove(aux);
-
-    // [EP-MIXER-26] VCA 的增删。与 AUX 同一套 id 规则（序号递增、恢复时按 id 重建）。
-    public VcaBus AddVca(string name) => AddVcaWithId("vca-" + ++mVcaSeq, name);
-
-    public VcaBus AddVcaWithId(string id, string name)
-    {
-        if (id.StartsWith("vca-", StringComparison.Ordinal) && int.TryParse(id[4..], out int number) && number > mVcaSeq)
-            mVcaSeq = number;
-
-        var vca = new VcaBus(id, name, this);
-        mVcas.Add(vca);
-        return vca;
-    }
-
-    // 删 VCA 时**不**清成员的 VcaId：VcaId 指向一个不存在的 VCA 等价于"不属于任何 VCA"
-    // （解析时查不到就是 null）。这样撤销删除时成员关系自动恢复 —— 比"删的时候顺手清字段"
-    // 少一次数据改动，也就少一个 undo 步骤。
-    public bool RemoveVca(VcaBus vca) => mVcas.Remove(vca);
 
     // [EP-MIXER-5] AUX 的位置调整（混音台轨道头右键）。与轨道同一套原语：
     // RemoveAt + Insert 会走列表的增删通知，AudioEngine 的 AUX 集合跟着变，
@@ -222,13 +199,7 @@ internal class Project : DataObject, IProject
     readonly DataObjectList<ITrack> mTracks;
     readonly DataObjectList<AuxBus> mAuxes;
     int mAuxSeq;
-
-    // [EP-MIXER-26] VCA 控制组（不进音频图）。
-    readonly DataObjectList<VcaBus> mVcas;
-    int mVcaSeq;
 }
-
-
 
 
 

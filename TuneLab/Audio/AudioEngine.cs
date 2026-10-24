@@ -165,12 +165,6 @@ internal static class AudioEngine
         AudioGraph.SetMasterInserts(inserts);
     }
 
-    // [EP-MIXER-26] VCA 控制组由工程提供（Project.Vcas）：换工程时跟着换。
-    public static void SetVcas(IReadOnlyList<TuneLab.Data.VcaBus>? vcas)
-    {
-        AudioGraph.SetVcas(vcas);
-    }
-
     public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo)
     {
         ExportTrack(filePath, track, isStereo, SampleRate.Value, AudioEncodeSettings.Wav(16));

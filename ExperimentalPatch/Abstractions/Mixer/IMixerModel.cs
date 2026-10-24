@@ -58,11 +58,6 @@ public interface IMixerModel
     void AddAux();
     void RemoveAux(IMixerChannel aux);
 
-    // [EP-MIXER-26] VCA 的增删。VCA 不是音频节点，删掉它**不**清成员的 VcaId ——
-    // 解析时查不到就等于"没有 VCA"，撤销删除时成员关系自动恢复。
-    void AddVca();
-    void RemoveVca(IMixerChannel vca);
-
     // ── 通道位置（轨道头右键菜单）──
     //
     // 只在**所属组内**移动：轨道组（Project.Tracks）与 AUX 组（Project.Auxes）各自独立，
@@ -78,10 +73,6 @@ public enum MixerChannelKind
     Track,
     Aux,
     Master,
-
-    // [EP-MIXER-26] VCA 控制组：不是音频节点，只是把几条通道的推子绑在一起。
-    // 它出现在通道列表里（所以有自己的一条），但没有 output / send / insert / pan。
-    Vca,
 }
 
 // output 菜单的第一级分类（你说的 Aux / Master / Device / Cable）。
@@ -160,13 +151,6 @@ public interface IMixerChannel
     // 与"自己被静音"无关：IsMute 仍然照常生效。solo-safe 豁免的只是
     // "被别人的 solo 压制"这一条。
     bool IsSoloSafe { get; set; }
-
-    // [EP-MIXER-26] 所属 VCA 的 id（空 = 不属于任何 VCA）。
-    //
-    // 只有 Track / Aux 有意义；Master 与 VCA 自身恒为空。
-    // 一个通道同时只属于一个 VCA —— 多个 VCA 会带来"增益按什么顺序乘"的问题，
-    // 而单归属已经覆盖了绝大多数用途（鼓组、弦乐组、人声组各一个）。
-    string VcaId { get; set; }
 
     // 单选出入口。默认 Master；Master 自己的 output 只能是设备。
     IMixerOutput Output { get; set; }

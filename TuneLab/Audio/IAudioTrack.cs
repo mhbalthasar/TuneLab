@@ -16,9 +16,6 @@ internal interface IAudioTrack
     // [EP-MIXER-25] Solo 安全：别人 solo 时这条通道不被压制。
     // 默认 false —— 没实现这个能力的实现者行为不变。
     bool IsSoloSafe => false;
-
-    // [EP-MIXER-26] 所属 VCA 的 id。空 = 不属于任何 VCA。
-    string VcaId => string.Empty;
     double Volume { get; }
     double Pan { get; }
     double EndTime { get; }
@@ -42,5 +39,4 @@ internal interface IAudioTrack
     double HpfHz => 0;
 
 }
-
 

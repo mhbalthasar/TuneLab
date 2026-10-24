@@ -53,10 +53,6 @@ public static class Palette
     // AUX 条的固定色（不参与 TRACK_COLORS：AUX 不是轨道，不该跟轨道抢颜色）。
     public static readonly Color AuxBar = new(255, 124, 143, 166);
 
-    // [EP-MIXER-26] VCA 条的固定色。用琥珀色：它与"轨道色 / AUX 钢蓝 / Master 灰"都不同，
-    // 一眼能认出"这条不是信号路径，是控制组"。
-    public static readonly Color VcaBar = new(255, 196, 158, 74);
-
     // 轨道配色（Style.TRACK_COLORS）：轨道色为空时按序号取，与轨道头的规则一致。
     public static readonly string[] TrackColors =
     [

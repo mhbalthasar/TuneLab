@@ -24,8 +24,7 @@ internal sealed class MixerGraphCompiler
     volatile AuxChannelState[] mAuxStates = [];
 
     public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks,
-        IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null,
-        IReadOnlyList<VcaBus>? vcas = null)
+        IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null)
     {
         // Master 是"总轨"：它的插入链挂在 master 节点上（DESIGN §5.7.18）。
         // 没有就传 null，行为与以前完全一致。
@@ -52,17 +51,6 @@ internal sealed class MixerGraphCompiler
 
         var nodes = new Dictionary<string, MixGraphBuilder.NodeDraft>();
 
-        // [EP-MIXER-26] VCA 解析：id → VcaBus。查不到 = 不属于任何 VCA
-        // （删掉 VCA 之后成员还留着旧 id，这里自然退回"没有 VCA"）。
-        //
-        // 一次性建表而不是每节点扫一遍工程：轨多的时候那是 O(n·m)。
-        var vcaById = new Dictionary<string, VcaBus>(StringComparer.Ordinal);
-        foreach (var vca in vcas ?? [])
-            vcaById[vca.Id] = vca;
-
-        VcaBus? ResolveVca(string? vcaId)
-            => string.IsNullOrEmpty(vcaId) ? null : vcaById.GetValueOrDefault(vcaId);
-
         foreach (var aux in auxList)
         {
             // 防御：进程级的 AudioGraph 里若还留着上一个工程的 AUX（id 都从 aux-1 起），
@@ -74,7 +62,7 @@ internal sealed class MixerGraphCompiler
                 continue;
             }
 
-            var state = new AuxChannelState(aux, ResolveVca(aux.VcaId.Value));
+            var state = new AuxChannelState(aux);
             auxStates.Add(state);
             nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null,
                 BuildInserts(aux.Id, aux.Inserts));
@@ -83,7 +71,7 @@ internal sealed class MixerGraphCompiler
         for (int i = 0; i < trackList.Count; i++)
         {
             var track = trackList[i];
-            var state = new TrackChannelState(track, ResolveVca(track.VcaId));
+            var state = new TrackChannelState(track);
             trackStates.Add(state);
 
             string id = "track-" + i;
@@ -300,14 +288,9 @@ internal sealed class TrackChannelState : IMixChannelState
 {
     readonly IAudioTrack mTrack;
 
-    // [EP-MIXER-26] 所属 VCA（null = 不属于任何 VCA）。
-    // 编译期解析一次，运行时读它的活值 —— VCA 的推子不必重建图。
-    readonly VcaBus? mVca;
-
-    public TrackChannelState(IAudioTrack track, VcaBus? vca = null)
+    public TrackChannelState(IAudioTrack track)
     {
         mTrack = track;
-        mVca = vca;
     }
 
     // 由 RefreshSolo 每块写一次。
@@ -315,18 +298,13 @@ internal sealed class TrackChannelState : IMixChannelState
 
     public bool IsSolo => mTrack.IsSolo;
 
-    // VCA 是**乘在**通道推子上的：VCA 拉低 6 dB，这条通道就整体低 6 dB，
-    // 但它自己的推子位置不变（界面上的推子仍然显示原值）。
-    public double Volume => mTrack.Volume * VcaGain;
-
-    double VcaGain => mVca == null ? 1 : MusicTheory.dB2Level(mVca.Gain.Value);
+    public double Volume => mTrack.Volume;
 
     public double Pan => mTrack.Pan;
 
     // 与旧路径 MixData 的判据**逐字一致**：`!IsSolo && (IsMute || hasSolo)` 才跳过。
     // 注意上游的既有语义：solo 会盖过同一条轨的 mute（solo 时不看 IsMute）——照抄，不"修正"。
-    // VCA 静音 = 成员全哑（成员自己的 IsMute 不受影响，关掉 VCA 静音就恢复）。
-    public bool IsSilent => !mTrack.IsSolo && (mTrack.IsMute || mVca?.IsMute.Value == true || (HasSolo && !mTrack.IsSoloSafe));
+    public bool IsSilent => !mTrack.IsSolo && (mTrack.IsMute || (HasSolo && !mTrack.IsSoloSafe));
 
     // 输入级：读的是数据槽位（活值，不重建图）。
     public double TrimDb => mTrack.TrimDb;
@@ -339,24 +317,20 @@ internal sealed class AuxChannelState : IMixChannelState
 {
     readonly AuxBus mAux;
 
-    // [EP-MIXER-26] AUX 也能被 VCA 控制（把几条 AUX 绑在一起也是真实需求）。
-    readonly VcaBus? mVca;
-
-    public AuxChannelState(AuxBus aux, VcaBus? vca = null)
+    public AuxChannelState(AuxBus aux)
     {
         mAux = aux;
-        mVca = vca;
     }
 
     public bool HasSolo { get; set; }
 
     public bool IsSolo => mAux.IsSolo.Value;
 
-    public double Volume => MusicTheory.dB2Level(mAux.Gain.Value) * (mVca == null ? 1 : MusicTheory.dB2Level(mVca.Gain.Value));
+    public double Volume => MusicTheory.dB2Level(mAux.Gain.Value);
 
     public double Pan => mAux.Pan.Value;
 
-    public bool IsSilent => !mAux.IsSolo.Value && (mAux.IsMute.Value || mVca?.IsMute.Value == true || (HasSolo && !mAux.IsSoloSafe.Value));
+    public bool IsSilent => !mAux.IsSolo.Value && (mAux.IsMute.Value || (HasSolo && !mAux.IsSoloSafe.Value));
 
     public double TrimDb => mAux.TrimDb.Value;
     public bool PhaseInvert => mAux.PhaseInvert.Value;
@@ -411,10 +385,6 @@ internal sealed class PreviewMixSource : IMixSource
     public void AddData(int position, int count, float[] buffer, int offset, float leftGain, float rightGain)
         => mPlayer.AddData(count, buffer, offset);
 }
-
-
-
-
 
 
 
