@@ -459,3 +459,7 @@ $RECYCLE.BIN/
 # Python 工具脚本（tools/icons）的字节码缓存
 __pycache__/
 *.pyc
+
+# 测试/构建临时输出（TuneLab.Tests 的 BaseOutputPath 指向这里）
+.tmpbuild/
+
