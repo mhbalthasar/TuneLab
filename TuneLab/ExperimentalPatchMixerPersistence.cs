@@ -66,6 +66,7 @@ internal static class MixerPersistence
                 Mute = aux.IsMute.Value,
                 Solo = aux.IsSolo.Value,
                 SoloSafe = aux.IsSoloSafe.Value,
+                VcaId = aux.VcaId.Value,
                 Output = ToDto(aux.Output.Value),
                 Sends = ToDtos(aux.Sends),
                 Pin = aux.Pinned.Value.ToString(),
@@ -92,6 +93,7 @@ internal static class MixerPersistence
 
                 // [EP-MIXER-20] 输入级
                 SoloSafe = track.IsSoloSafe.Value,
+                VcaId = track.VcaId.Value,
                 TrimDb = track.TrimDb.Value,
                 PhaseInvert = track.PhaseInvert.Value,
                 HpfHz = track.HpfHz.Value,
@@ -100,6 +102,18 @@ internal static class MixerPersistence
 
         // [EP-MIXER-19] Master 总线上的插入（总轨效果）。
         payload.MasterInserts = ToInsertDtos(project.MasterInserts);
+
+        // [EP-MIXER-26] VCA 控制组（不进音频图，只是推子绑定）
+        foreach (var vca in project.Vcas)
+        {
+            payload.Vcas.Add(new VcaDto
+            {
+                Id = vca.Id,
+                Name = vca.Name.Value,
+                Gain = vca.Gain.Value,
+                Mute = vca.IsMute.Value,
+            });
+        }
 
         return payload;
     }
@@ -180,6 +194,18 @@ internal static class MixerPersistence
 
     static void ApplyPayload(Project project, Payload payload)
     {
+        // [EP-MIXER-26] VCA 先建：成员的 VcaId 是字符串，解析在编译期做，
+        // 但先把对象造出来更符合"先有容器再有成员"的直觉，也方便日志。
+        foreach (var dto in payload.Vcas)
+        {
+            if (string.IsNullOrEmpty(dto.Id))
+                continue;
+
+            var vca = project.AddVcaWithId(dto.Id, dto.Name ?? dto.Id);
+            vca.Gain.SetInfo(dto.Gain);
+            vca.IsMute.SetInfo(dto.Mute);
+        }
+
         // AUX：按保存的 id 重建（路由引用的是 id，重建时不能换号）。
         var auxes = new Dictionary<string, AuxBus>();
 
@@ -194,6 +220,7 @@ internal static class MixerPersistence
             aux.IsMute.SetInfo(dto.Mute);
             aux.IsSolo.SetInfo(dto.Solo);
             aux.IsSoloSafe.SetInfo(dto.SoloSafe);
+            aux.VcaId.SetInfo(dto.VcaId ?? string.Empty);
             aux.Output.SetInfo(FromDto(dto.Output));
             aux.Pinned.SetInfo(ParsePin(dto.Pin));
 
@@ -229,6 +256,7 @@ internal static class MixerPersistence
 
             // [EP-MIXER-20] 输入级（老工程没有这几个字段 → 默认值 = 关闭）
             track.IsSoloSafe.SetInfo(dto.SoloSafe);
+            track.VcaId.SetInfo(dto.VcaId ?? string.Empty);
             track.TrimDb.SetInfo(dto.TrimDb);
             track.PhaseInvert.SetInfo(dto.PhaseInvert);
             track.HpfHz.SetInfo(dto.HpfHz);
@@ -451,6 +479,17 @@ internal static class MixerPersistence
 
         // [EP-MIXER-19] Master 的插入链。老文件没有这个字段 → 空列表，行为与以前一致。
         public List<InsertDto> MasterInserts { get; set; } = [];
+
+        // [EP-MIXER-26] VCA 控制组。老文件没有 → 空列表，行为与以前一致。
+        public List<VcaDto> Vcas { get; set; } = [];
+    }
+
+    sealed class VcaDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string? Name { get; set; }
+        public double Gain { get; set; }
+        public bool Mute { get; set; }
     }
 
     sealed class AuxDto
@@ -464,6 +503,9 @@ internal static class MixerPersistence
 
         // [EP-MIXER-25] Solo 安全（老工程没有这个字段 → false = 普通通道）
         public bool SoloSafe { get; set; }
+
+        // [EP-MIXER-26] 所属 VCA（空 = 不属于任何 VCA）
+        public string? VcaId { get; set; }
 
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }
@@ -483,6 +525,9 @@ internal static class MixerPersistence
 
         // [EP-MIXER-25] Solo 安全（Track 的 solo 本身由宿主原生格式管，这里只存新字段）
         public bool SoloSafe { get; set; }
+
+        // [EP-MIXER-26] 所属 VCA（空 = 不属于任何 VCA）
+        public string? VcaId { get; set; }
 
         public RouteDto? Output { get; set; }
         public List<SendDto>? Sends { get; set; }

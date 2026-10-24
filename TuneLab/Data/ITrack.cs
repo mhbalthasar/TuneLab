@@ -21,6 +21,9 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
 
     // [EP-MIXER-25] Solo 安全：别人 solo 时不被压制。
     new IDataProperty<bool> IsSoloSafe { get; }
+
+    // [EP-MIXER-26] 所属 VCA 的 id（空 = 不属于任何 VCA）。
+    new IDataProperty<string> VcaId { get; }
     IDataProperty<bool> AsRefer { get; }
     IDataProperty<double> Gain { get; }
     new IDataProperty<double> Pan { get; }
@@ -54,6 +57,7 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
 
     // [EP-MIXER-25] 默认 false = 普通通道（会被别人的 solo 压制）。
     bool IAudioTrack.IsSoloSafe => IsSoloSafe.Value;
+    string IAudioTrack.VcaId => VcaId.Value;
     double IAudioTrack.Volume => MusicTheory.dB2Level(Gain.Value);
     double IAudioTrack.Pan => Pan.Value;
 
@@ -67,4 +71,5 @@ internal interface ITrack : IDataObject<TrackInfo>, IAudioTrack, ISelectable
     MixerRoute IAudioTrack.Output => Output.Value;
     IReadOnlyList<Send> IAudioTrack.Sends => Sends;
 }
+
 

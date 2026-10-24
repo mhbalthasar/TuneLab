@@ -46,6 +46,39 @@ internal class Send : DataObject
     }
 }
 
+// [EP-MIXER-26] VCA 总线：**控制组**，不是音频路径。
+//
+// 与 AUX 的根本区别：AUX 是"把声音汇进去"（音频真的流过它），
+// VCA 只是"把推子绑在一起"（音频**不**流过它，成员保持各自的输出路由）。
+//
+// 为什么需要这个区别：给鼓组做一个 VCA，鼓的每一条还各自去自己的 AUX、自己的声像位置，
+// 只是"整体音量"由一个推子控制。用 AUX 做同一件事的话，鼓组的声音会先汇成一路，
+// 之后再也拆不开 —— 声像、各自的 send 全都会变味。
+//
+// 实现上它连音频节点都不是：混音图里**没有** VCA 节点。它只做一件事 ——
+// 把成员的 Volume 乘上自己的增益（见 TrackChannelState / AuxChannelState）。
+// 所以它天然没有延迟、没有 PDC 问题、也不需要重编图。
+internal class VcaBus : DataObject
+{
+    public string Id { get; }
+
+    public DataProperty<string> Name { get; }
+
+    // dB，-∞..+12。0 = 不影响成员。
+    public DataProperty<double> Gain { get; }
+
+    // true = 成员全部哑掉（成员自己的静音状态不受影响，关掉 VCA 静音就恢复）。
+    public DataProperty<bool> IsMute { get; }
+
+    public VcaBus(string id, string name, DataObject parent) : base(parent)
+    {
+        Id = id;
+        Name = new DataString(this, name);
+        Gain = new DataStruct<double>(this);
+        IsMute = new DataStruct<bool>(this);
+    }
+}
+
 // 一条 AUX 总线：与 Master 同构（输入缓冲 → 推子 → 分发），但有自己的名字 / 颜色位 / 增删。
 // 与 Track 的区别只有两条：没有音源（不读 parts）、没有"轨道序号"这个概念。
 internal class AuxBus : DataObject
@@ -60,6 +93,11 @@ internal class AuxBus : DataObject
 
     // [EP-MIXER-25] Solo 安全（与 Track 同一语义）。
     public DataProperty<bool> IsSoloSafe { get; }
+
+    // [EP-MIXER-26] 所属 VCA 的 id。空 = 不属于任何 VCA。
+    // 只存 id 而不是对象引用：落盘 / undo 走的是值，不是图。
+    public DataProperty<string> VcaId { get; }
+
     public DataProperty<MixerRoute> Output { get; }
     public DataObjectList<Send> Sends { get; }
     public DataObjectList<InsertSlot> Inserts { get; }
@@ -79,6 +117,7 @@ internal class AuxBus : DataObject
         IsMute = new DataStruct<bool>(this);
         IsSolo = new DataStruct<bool>(this);
         IsSoloSafe = new DataStruct<bool>(this);
+        VcaId = new DataString(this);
         Output = new DataStruct<MixerRoute>(this);
 
         // 构造期尚未接上 document，这条命令会被丢弃、只落值（见 DataProperty.SetInfo）。
@@ -157,4 +196,5 @@ internal class InsertSlot : DataObject
         Mix.SetInfo(1);
     }
 }
+
 

@@ -40,6 +40,10 @@ public sealed class MixerWindow : Window
     readonly ChromeButton mTopmost = new() { Text = "置顶", Width = 44, Height = 22 };
     readonly ChromeButton mAddAux = new() { Text = "+ AUX", Width = 52, Height = 22 };
 
+    // [EP-MIXER-26] VCA 控制组。与 + AUX 并排：两者都是"加一条通道"，
+    // 但 VCA 不是信号路径 —— 名字上区分清楚。
+    readonly ChromeButton mAddVca = new() { Text = "+ VCA", Width = 52, Height = 22 };
+
     // 声向法则（roadmap 2.5）。全局设置，所以放在标题栏而不是某条通道上。
     // 文字里带当前值 —— 少一次点击就知道现在是什么法则。
     readonly ChromeButton mPanLaw = new() { Text = "Pan: 0dB", Width = 68, Height = 22 };
@@ -250,6 +254,9 @@ public sealed class MixerWindow : Window
         // 宿主还没接 AUX（阶段一）→ 直接不画这个按钮，而不是画一个点了没反应的。
         mAddAux.IsVisible = mModel.SupportsAux;
 
+        // [EP-MIXER-26] VCA 是纯补丁层的能力（不进音频图），不需要宿主支持位。
+        mAddVca.Click += () => mModel.AddVca();
+
         SyncPanLawButton();
         mPanLaw.Click += ShowPanLawMenu;
 
@@ -286,6 +293,7 @@ public sealed class MixerWindow : Window
         buttons.Children.Add(mPanLaw);
         buttons.Children.Add(mExclusiveSolo);
         buttons.Children.Add(mAddAux);
+        buttons.Children.Add(mAddVca);
         buttons.Children.Add(mTopmost);
         buttons.Children.Add(close);
 
@@ -490,6 +498,7 @@ public sealed class MixerWindow : Window
 
         int trackIndex = 0;
         int auxIndex = 0;
+        int vcaIndex = 0;
         bool anyLeft = false;
         bool anyRight = false;
         bool dividerAdded = false;
@@ -498,9 +507,13 @@ public sealed class MixerWindow : Window
         foreach (var channel in mModel.Channels)
         {
             // 序号在各自域内连续：轨道 1..n，AUX 1..m（与编辑器轨道列表的序号一致）。
-            string label = channel.Kind == MixerChannelKind.Aux
-                ? (++auxIndex).ToString()
-                : (++trackIndex).ToString();
+            // [EP-MIXER-26] VCA 有自己的一列（V1..Vk）—— 不能让它去抢轨道的序号。
+            string label = channel.Kind switch
+            {
+                MixerChannelKind.Aux => (++auxIndex).ToString(),
+                MixerChannelKind.Vca => "V" + (++vcaIndex),
+                _ => (++trackIndex).ToString(),
+            };
 
             var strip = new MixerChannelStrip(channel, label);
             HookStrip(strip);
@@ -569,7 +582,7 @@ public sealed class MixerWindow : Window
     {
         var menu = new ContextMenu();
 
-        if (channel.Kind != MixerChannelKind.Master)
+        if (channel.Kind is not (MixerChannelKind.Master or MixerChannelKind.Vca))
         {
             menu.Items.Add(PinItem(channel, MixerPin.Left, L("固定到左侧", "Pin to left")));
             menu.Items.Add(PinItem(channel, MixerPin.Right, L("固定到右侧", "Pin to right")));
@@ -593,7 +606,7 @@ public sealed class MixerWindow : Window
             menu.Items.Add(input);
         }
 
-        if (channel.Kind != MixerChannelKind.Master)
+        if (channel.Kind is not (MixerChannelKind.Master or MixerChannelKind.Vca))
         {
             menu.Items.Add(new Separator());
 
@@ -612,7 +625,60 @@ public sealed class MixerWindow : Window
             menu.Items.Add(remove);
         }
 
+        // [EP-MIXER-26] 分配到 VCA。只有 Track / AUX 能进 VCA。
+        //
+        // 用单选（Radio）而不是复选：一个通道同时只属于一个 VCA（见 IMixerChannel.VcaId 的注释）。
+        if (channel.Kind is MixerChannelKind.Track or MixerChannelKind.Aux)
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(VcaItem(channel));
+        }
+
+        if (channel.Kind == MixerChannelKind.Vca)
+        {
+            menu.Items.Add(new Separator());
+            var remove = new MenuItem { Header = L("删除此 VCA", "Delete this VCA") };
+            remove.Click += (_, _) => mModel.RemoveVca(channel);
+            menu.Items.Add(remove);
+        }
+
         return menu;
+    }
+
+    // "分配到 VCA" 子菜单：无 / 各条 VCA。当前所属打勾。
+    MenuItem VcaItem(IMixerChannel channel)
+    {
+        var sub = new MenuItem { Header = L("分配到 VCA", "Assign to VCA") };
+
+        var none = new MenuItem
+        {
+            Header = L("无", "None"),
+            ToggleType = MenuItemToggleType.Radio,
+            IsChecked = string.IsNullOrEmpty(channel.VcaId),
+        };
+        none.Click += (_, _) => channel.VcaId = string.Empty;
+        sub.Items.Add(none);
+
+        foreach (var other in mModel.Channels)
+        {
+            if (other.Kind != MixerChannelKind.Vca)
+                continue;
+
+            var item = new MenuItem
+            {
+                Header = other.Name,
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = channel.VcaId == other.Id,
+            };
+
+            string id = other.Id;
+            item.Click += (_, _) => channel.VcaId = id;
+            sub.Items.Add(item);
+        }
+
+        // 一条 VCA 都没有时不显示这个子菜单：点开只有"无"是纯噪音。
+        sub.IsVisible = sub.Items.Count > 1;
+        return sub;
     }
 
     MenuItem MoveItem(IMixerChannel channel, MixerChannelMove move, string header)

@@ -210,7 +210,7 @@ internal class AudioGraph()
 
         try
         {
-            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts));
+            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts, mVcas));
         }
         catch (Exception ex)
         {
@@ -251,6 +251,16 @@ internal class AudioGraph()
     // [EP-MIXER-19] Master 的插入链（由当前工程提供）。编译时挂到 master 节点上。
     DataObjectList<InsertSlot>? mMasterInserts;
 
+    // [EP-MIXER-26] VCA 控制组。**不进音频图**（VcaBus 的注释），但编译期要把
+    // 成员的 VcaId 解析成对象交给状态，所以它跟着快照一起进来。
+    IReadOnlyList<VcaBus>? mVcas;
+
+    public void SetVcas(IReadOnlyList<VcaBus>? vcas)
+    {
+        mVcas = vcas;
+        RebuildSnapshot();
+    }
+
     public void SetMasterInserts(DataObjectList<InsertSlot>? inserts)
     {
         mMasterInserts = inserts;
@@ -266,6 +276,7 @@ internal class AudioGraph()
     readonly Mixer mMixer = new() { LimiterEnabled = true };
     readonly MixerGraphCompiler mCompiler = new();
 }
+
 
 
 
