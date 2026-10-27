@@ -1097,9 +1097,11 @@ PDC 都要重算）。轨道 / AUX / Master 三处同一套语义。
 - **自动化（automation）**：推子 / 声像 / 静音 / 独奏 / send / 插件参数全部不做曲线。
   没有它只能做"静态混音"。这是与正规 DAW 差距最大的一项，但工作量也最大，暂缓。
 - **拖拽排序**（插入链 / 通道顺序）：目前用 ▲▼ 与右键菜单。
-- **VCA / DCA、Group 总线、侧链输入**：需要新的路由模型，不在当前结构里。
+- **VCA / DCA**：做过一版，已撤回 —— 用 AUX 编组能达到近似效果（见 ROADMAP §2.7）。
+- **Group 总线**：AUX 本来就是总线，把多条轨的 output 指过去即可，不需要新路由模型。
+- **侧链输入**：设计见 [SIDECHAIN.md](SIDECHAIN.md)。VST2 可行（共享环 2→4 声道，
+  插件多出来的输入就是键）；VST3 的标准侧链总线需要 fork 原生宿主，本轮不做。
 - **多硬件输出 / 多通道设备**：v1 只有一个 Device；Cable 是禁用占位。
-- **响度表（LUFS）/ True Peak / 峰值保持**：目前只有 L/R 峰值。
 - **冻结 / 离线渲染（Freeze / Bounce in place）**。
 
 #### 5.7.18 Master 也有插入链（2026-10-21）
@@ -1217,6 +1219,57 @@ Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 
 宿主现在在发 `OpenEditor` 之前调 `AllowSetForegroundWindow(桥的 pid)`，
 桥侧再把窗口设成 topmost 并前置。
 要数窗口就用 `FindWindowEx` 遍历兄弟链；要判断编辑器状态就问插件自己的 API。
+
+#### 5.7.32 侧链输入（2026-10-27）
+
+**缺的不是菜单，是插件的第二个输入。** 查过三个后端之后，结论与最初的假设相反：
+VST2 反而好做，VST3 反而做不了。
+
+**VST2（主路径）**：侧链 = 插件声明多于 2 个输入（既成惯例，VST2 没有标准 API）。
+`SharedAudioLayout.MaxChannels` 2 → 4（主 L/R + 键 L/R），`BridgeProtocol.ProtocolVersion`
+1 → 2 —— 布局变了，旧桥必须在 Hello 握手时被拒绝，否则会"能连上、但按 2 声道解读 4 声道
+内存"。`Vst2Insert` 按 `InputChannels` 算 `SidechainChannels = clamp(inputs − 2, 0, 2)`；
+无键时只发 2 条平面（与旧版逐位相同），有键时 3 进发单声道键 `(L + R) * 0.5`、
+4 进发 L/R。
+
+**VST3（实验性）**：随包的 `ownvst3.tlhost.dll` 只有一个输入总线，没有 `kSidechain`
+总线接口。只在插件自己报 `ActualInputChannels > 2` 时把第 3/4 条平面填成键；
+界面不承诺"标准 VST3 侧链"。要做标准总线必须 fork 上游 C++/JUCE 并重建原生库，本轮不做。
+
+**路由**：每个插入最多一条侧链，源 ∈ {Track, AUX}（Master / Device 拒绝），存 id 字符串
+（与 Output / Send 同一个 id 空间）。`WouldCycle` 必须把**已有侧链边**也算进邻接表，
+否则两条轨互相侧链时菜单里都显示可用，建图时才炸。
+
+**取信号点**：推子后、插入后（`RenderChunk` 在插入链之后写键缓冲）。静音 / 未 solo 的
+通道不写键 —— 听不到的通道不会去压别人。
+
+**PDC**：主混音用前向传播算每个节点的实际 `entrance` / `output`（AUX 的上游延迟也要算进去，
+不能只用 `own` —— 否则整条 AUX 总线会被多推一次）。侧链键在源出口取，送到目标插入的输入点：
+`delay = entrance[D] + before(D, k) − output[S]`，钳 ≥ 0。侧链边只进拓扑排序，**不**进
+`entrance[]` / `output[]` / `down[]` / `maxLatency` —— 加一条侧链不改变主混音的延迟补偿，
+同一个工程"有侧链 / 没侧链"的可听结果只差插件本身的作用。
+
+**轨道稳定序号**：侧链是第一个**指向轨道**的引用（output / send 只指向 AUX）。原来的
+`"track:" + 列表下标` 在删轨后会整体前移、删了再建会复用下标 —— 引用会静默指到另一条轨。
+新增 `MixerTrackIds`：按 Track 对象身份分配单调序号，模型 id 变成 `"track:序号"`，
+落盘在 `TrackDto.MixerId`。引擎节点 id 仍是 `"track-N"`（电平查询依赖它），编译器为同一条轨
+登记两个键。删轨道**不**强制清引用：悬空引用被编译器跳过，undo 恢复同一对象时引用自动复活。
+
+**退化图**：没有侧链时 `SidechainBufferCount == 0`、`Runtime` 不分配键缓冲、`RenderChunk`
+走 3 参数 `Process`（不是传空 span）、`Vst2Insert` 只发 2 声道 —— §7.2 的逐位相同仍然成立。
+
+**能力来自活实例**，不是扫描缓存：缓存说 4 进、插件换了就会喂错。代价是工程刚打开、图还没
+编译的那一瞬间 `SC` 不显示。旁通的插入没有活实例，`SC` 也不显示（已接受）。
+
+**界面**：只在 FX 浮窗。`SC` 键（30×26）只在 `SidechainChannels > 0` 时出现（列宽压 0，
+不是置灰 —— 2 进插件占大多数）；菜单 = `无` + 轨道组 + AUX 组，会成环的源不列出；
+选中后名字后面显示 `← 源名`，源被删掉时显示 `（已删除）`。
+
+**落盘**：`InsertDto.SidechainId`（null = 没有），老工程行为不变。
+
+**风险**：4 进插件不一定有侧链（可能是 L/C/R）→ 界面措辞是"插件声明 N 进"，不替用户断言；
+VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路径。
+
 ## 6. 界面
 
 ### 6.1 通道条（新布局）

@@ -2,6 +2,7 @@ using System.Linq;
 using TuneLab.Audio;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.Foundation;
 using TuneLab.SDK;
 using Xunit;
 
@@ -100,6 +101,57 @@ public class MixerRoutingTests
 
             foreach (var bus in project.Auxes.ToArray())
                 project.RemoveAux(bus);
+        }
+    }
+
+    // [EP-MIXER-27] 侧链源：自己 / Master 不能当源；已经成环的源也不列出来。
+    [Fact]
+    public void CanSidechainFrom_RejectsSelfMasterAndCycles()
+    {
+        var (_, project, model) = Create(Track("t1"), Track("t2"));
+
+        using (model)
+        {
+            var tracks = model.Channels.Where(c => c.Kind == MixerChannelKind.Track).ToArray();
+
+            // t2 的插入可以吃 t1 的侧链（t1 → t2）。
+            Assert.True(tracks[1].CanSidechainFrom(tracks[0]));
+
+            // 自己不能当自己的源。
+            Assert.False(tracks[1].CanSidechainFrom(tracks[1]));
+
+            // Master 是终点，不能当源。
+            Assert.False(tracks[1].CanSidechainFrom(model.Master));
+
+            // 让 t1 的插入吃 t2 的侧链（t2 → t1）。现在再加 t1 → t2 就是环。
+            var list = (DataObjectList<InsertSlot>)project.Tracks[0].Inserts;
+            var slot = new InsertSlot("insert-sidechain", "VST3", "vst3:test", "Test", list);
+            list.Add(slot);
+            slot.SidechainId.SetInfo(tracks[1].Id);
+
+            Assert.False(tracks[1].CanSidechainFrom(tracks[0]));
+        }
+    }
+
+    // [EP-MIXER-27] 删 AUX 时把指向它的侧链引用一起清掉（同一个 merge 作用域）。
+    [Fact]
+    public void RemovingAux_ClearsSidechainRefsToIt()
+    {
+        var (_, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            model.AddAux();
+            var aux = model.Channels.First(c => c.Kind == MixerChannelKind.Aux);
+
+            var list = (DataObjectList<InsertSlot>)project.Tracks[0].Inserts;
+            var slot = new InsertSlot("insert-sidechain", "VST3", "vst3:test", "Test", list);
+            list.Add(slot);
+            slot.SidechainId.SetInfo(aux.Id);
+
+            model.RemoveAux(aux);
+
+            Assert.Equal(string.Empty, slot.SidechainId.Value);
         }
     }
 

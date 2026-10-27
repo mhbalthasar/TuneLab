@@ -26,6 +26,10 @@ public sealed class MixGraphBuilder
         internal int Index;
         internal readonly List<EdgeDraft> Edges = [];
 
+        // [EP-MIXER-27] 本节点**吃**的侧链：从哪个源节点、喂给第几个插入。
+        // 记在目标侧而不是源侧，是因为延迟公式要用目标的 down[] 与 before(D,k)。
+        internal readonly List<SidechainDraft> SidechainEdges = [];
+
         internal NodeDraft(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
             IReadOnlyList<IMixInsert> inserts)
         {
@@ -52,6 +56,9 @@ public sealed class MixGraphBuilder
     }
 
     internal readonly record struct EdgeDraft(NodeDraft Target, float Gain, int DelaySamples, IMixEdgeGain? LiveGain, bool IsPreFader);
+
+    // [EP-MIXER-27] 一条侧链：Source 的出口 → 本节点第 InsertIndex 个插入的输入。
+    internal readonly record struct SidechainDraft(NodeDraft Source, int InsertIndex);
 
     readonly List<NodeDraft> mNodes = [];
 
@@ -88,6 +95,32 @@ public sealed class MixGraphBuilder
         from.Edges.Add(new EdgeDraft(to, gain, delaySamples, liveGain, isPreFader));
     }
 
+    // [EP-MIXER-27] 把 from 的出口接到 to 的第 insertIndex 个插入的**侧链输入**。
+    //
+    // 三件事（SIDECHAIN.md §4.2）：
+    //   1. 加进**排序依赖**（indegree），保证源节点在这一块里先渲染；
+    //   2. 记进 to.SidechainEdges，**不**记进 to.Edges（不参与混音求和）；
+    //   3. 建图时按 §4.5 算延迟。
+    //
+    // 侧链边**不进** down[] / maxLatency —— 加一条侧链不会改变主混音的延迟补偿，
+    // 同一个工程"有侧链 / 没侧链"的可听结果只差插件本身的作用。
+    public void ConnectSidechain(NodeDraft from, NodeDraft to, int insertIndex)
+    {
+        ArgumentNullException.ThrowIfNull(from);
+        ArgumentNullException.ThrowIfNull(to);
+
+        if (!mNodes.Contains(from) || !mNodes.Contains(to))
+            throw new ArgumentException("both nodes must belong to this builder");
+
+        if (ReferenceEquals(from, to))
+            throw new ArgumentException("a node cannot feed its own sidechain", nameof(from));
+
+        if (insertIndex < 0 || insertIndex >= to.Inserts.Count)
+            throw new ArgumentOutOfRangeException(nameof(insertIndex));
+
+        to.SidechainEdges.Add(new SidechainDraft(from, insertIndex));
+    }
+
     public MixSnapshot Build()
     {
         if (mNodes.Count == 0)
@@ -121,6 +154,21 @@ public sealed class MixGraphBuilder
             foreach (var edge in node.Edges)
                 indegree[edge.Target.Index]++;
 
+        // [EP-MIXER-27] 侧链边也是排序依赖：源节点必须先渲染，目标才能读到这一块的键。
+        // 反向表按源节点索引（侧链记在目标侧，Kahn 出队时要知道"谁在等我"）。
+        var sidechainDependents = new List<NodeDraft>[mNodes.Count];
+        for (int i = 0; i < mNodes.Count; i++)
+            sidechainDependents[i] = [];
+
+        foreach (var node in mNodes)
+        {
+            foreach (var sidechain in node.SidechainEdges)
+            {
+                indegree[node.Index]++;
+                sidechainDependents[sidechain.Source.Index].Add(node);
+            }
+        }
+
         var order = new List<NodeDraft>(mNodes.Count);
         var ready = new Queue<NodeDraft>();
         for (int i = 0; i < mNodes.Count; i++)
@@ -138,6 +186,12 @@ public sealed class MixGraphBuilder
             {
                 if (--indegree[edge.Target.Index] == 0)
                     ready.Enqueue(edge.Target);
+            }
+
+            foreach (var dependent in sidechainDependents[node.Index])
+            {
+                if (--indegree[dependent.Index] == 0)
+                    ready.Enqueue(dependent);
             }
         }
 
@@ -162,13 +216,21 @@ public sealed class MixGraphBuilder
         //   down[i] = 从节点 i 的**入口**走到某个 sink 的最长延迟
         //             （= max(入边延迟 + down[下游]) + own[i]）
         //
+        // ⚠️ down[] 的下标是**拓扑序**，不是 `NodeDraft.Index`（创建序）。master 总是先创建、
+        // 后出队，两者在常见图里就不同；拿创建序去取 down 会把某条轨的延迟当成 master 的，
+        // 快的轨反而不补（`InsertLatency_IsCompensatedWhenTheDelayedTrackIsCompiledFirst`）。
+        //
         // 一条边 i→j 该补多少：让整条 [i → j → sink] 的总长等于 maxLatency。
-        //   总长 = own[i] + delay(边) + down[j]
-        //   ⇒ delay(边) = maxLatency − own[i] − down[j]
+        //   output[i] = 从音源到 i 的**出口**的实际延迟（源 = own[i]，AUX = 入口 + own[i]）
+        //   总长 = output[i] + delay(边) + down[j]
+        //   ⇒ delay(边) = maxLatency − output[i] − down[j]
+        //
+        // 为什么不是 own[i]：own[i] 不含上游。轨道源的上游是 0，AUX 的上游是入边延迟之和；
+        // 用 own[i] 会把整条 AUX 总线再往后推一次（`AuxBusWithUpstreamLatency...`）。
         //
         // 两条纪律附在这公式上：
-        //   · 边自己带的 DelaySamples 是调用方**显式**补的，算进 down[j] 就已经生效，
-        //     公式里不再出现（否则等于补两次）。
+        //   · 边自己带的 DelaySamples 是调用方**显式**补的，在入边之前；down[j] 不含它，
+        //     所以公式里要减一次。
         //   · down[j] 已经含 own[j]，所以公式里没有 own[j] —— 想让 j 的插入再拖后一点，
         //     那是 j 自己的事，由 j 的出边去补。
         var own = new int[order.Count];
@@ -196,7 +258,7 @@ public sealed class MixGraphBuilder
             {
                 int best = int.MinValue;
                 foreach (var edge in draft.Edges)
-                    best = Math.Max(best, edge.DelaySamples + down[edge.Target.Index]);
+                    best = Math.Max(best, edge.DelaySamples + down[topoIndex[edge.Target]]);
 
                 down[i] = best + own[i];
             }
@@ -210,23 +272,96 @@ public sealed class MixGraphBuilder
         //   B→Master: 4 − 4 − 0 = 0   （自己已经慢 4，不动）
         //   A→Master: 4 − 0 − 0 = 4   （快的往后拉齐）
         var nodes = new List<MixNode>(order.Count);
+
+        // ── 前向传播：每个节点**实际**的入口 / 出口延迟（按拓扑序）──
+        //
+        // 为什么不能直接用 own[i]：own[i] 只算"本节点插入链"，不含上游。
+        // 轨道源的上游是 0（音源按 SeekOffset 提前读）；AUX 的上游是入边延迟之和。
+        // 用 own[i] 去补 AUX 的出边，会把整条 AUX 总线再往后推一次
+        // （`AuxBusWithUpstreamLatency_IsAlignedWithTheDirectPath` 钉住这个）。
+        //
+        // entrance[i] = 到 i 的入口为止的最长延迟（源 = 0）
+        // output[i]   = entrance[i] + own[i]
+        var entrance = new int[order.Count];
+        var output = new int[order.Count];
+
         for (int i = 0; i < order.Count; i++)
         {
             var draft = order[i];
-            var list = edges[i];
+            output[i] = entrance[i] + own[i];
 
             foreach (var edge in draft.Edges)
             {
                 int target = topoIndex[edge.Target];
-                int delay = maxLatency - own[i] - down[edge.Target.Index];
 
-                list.Add(new MixEdge(target, edge.Gain, Math.Max(0, delay), edge.LiveGain, edge.IsPreFader));
+                // 显式 DelaySamples 在入边**之前**，所以 down[target]（从 target 入口到 sink）
+                // 不含它；公式里要单独减一次，否则会补两次。
+                int delay = Math.Max(0, maxLatency - output[i] - edge.DelaySamples - down[target]);
+
+                edges[i].Add(new MixEdge(target, edge.Gain, delay, edge.LiveGain, edge.IsPreFader));
+
+                int arrival = output[i] + edge.DelaySamples + delay;
+                if (arrival > entrance[target])
+                    entrance[target] = arrival;
             }
-
-            nodes.Add(new MixNode(draft.Id, draft.Kind, draft.State, draft.Source, draft.Inserts, list));
         }
 
-        return new MixSnapshot(nodes, nodes[topoIndex[master]], maxLatency);
+        // [EP-MIXER-27] 侧链边：每条一块键缓冲。键在 S 的**出口**取，送到 D 的第 k 个插入
+        // 的**输入点**：
+        //   delay = (D 的入口延迟 + D 前 k 个插入的延迟) − S 的出口延迟
+        //
+        // 与主信号共用 entrance[] / output[]，所以目标在不在最长路径上都对齐；
+        // 不再出现"目标不在最长路径 → 键被多推 maxLatency − down[D]"的错位。
+        //
+        // 侧链边**不参与** down[] / maxLatency / entrance[] / output[] 的计算
+        // （上面两段只看 draft.Edges）—— 加一条侧链不会改变主混音的延迟补偿。
+        var sidechainOutputs = new List<MixSidechainOutput>[order.Count];
+        var sidechainByInsert = new int[order.Count][];
+        for (int i = 0; i < order.Count; i++)
+        {
+            sidechainOutputs[i] = [];
+            sidechainByInsert[i] = [];
+        }
+
+        int sidechainBufferCount = 0;
+
+        for (int i = 0; i < order.Count; i++)
+        {
+            var draft = order[i];
+
+            if (draft.SidechainEdges.Count == 0)
+                continue;
+
+            var map = new int[draft.Inserts.Count];
+            Array.Fill(map, -1);
+
+            foreach (var sidechain in draft.SidechainEdges)
+            {
+                int bufferIndex = sidechainBufferCount++;
+
+                int before = 0;
+                for (int k = 0; k < sidechain.InsertIndex; k++)
+                    before += draft.Inserts[k].LatencySamples;
+
+                int source = topoIndex[sidechain.Source];
+                int delay = Math.Max(0, entrance[i] + before - output[source]);
+
+                sidechainOutputs[source].Add(new MixSidechainOutput(bufferIndex, delay));
+
+                map[sidechain.InsertIndex] = bufferIndex;
+            }
+
+            sidechainByInsert[i] = map;
+        }
+
+        for (int i = 0; i < order.Count; i++)
+        {
+            var draft = order[i];
+            nodes.Add(new MixNode(draft.Id, draft.Kind, draft.State, draft.Source, draft.Inserts, edges[i],
+                sidechainOutputs[i], sidechainByInsert[i]));
+        }
+
+        return new MixSnapshot(nodes, nodes[topoIndex[master]], maxLatency, sidechainBufferCount);
     }
 
     // 供 UI 用：在现有图上再加一条 from → to，会不会成环？

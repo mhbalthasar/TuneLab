@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using TuneLab.Audio;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Extensions.Formats.TLP;
@@ -207,6 +208,40 @@ public class InsertModelTests
             Assert.Equal("Pro-Q 4", restored[0].Name.Value);
             Assert.True(restored[0].IsBypassed.Value);
             Assert.Equal(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, restored[0].State);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
+    // [EP-MIXER-27] 侧链引用与轨道的稳定序号一起往返。
+    [Fact]
+    public void SidechainSource_SurvivesSaveAndLoad()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var source = NewProject("底鼓", "贝斯");
+            var list = (DataObjectList<InsertSlot>)source.Tracks[1].Inserts;
+
+            var slot = NewSlot(list, "vst3:Comp");
+            string kickId = MixerTrackIds.IdOf(source.Tracks[0]);
+            slot.SidechainId.SetInfo(kickId);
+
+            MixerPersistence.Save(source, path);
+
+            var target = NewProject("底鼓", "贝斯");
+            MixerPersistence.Load(target, path);
+
+            var restored = (DataObjectList<InsertSlot>)target.Tracks[1].Inserts;
+
+            Assert.Single(restored);
+            Assert.Equal(kickId, restored[0].SidechainId.Value);
+
+            // 稳定序号本身也落了盘：装载后同一条轨拿回同一个号，
+            // 引用才不会指到"序号撞上"的另一条轨。
+            Assert.Equal(kickId, MixerTrackIds.IdOf(target.Tracks[0]));
         }
         finally
         {

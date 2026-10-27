@@ -135,6 +135,15 @@ internal class InsertSlot : DataObject
     // 人耳会把更响的那个当成更好的。
     public DataProperty<double> GainDb { get; }
 
+    // [EP-MIXER-27] 侧链源通道 id（"track:0" / AUX id）。空串 = 没有侧链。
+    //
+    // 为什么存 id 而不是对象引用：槽位随 undo / 复制 / 落盘走，而通道对象会重建。
+    // id 与 Output / Send 是**同一个 id 空间**（模型侧 "track:N" / "aux-N"）；
+    // 编译器负责把它翻译成引擎的节点 id（"track-N"）。
+    //
+    // 空串而不是 null：DataString 不接受 null（DataProperty<T> 的 T : notnull）。
+    public DataProperty<string> SidechainId { get; }
+
     // 插件的私有状态（getState 的原样字节）。null = 还没存过 / 插件没报状态。
     public byte[]? State { get; set; }
 
@@ -155,6 +164,9 @@ internal class InsertSlot : DataObject
         Mix = new DataStruct<double>(this);
         GainDb = new DataStruct<double>(this);
         Mix.SetInfo(1);
+
+        // [EP-MIXER-27] 默认没有侧链源。
+        SidechainId = new DataString(this, string.Empty);
     }
 }
 

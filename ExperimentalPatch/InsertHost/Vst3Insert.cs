@@ -23,6 +23,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     readonly float[][] mInPlanes;   // 平面，每块一份
     readonly float[][] mOutPlanes;
     readonly int mChannels;
+    readonly int mSidechainChannels;
     readonly int mBlockSize;
     volatile bool mBypassed;
     bool mDisposed;
@@ -41,6 +42,11 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         // 我们这里固定成立体声进/出 —— 单声道插件也会被 wrapper 喂两份。
         mChannels = Math.Max(2, Math.Max(wrapper.ActualInputChannels, wrapper.ActualOutputChannels));
 
+        // [EP-MIXER-27] VST3 的侧链只在"插件声明了多于 2 个输入"时可用。
+        // 这是实验性的：vendored 原生宿主只有一个输入总线，能不能用取决于插件
+        // 有没有把键放在主输入总线上（见 SIDECHAIN.md §1.3 / §4.4）。
+        mSidechainChannels = Math.Clamp(wrapper.ActualInputChannels - 2, 0, 2);
+
         mInPlanes = new float[mChannels][];
         mOutPlanes = new float[mChannels][];
         for (int ch = 0; ch < mChannels; ch++)
@@ -58,6 +64,11 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
 
     public bool IsBypassed => mBypassed;
 
+    // [EP-MIXER-27] 插件声明的输入通道总数 / 我们真正能喂的键宽度（0 / 1 / 2）。
+    public int InputChannels => mWrapper.ActualInputChannels;
+
+    public int SidechainChannels => mSidechainChannels;
+
     // VST3 的延迟是常量（构造后不变），所以直接读 wrapper 当时报的值。
     public int LatencySamples { get; }
 
@@ -65,9 +76,14 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     public void SetBypassed(bool bypassed) => mBypassed = bypassed;
 
     public void Process(Span<float> buffer, int offset, int count)
+        => Process(buffer, offset, count, default);
+
+    public void Process(Span<float> buffer, int offset, int count, ReadOnlySpan<float> sidechain)
     {
         if (mDisposed || mBypassed || count <= 0)
             return;
+
+        bool hasSidechain = !sidechain.IsEmpty && mSidechainChannels > 0;
 
         // 整块都要过插件：逐段（每段 ≤ mBlockSize，也就是插件被 Initialize 时声明的块长）处理。
         // 早先是 `n = Math.Min(count, mBlockSize)` 就返回 —— 块比声明值大时**后半块原样直通**，
@@ -76,19 +92,58 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
         {
             int n = Math.Min(mBlockSize, count - done);
 
-            if (!ProcessChunk(buffer, offset + done * 2, n))
+            if (!ProcessChunk(buffer, offset + done * 2, n, hasSidechain ? sidechain : default, done))
                 return;   // 插件失效：剩下的部分保持直通
         }
     }
 
-    bool ProcessChunk(Span<float> buffer, int offset, int n)
+    bool ProcessChunk(Span<float> buffer, int offset, int n, ReadOnlySpan<float> sidechain, int sidechainOffset)
     {
         // 交织 → 平面。
         for (int ch = 0; ch < mChannels; ch++)
         {
             var plane = mInPlanes[ch];
+
+            if (ch < 2)
+            {
+                for (int i = 0; i < n; i++)
+                    plane[i] = buffer[offset + i * 2 + ch];
+
+                continue;
+            }
+
+            // [EP-MIXER-27] 有键时第 3 条起填键（3 进 = 单声道键，(L+R)*0.5 下混）。
+            if (!sidechain.IsEmpty && mSidechainChannels > 0)
+            {
+                if (mSidechainChannels == 1)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        int frame = sidechainOffset + i;
+                        plane[i] = frame < sidechain.Length / 2
+                            ? (sidechain[frame * 2] + sidechain[frame * 2 + 1]) * 0.5f
+                            : 0f;
+                    }
+                }
+                else
+                {
+                    int source = ch - 2;
+                    for (int i = 0; i < n; i++)
+                    {
+                        int frame = sidechainOffset + i;
+                        plane[i] = frame < sidechain.Length / 2 && source < 2
+                            ? sidechain[frame * 2 + source]
+                            : 0f;
+                    }
+                }
+
+                continue;
+            }
+
+            // 没有键：保持旧行为 —— 多出来的声道复制主信号（4 出插件依赖这个）。
+            int main = ch % 2;
             for (int i = 0; i < n; i++)
-                plane[i] = buffer[offset + i * 2 + (ch % 2)];
+                plane[i] = buffer[offset + i * 2 + main];
         }
 
         // 清空输出平面：插件未必每个声道都写（M→S 的插件可能只写一边）。

@@ -143,6 +143,13 @@ public sealed class Mixer
         for (int i = 0; i < nodes.Count; i++)
             Array.Clear(runtime.Buffers[i], 0, count * 2);
 
+        // [EP-MIXER-27] 键缓冲同样每块开头清零：源节点静音 / 被 solo 压掉时
+        // 这一块就保持静音 —— "听不到的通道不会去压别人"。
+        // 退化图（没有侧链）时这个数组是空的，一次都不进循环。
+        var sidechainBuffers = runtime.SidechainBuffers;
+        for (int s = 0; s < sidechainBuffers.Length; s++)
+            Array.Clear(sidechainBuffers[s], 0, count * 2);
+
         // 2) 按拓扑序逐节点：出声 → 推子 → 分发。
         for (int i = 0; i < nodes.Count; i++)
         {
@@ -262,12 +269,39 @@ public sealed class Mixer
             // IsBypassed，所以按状态直接 continue。实现方仍然应该自己判直通路径 ——
             // 这里只保证"旁通的插入一次都不会被调用"，测试替身据此断言。
             var inserts = node.Inserts;
+            var sidechainForInsert = node.SidechainBufferForInsert;
+
             for (int k = 0; k < inserts.Count; k++)
             {
                 if (inserts[k].IsBypassed)
                     continue;
 
-                inserts[k].Process(target, targetOffset, count);
+                // [EP-MIXER-27] 有侧链的插入走 4 参数重载；没有时**仍然**走原来的 3 参数调用
+                // （不是"传一个空 span"）—— 退化图的逐位相同靠这条路径。
+                int sidechain = k < sidechainForInsert.Count ? sidechainForInsert[k] : -1;
+
+                if (sidechain >= 0)
+                    inserts[k].Process(target, targetOffset, count, runtime.SidechainBuffers[sidechain]);
+                else
+                    inserts[k].Process(target, targetOffset, count);
+            }
+
+            // [EP-MIXER-27] 侧链写出口：推子后、插入链后 —— 与 post-fader send 读的是同一份
+            // target（SIDECHAIN.md §4.3）。放在分发之前，目标节点在本块后面的迭代里读它。
+            var sidechainOutputs = node.SidechainOutputs;
+            for (int s = 0; s < sidechainOutputs.Count; s++)
+            {
+                var keyOutput = sidechainOutputs[s];
+                var key = runtime.SidechainBuffers[keyOutput.BufferIndex];
+
+                if (keyOutput.DelaySamples > 0)
+                {
+                    runtime.SidechainDelayLines[i][s]!.Process(target, targetOffset, key, 0, count, 1f, 1f);
+                }
+                else
+                {
+                    Accumulate(target, targetOffset, key, 0, count, 1f, 1f);
+                }
             }
 
             var edges = node.Outputs;
@@ -508,6 +542,12 @@ public sealed class Mixer
         public readonly MixSnapshot Snapshot;
         public readonly float[][] Buffers;
         public readonly DelayLine?[][] DelayLines;
+
+        // [EP-MIXER-27] 每条侧链边一块键缓冲（交织立体声）。图里没有侧链时长度 0。
+        public readonly float[][] SidechainBuffers;
+
+        // 每条侧链输出一条延迟线（只有 delay > 0 的才有实例，其余为 null）。
+        public readonly DelayLine?[][] SidechainDelayLines;
         // 输入级高通：每个节点一份（双声道状态）。构造期分配，音频线程只跑滤波。
         public readonly HighPassFilter[] Hpf;
 
@@ -529,6 +569,8 @@ public sealed class Mixer
             SeekOffset = snapshot.MaxLatencySamples;
             Buffers = new float[snapshot.Nodes.Count][];
             DelayLines = new DelayLine?[snapshot.Nodes.Count][];
+            SidechainBuffers = new float[snapshot.SidechainBufferCount][];
+            SidechainDelayLines = new DelayLine?[snapshot.Nodes.Count][];
             PeakLeft = new float[snapshot.Nodes.Count];
             Hpf = new HighPassFilter[snapshot.Nodes.Count];
             Loudness = new LoudnessMeter[snapshot.Nodes.Count];
@@ -539,6 +581,7 @@ public sealed class Mixer
             {
                 Buffers[i] = new float[maxBlockSize * 2];
                 DelayLines[i] = new DelayLine?[snapshot.Nodes[i].Outputs.Count];
+                SidechainDelayLines[i] = new DelayLine?[snapshot.Nodes[i].SidechainOutputs.Count];
                 Hpf[i] = new HighPassFilter();
                 Loudness[i] = new LoudnessMeter(sampleRate);
                 Index[snapshot.Nodes[i].Id] = i;
@@ -549,7 +592,17 @@ public sealed class Mixer
                     if (delay > 0)
                         DelayLines[i][e] = new DelayLine(delay);
                 }
+
+                for (int s = 0; s < snapshot.Nodes[i].SidechainOutputs.Count; s++)
+                {
+                    int delay = snapshot.Nodes[i].SidechainOutputs[s].DelaySamples;
+                    if (delay > 0)
+                        SidechainDelayLines[i][s] = new DelayLine(delay);
+                }
             }
+
+            for (int s = 0; s < SidechainBuffers.Length; s++)
+                SidechainBuffers[s] = new float[maxBlockSize * 2];
         }
     }
 }

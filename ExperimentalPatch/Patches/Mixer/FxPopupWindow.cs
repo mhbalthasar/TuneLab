@@ -26,15 +26,18 @@ public sealed class FxPopupWindow : Window
 {
     readonly IMixerChannel mChannel;
     readonly IReadOnlyList<IMixerInsertFormat> mFormats;
+    readonly IReadOnlyList<IMixerChannel> mChannels;
     readonly IHostServices mHost;
     readonly bool mCanAdd;
     readonly StackPanel mRows = new() { Spacing = 4 };
     readonly TextBlock mEmpty = new();
 
-    public FxPopupWindow(IMixerChannel channel, IReadOnlyList<IMixerInsertFormat> formats, IHostServices host, bool canAdd = true)
+    public FxPopupWindow(IMixerChannel channel, IReadOnlyList<IMixerInsertFormat> formats,
+        IReadOnlyList<IMixerChannel> channels, IHostServices host, bool canAdd = true)
     {
         mChannel = channel;
         mFormats = formats;
+        mChannels = channels;
         mHost = host;
         mCanAdd = canAdd;
 
@@ -297,6 +300,80 @@ public sealed class FxPopupWindow : Window
         return menu;
     }
 
+    // [EP-MIXER-27] 侧链源菜单。三条规矩：
+    //   1. 源只能是轨道 / AUX（Master 是终点、设备没有信号）；
+    //   2. 会成环的源**不列出来**（CanSidechainFrom 用的是与编译器同一套边表）；
+    //   3. 一项都没得选时给一句人话，而不是一个空菜单。
+    void ShowSidechainMenu(Control anchor, IMixerInsert insert)
+    {
+        var menu = new ContextMenu();
+        string? current = insert.SidechainSourceId;
+
+        var none = new MenuItem
+        {
+            Header = L("无", "None"),
+            IsChecked = current == null,
+        };
+        none.Click += (_, _) => insert.SetSidechainSource(null);
+        menu.Items.Add(none);
+
+        int candidates = 0;
+
+        AddGroup(L("轨道", "Tracks"), MixerChannelKind.Track);
+        AddGroup(L("AUX", "AUX"), MixerChannelKind.Aux);
+
+        if (candidates == 0)
+            menu.Items.Add(DisabledItem(L("没有可用的侧链源", "No available sidechain source")));
+
+        menu.Open(anchor);
+
+        void AddGroup(string header, MixerChannelKind kind)
+        {
+            var group = new List<IMixerChannel>();
+
+            foreach (var channel in mChannels)
+            {
+                if (channel.Kind != kind || !mChannel.CanSidechainFrom(channel))
+                    continue;
+
+                group.Add(channel);
+            }
+
+            if (group.Count == 0)
+                return;
+
+            menu.Items.Add(new Separator());
+            menu.Items.Add(DisabledItem(header));
+
+            foreach (var channel in group)
+            {
+                var item = new MenuItem
+                {
+                    Header = channel.Name,
+                    IsChecked = current == channel.Id,
+                };
+
+                var captured = channel;
+                item.Click += (_, _) => insert.SetSidechainSource(captured.Id);
+
+                menu.Items.Add(item);
+                candidates++;
+            }
+        }
+    }
+
+    string SidechainSourceName(string id)
+    {
+        foreach (var channel in mChannels)
+        {
+            if (channel.Id == id)
+                return channel.Name;
+        }
+
+        // 源通道被删了：引用还在（换回同一条轨时还能用），但界面上不能装作它还在。
+        return L("（已删除）", "(deleted)");
+    }
+
     Control BuildRow(IMixerInsert insert, int index)
     {
         var order = new TextBlock
@@ -335,6 +412,20 @@ public sealed class FxPopupWindow : Window
         nameRow.Children.Add(name);
         nameRow.Children.Add(format);
 
+        // [EP-MIXER-27] 接了侧链就在名字后面标出来源 —— 侧链是"看不见的接线"，
+        // 不标的话用户只能点开菜单才知道谁在压谁。
+        if (insert.SidechainSourceId is { } sidechainSource)
+        {
+            nameRow.Children.Add(new TextBlock
+            {
+                Text = " ← " + SidechainSourceName(sidechainSource),
+                FontSize = 9,
+                Foreground = Palette.Brush(Palette.HighLight, 0.9),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+        }
+
         // 处理顺序 = 列表顺序。▲▼ 是最省事也最不会误操作的做法（拖拽以后再加）。
         // 到头的那个置灰，而不是点了没反应。
         var up = new ChromeButton
@@ -372,6 +463,28 @@ public sealed class FxPopupWindow : Window
             Rebuild();
         };
 
+        // [EP-MIXER-27] 侧链。只有插件声明了多于 2 个输入才显示 ——
+        // 2 进插件没有地方放键，给个按钮只会让人以为"点了没反应"。
+        bool hasSidechain = insert.SidechainChannels > 0;
+
+        var sidechain = new ChromeButton
+        {
+            Text = "SC",
+            Width = 30,
+            Height = 26,
+            IsVisible = hasSidechain,
+            IsChecked = insert.SidechainSourceId != null,
+        };
+
+        if (hasSidechain)
+        {
+            ToolTip.SetTip(sidechain, L(
+                $"侧链输入（插件声明 {insert.InputChannels} 进）",
+                $"Sidechain input ({insert.InputChannels} plugin inputs)"));
+
+            sidechain.Click += () => ShowSidechainMenu(sidechain, insert);
+        }
+
         var editor = new ChromeButton
         {
             Text = L("界面", "UI"),
@@ -399,19 +512,24 @@ public sealed class FxPopupWindow : Window
         var remove = new ChromeButton { Text = "✕", Width = 26, Height = 26, HoverColor = Palette.CloseHover };
         remove.Click += () => mChannel.RemoveInsert(insert);
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,22,22,52,46,26"), Height = MixerMetrics.FxRowHeight };
+        // 没有侧链时把那一列压成 0：否则 2 进插件每行都会多出一段空白。
+        string columns = hasSidechain ? "22,*,22,22,52,30,46,26" : "22,*,22,22,52,0,46,26";
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions(columns), Height = MixerMetrics.FxRowHeight };
         Grid.SetColumn(order, 0);
         Grid.SetColumn(nameRow, 1);
         Grid.SetColumn(up, 2);
         Grid.SetColumn(down, 3);
         Grid.SetColumn(bypass, 4);
-        Grid.SetColumn(editor, 5);
-        Grid.SetColumn(remove, 6);
+        Grid.SetColumn(sidechain, 5);
+        Grid.SetColumn(editor, 6);
+        Grid.SetColumn(remove, 7);
         row.Children.Add(order);
         row.Children.Add(nameRow);
         row.Children.Add(up);
         row.Children.Add(down);
         row.Children.Add(bypass);
+        row.Children.Add(sidechain);
         row.Children.Add(editor);
         row.Children.Add(remove);
 

@@ -20,7 +20,8 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
 {
     readonly VstBridgeClient mClient;
     readonly int mSlotId;
-    readonly int mChannels;
+    readonly int mInputChannels;
+    readonly int mSidechainChannels;
     readonly int mBlockSize;
     readonly float[][] mInPlanes;
     readonly float[][] mOutPlanes;
@@ -29,7 +30,7 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     bool mDisposed;
 
     Vst2Insert(InsertPluginInfo plugin, VstBridgeClient client, int slotId,
-        int blockSize, int latencySamples, bool hasEditor, bool bypassed)
+        int blockSize, int latencySamples, bool hasEditor, bool bypassed, int inputChannels)
     {
         Plugin = plugin;
         Name = plugin.Name;
@@ -38,12 +39,18 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         mBlockSize = Math.Max(blockSize, 32);
         HasEditor = hasEditor;
 
-        // 桥是立体声的（SharedAudioLayout.MaxChannels = 2）。
-        mChannels = SharedAudioLayout.MaxChannels;
+        // [EP-MIXER-27] 侧链 = 插件声明了多于 2 个输入（VST2 没有侧链标准，这是既成惯例：
+        // 第 3 条起就是键）。上限 2 条：共享环一块最多 4 声道。
+        mInputChannels = Math.Max(0, inputChannels);
+        mSidechainChannels = Math.Clamp(mInputChannels - 2, 0, 2);
 
-        mInPlanes = new float[mChannels][];
-        mOutPlanes = new float[mChannels][];
-        for (int ch = 0; ch < mChannels; ch++)
+        // 平面缓冲按共享环的**最大**声道数分配（4）。插件声明更多时只送前 4 条：
+        // 桥会按插件声明数补齐，多出来的那几条保持静音 —— 与今天的行为一致。
+        const int maxChannels = SharedAudioLayout.MaxChannels;
+
+        mInPlanes = new float[maxChannels][];
+        mOutPlanes = new float[maxChannels][];
+        for (int ch = 0; ch < maxChannels; ch++)
         {
             mInPlanes[ch] = new float[mBlockSize];
             mOutPlanes[ch] = new float[mBlockSize];
@@ -61,6 +68,12 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
 
     // VST2 的 latency 在 AEffect.initialDelay 里，加载时读一次。插件运行中不该变。
     public int LatencySamples { get; }
+
+    // [EP-MIXER-27] 插件声明的输入通道总数 / 我们真正能喂的键宽度（0 / 1 / 2）。
+    // 界面措辞要如实（"插件声明 4 进"），所以总数单独暴露。
+    public int InputChannels => mInputChannels;
+
+    public int SidechainChannels => mSidechainChannels;
 
     // AEffect.flags 的 effFlagsHasEditor，加载时读一次。
     public bool HasEditor { get; }
@@ -83,9 +96,16 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     public string? BridgeError => mClient.LastBridgeError;
 
     public void Process(Span<float> buffer, int offset, int count)
+        => Process(buffer, offset, count, default);
+
+    public void Process(Span<float> buffer, int offset, int count, ReadOnlySpan<float> sidechain)
     {
         if (mDisposed || mBypassed || count <= 0)
             return;
+
+        // [EP-MIXER-27] 没有键、或插件没有额外输入 → 只发 2 条平面。
+        // 这条路径与旧版逐位相同：平面 0/1 的填充公式没动。
+        int channels = sidechain.IsEmpty || mSidechainChannels == 0 ? 2 : 2 + mSidechainChannels;
 
         // 整块都要过插件：逐段处理（每段 ≤ mBlockSize）。早先只处理 Math.Min(count, mBlockSize)
         // 那一小段就返回，块比声明值大时后半块原样直通 —— 每 10ms 一次硬接缝合成的爆音。
@@ -93,28 +113,58 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         {
             int n = Math.Min(mBlockSize, count - done);
 
-            if (!ProcessChunk(buffer, offset + done * 2, n))
+            if (!ProcessChunk(buffer, offset + done * 2, n, sidechain, done, channels))
                 return;   // 桥超时 / 死了：剩下的部分保持直通
         }
     }
 
-    bool ProcessChunk(Span<float> buffer, int offset, int n)
+    bool ProcessChunk(Span<float> buffer, int offset, int n,
+        ReadOnlySpan<float> sidechain, int sidechainOffset, int channels)
     {
         // 交织 → 平面。
-        for (int ch = 0; ch < mChannels; ch++)
+        for (int ch = 0; ch < channels; ch++)
         {
             var plane = mInPlanes[ch];
+
+            if (ch < 2)
+            {
+                for (int i = 0; i < n; i++)
+                    plane[i] = buffer[offset + i * 2 + ch];
+
+                continue;
+            }
+
+            // [EP-MIXER-27] 第 3 条起是键。3 进的插件是**单声道**键，用 (L + R) * 0.5 下混
+            // （用户拍板：只取 L 会丢掉右声道的能量）。
+            if (mSidechainChannels == 1)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    int frame = sidechainOffset + i;
+                    plane[i] = frame < sidechain.Length / 2
+                        ? (sidechain[frame * 2] + sidechain[frame * 2 + 1]) * 0.5f
+                        : 0f;
+                }
+
+                continue;
+            }
+
+            // 4 进：第 3/4 条 = 键的 L/R。
+            int source = ch - 2;
             for (int i = 0; i < n; i++)
-                plane[i] = buffer[offset + i * 2 + (ch % 2)];
+            {
+                int frame = sidechainOffset + i;
+                plane[i] = frame < sidechain.Length / 2 ? sidechain[frame * 2 + source] : 0f;
+            }
         }
 
-        for (int ch = 0; ch < mChannels; ch++)
+        for (int ch = 0; ch < channels; ch++)
             Array.Clear(mOutPlanes[ch], 0, n);
 
         bool ok;
         try
         {
-            ok = mClient.SendProcess(mSlotId, mInPlanes, mOutPlanes, mChannels, n, bypass: false);
+            ok = mClient.SendProcess(mSlotId, mInPlanes, mOutPlanes, channels, n, bypass: false);
         }
         catch (Exception)
         {
@@ -130,7 +180,7 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         for (int i = 0; i < n; i++)
         {
             float left = mOutPlanes[0][i];
-            float right = mChannels > 1 ? mOutPlanes[1][i] : mOutPlanes[0][i];
+            float right = channels > 1 ? mOutPlanes[1][i] : mOutPlanes[0][i];
 
             buffer[offset + i * 2] = float.IsFinite(left) ? left : 0f;
             buffer[offset + i * 2 + 1] = float.IsFinite(right) ? right : 0f;
@@ -233,7 +283,7 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
         }
 
         return new Vst2Insert(plugin, client, slotId, blockSize,
-            loaded.LatencySamples, loaded.HasEditor, settings.Bypass);
+            loaded.LatencySamples, loaded.HasEditor, settings.Bypass, loaded.InputChannels);
     }
 }
 

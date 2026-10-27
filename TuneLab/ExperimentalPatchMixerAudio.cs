@@ -43,8 +43,17 @@ internal sealed class MixerGraphCompiler
         var auxStates = new List<AuxChannelState>(auxList.Count);
 
         var builder = new MixGraphBuilder();
+
+        // [EP-MIXER-27] 每条通道的链要留一份：侧链连接要知道第 k 个插入到底支不支持键
+        // （2 进插件没有地方放键，连了也是白连 —— 还会白白分配一块键缓冲）。
+        var chains = new Dictionary<string, List<IMixInsert>>();
+
+        var masterSlots = masterInserts ?? [];
+        var masterChain = BuildInserts("master", masterSlots);
+        chains["master"] = masterChain;
+
         var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(),
-            null, BuildInserts("master", masterInserts ?? []));
+            null, masterChain);
 
         // v1 只有一个设备：所有"设备"输出都进同一个 sink（DESIGN.md §4.4）。
         var device = builder.AddNode("device", MixNodeKind.Device);
@@ -64,8 +73,10 @@ internal sealed class MixerGraphCompiler
 
             var state = new AuxChannelState(aux);
             auxStates.Add(state);
-            nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null,
-                BuildInserts(aux.Id, aux.Inserts));
+
+            var chain = BuildInserts(aux.Id, aux.Inserts);
+            chains[aux.Id] = chain;
+            nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null, chain);
         }
 
         for (int i = 0; i < trackList.Count; i++)
@@ -75,8 +86,15 @@ internal sealed class MixerGraphCompiler
             trackStates.Add(state);
 
             string id = "track-" + i;
-            nodes[id] = builder.AddNode(id, MixNodeKind.Track, state, new TrackMixSource(graph, track),
-                BuildInserts(id, track.Inserts));
+            var chain = BuildInserts(id, track.Inserts);
+            chains[id] = chain;
+
+            var node = builder.AddNode(id, MixNodeKind.Track, state, new TrackMixSource(graph, track), chain);
+            nodes[id] = node;
+
+            // [EP-MIXER-27] 侧链引用用的是**稳定序号**（"track:7"），不是编译期下标。
+            // 同一个节点登记两个键：引擎/电平查询继续用 "track-N"，侧链解析用稳定 id。
+            nodes[MixerTrackIds.IdOf(track)] = node;
         }
 
         // 目的地解析：AUX 按 id 找节点；设备进 device sink；Cable 未实现 → 回落到 Master 并记日志。
@@ -120,11 +138,94 @@ internal sealed class MixerGraphCompiler
                 builder.Connect(node, Resolve(send.Target.Value), 1f, 0, new SendEdgeGain(send), send.IsPreFader.Value);
         }
 
+        // [EP-MIXER-27] 侧链接线放在所有 output / send 之后：延迟公式要用最终的
+        // down[] / maxLatency，而它们只由**音频边**决定（侧链边不参与）。
+        ConnectSidechains(builder, nodes, chains, master, trackList, auxList, masterSlots);
+
         var snapshot = builder.Build();
 
         mTrackStates = trackStates.ToArray();
         mAuxStates = auxStates.ToArray();
         return snapshot;
+    }
+
+    // [EP-MIXER-27] 把数据里的 SidechainId 翻成引擎的侧链边。
+    //
+    // 【id 空间】模型侧是 "track:N" / "aux-N"，引擎节点是 "track-N" / "aux-N"。
+    // 这里显式翻译，绝不把两套 id 混用（AudioEngine 的电平查询也依赖 "track-N"）。
+    //
+    // 【悬空引用】源通道被删掉后 SidechainId 可能还留着（清理见 MixerModelAdapter）。
+    // 这里只跳过并记一次日志：一张图建不出来会让整台混音器失效，比丢一条侧链严重得多。
+    static void ConnectSidechains(
+        MixGraphBuilder builder,
+        Dictionary<string, MixGraphBuilder.NodeDraft> nodes,
+        Dictionary<string, List<IMixInsert>> chains,
+        MixGraphBuilder.NodeDraft master,
+        IReadOnlyList<IAudioTrack> tracks,
+        IReadOnlyList<AuxBus> auxes,
+        IReadOnlyList<InsertSlot> masterSlots)
+    {
+        for (int i = 0; i < tracks.Count; i++)
+        {
+            string targetId = "track-" + i;
+
+            if (nodes.TryGetValue(targetId, out var target))
+                ConnectChannel(target, tracks[i].Inserts, chains[targetId]);
+        }
+
+        foreach (var aux in auxes)
+        {
+            if (nodes.TryGetValue(aux.Id, out var target))
+                ConnectChannel(target, aux.Inserts, chains[aux.Id]);
+        }
+
+        ConnectChannel(master, masterSlots, chains["master"]);
+
+        void ConnectChannel(MixGraphBuilder.NodeDraft target, IReadOnlyList<InsertSlot> slots,
+            List<IMixInsert> chain)
+        {
+            for (int k = 0; k < slots.Count && k < chain.Count; k++)
+            {
+                string sourceId = slots[k].SidechainId.Value;
+
+                if (string.IsNullOrEmpty(sourceId))
+                    continue;
+
+                // 2 进插件没有地方放键。引用留着（换回 4 进插件时自动恢复），但不连边。
+                if (chain[k].SidechainChannels <= 0)
+                    continue;
+
+                if (!TryResolveSource(sourceId, nodes, out var source))
+                {
+                    HostLog.Warning($"mixer: sidechain source '{sourceId}' of '{slots[k].Name.Value}' no longer exists; ignored");
+                    continue;
+                }
+
+                if (ReferenceEquals(source, target))
+                    continue;
+
+                builder.ConnectSidechain(source, target, k);
+            }
+        }
+    }
+
+    static bool TryResolveSource(string id, Dictionary<string, MixGraphBuilder.NodeDraft> nodes,
+        out MixGraphBuilder.NodeDraft source)
+    {
+        source = null!;
+
+        // Master / Device 是终点，不能当源。
+        if (id == "master" || id == "device")
+            return false;
+
+        // 模型侧的稳定 id（"track:7" / "aux-N"）在编译时已经作为别名登记进 nodes。
+        if (nodes.TryGetValue(id, out var node))
+        {
+            source = node;
+            return true;
+        }
+
+        return false;
     }
 
     // 把一条通道的数据槽位变成引擎的 IMixInsert 链（EP-MIXER-14）。

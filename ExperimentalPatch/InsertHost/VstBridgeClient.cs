@@ -214,14 +214,28 @@ internal sealed class VstBridgeClient : IDisposable
             await mPipe.ConnectAsync(3000, cancellation).ConfigureAwait(false);
 
             // 握手：确认桥还是我们以为的那个东西（位数、协议版本）。
+            // [EP-MIXER-27] 必须真正解析回执：版本不匹配时桥回的是 Ok=false，
+            // 而 `Contains("\"ok\"")` 会把它当成成功 —— 然后按错的共享环布局解读音频。
             string? ack = await ExchangeAsync(JsonSerializer.Serialize(new HelloMessage
             {
                 Version = BridgeProtocol.ProtocolVersion,
                 Bitness = mBitness,
                 Formats = ["vst2"],
             }), cancellation).ConfigureAwait(false);
-            if (ack == null || !ack.Contains("\"ok\""))
+
+            HelloAckMessage? helloAck = null;
+            try
             {
+                helloAck = ack == null ? null : JsonSerializer.Deserialize<HelloAckMessage>(ack);
+            }
+            catch (JsonException)
+            {
+                helloAck = null;
+            }
+
+            if (helloAck == null || !helloAck.Ok)
+            {
+                LastStartError = helloAck?.Reason ?? "the VST2 bridge did not accept the handshake";
                 KillBridge();
                 return false;
             }

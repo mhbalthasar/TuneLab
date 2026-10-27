@@ -85,6 +85,10 @@ internal static class MixerPersistence
             {
                 Index = i,
                 Name = track.Name.Value,
+
+                // [EP-MIXER-27] 侧链引用用稳定序号；老版本读到没有这一项时是 0 = 懒分配。
+                MixerId = MixerTrackIds.OrdinalOf(track),
+
                 Output = ToDto(track.Output.Value),
                 Sends = ToDtos(track.Sends),
                 Pin = track.Pinned.Value.ToString(),
@@ -227,6 +231,11 @@ internal static class MixerPersistence
             track.Output.SetInfo(FromDto(dto.Output));
             track.Pinned.SetInfo(ParsePin(dto.Pin));
 
+            // [EP-MIXER-27] 恢复稳定序号：侧链引用按它找源轨。匹配是按名字/序号做的，
+            // 所以"改了名又换了序"的工程仍然能把序号安回同一条轨（匹配失败时该轨拿新号，
+            // 指向它的旧侧链引用变成悬空 —— 编译器会跳过，不会指错人）。
+            MixerTrackIds.Assign(track, dto.MixerId);
+
             // [EP-MIXER-20] 输入级（老工程没有这几个字段 → 默认值 = 关闭）
             track.IsSoloSafe.SetInfo(dto.SoloSafe);
             track.TrimDb.SetInfo(dto.TrimDb);
@@ -311,6 +320,9 @@ internal static class MixerPersistence
             // DTO 的缺省值（全湿 + 0 dB）= 包装器透明，与旧行为一致。
             slot.Mix.SetInfo(dto.Mix);
             slot.GainDb.SetInfo(dto.GainDb);
+
+            // [EP-MIXER-27] 侧链源。老工程没有 → 空串 = 没有侧链。
+            slot.SidechainId.SetInfo(dto.SidechainId ?? string.Empty);
 
             if (!string.IsNullOrEmpty(dto.State))
             {
@@ -406,6 +418,9 @@ internal static class MixerPersistence
                 // [EP-MIXER-23] 湿/干与增益微调
                 Mix = slot.Mix.Value,
                 GainDb = slot.GainDb.Value,
+
+                // [EP-MIXER-27] 侧链源（空串 = 没有，写成 null 让老版本忽略）
+                SidechainId = slot.SidechainId.Value is { Length: > 0 } sidechain ? sidechain : null,
             });
         }
 
@@ -481,6 +496,10 @@ internal static class MixerPersistence
         public int Index { get; set; }
         public string? Name { get; set; }
 
+        // [EP-MIXER-27] 稳定序号（MixerTrackIds）。侧链引用指向它，而不是列表下标 ——
+        // 换序 / 删轨不会让引用指错轨。老工程没有这一项 → 0 = 装载时懒分配。
+        public int MixerId { get; set; }
+
         // [EP-MIXER-25] Solo 安全（Track 的 solo 本身由宿主原生格式管，这里只存新字段）
         public bool SoloSafe { get; set; }
 
@@ -510,6 +529,9 @@ internal static class MixerPersistence
         // 所以老工程读进来与旧行为一致。
         public double Mix { get; set; } = 1;
         public double GainDb { get; set; }
+
+        // [EP-MIXER-27] 侧链源通道 id（"track:7" / "aux-1"）。null / 空 = 没有侧链。
+        public string? SidechainId { get; set; }
     }
 
     class RouteDto

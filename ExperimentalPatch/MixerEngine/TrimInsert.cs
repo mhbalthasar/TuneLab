@@ -37,6 +37,11 @@ public sealed class TrimInsert : IMixInsert
 
     public int LatencySamples => mInner.LatencySamples;
 
+    // [EP-MIXER-27] 侧链能力照抄内层。
+    public int InputChannels => mInner.InputChannels;
+
+    public int SidechainChannels => mInner.SidechainChannels;
+
     /// <summary>dB，0 = 不变。范围由界面约束（−24..+24）。</summary>
     public double GainDb
     {
@@ -47,8 +52,12 @@ public sealed class TrimInsert : IMixInsert
     public void SetBypassed(bool bypassed) => mInner.SetBypassed(bypassed);
 
     public void Process(Span<float> buffer, int offset, int count)
+        => Process(buffer, offset, count, default);
+
+    // [EP-MIXER-27] 键原样转给内层（理由见 WetDryInsert 同一处注释）。
+    public void Process(Span<float> buffer, int offset, int count, ReadOnlySpan<float> sidechain)
     {
-        mInner.Process(buffer, offset, count);
+        mInner.Process(buffer, offset, count, sidechain);
 
         float db = mGainDb;
 

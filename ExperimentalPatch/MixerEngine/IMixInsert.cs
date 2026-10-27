@@ -26,6 +26,19 @@ public interface IMixInsert
     // 该插件引入的延迟（样本）。0 = 无延迟。PDC 用它给别的路径补延迟线（§3.5）。
     int LatencySamples { get; }
 
+    // [EP-MIXER-27] 插件声明的输入通道总数（VST2 的 numInputs / VST3 的主输入总线）。
+    //
+    // 为什么需要：侧链的既成惯例是"声明多于 2 个输入"，界面上的措辞必须如实
+    // （"插件声明 4 进"），不能替用户断言"这个插件有侧链"——4 进也可能是 L/C/R。
+    // 0 = 未知（测试替身 / 不是音频插件）。
+    int InputChannels => 0;
+
+    // [EP-MIXER-27] 我们能喂进去的侧链通道数：0 = 没有侧链输入。
+    //
+    // 上限是 2（共享环一块最多 4 声道 = 主 L/R + 键 L/R）；3 进的插件是单声道键。
+    // 判定来自**已经建好的实例**，不进扫描缓存：缓存说 4 进、插件换了，就会喂错。
+    int SidechainChannels => 0;
+
     // 就地处理一块交织立体声样本。
     //
     // buffer 的长度 >= count * 2；数据从 offset 开始。
@@ -33,4 +46,13 @@ public interface IMixInsert
     // 返回 false = 这个插件这一块没处理成功（宿主据其严重程度决定是否旁通掉它）；
     // 引擎不会因为返回 false 就把缓冲区清掉，调用方自己看着办。
     void Process(Span<float> buffer, int offset, int count);
+
+    // [EP-MIXER-27] 带侧链键的处理。sidechain 是**交织立体声**的键信号，
+    // 长度 >= count * 2；空 span = 这个插入没有接侧链源。
+    //
+    // 默认实现 = 忽略键（七个不包装别人的实现因此一行都不用改）。
+    // **包装器必须重写并转发**（WetDryInsert / TrimInsert）：漏掉的话只有
+    // mix < 1 或 trim ≠ 0 的插入会丢键，默认值下一切正常，极难发现。
+    void Process(Span<float> buffer, int offset, int count, ReadOnlySpan<float> sidechain)
+        => Process(buffer, offset, count);
 }

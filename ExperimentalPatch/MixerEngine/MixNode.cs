@@ -60,6 +60,12 @@ public sealed class MixEdge
     internal bool IsEdgeSilent => LiveGain is { IsSilent: true };
 }
 
+// 一条侧链输出（源侧视图）：把本节点推子后、插入后的信号写进哪块缓冲、补多少延迟。
+//
+// 【为什么延迟在源侧】延迟是"这条边"的属性，但写信号的是源节点、读信号的是目标节点。
+// 建图时按 SIDECHAIN.md §4.5 的公式算好，音频线程只按它补延迟线。
+public readonly record struct MixSidechainOutput(int BufferIndex, int DelaySamples);
+
 public sealed class MixNode
 {
     public string Id { get; }
@@ -78,12 +84,24 @@ public sealed class MixNode
 
     public IReadOnlyList<MixEdge> Outputs { get; }
 
+    // [EP-MIXER-27] 侧链：本节点要写出的键（源侧视图）。
+    public IReadOnlyList<MixSidechainOutput> SidechainOutputs { get; }
+
+    // [EP-MIXER-27] 每个插入读哪块键缓冲；-1 = 这个插入没有侧链。
+    // 长度 = Inserts.Count（没有侧链时是空数组）。
+    //
+    // 为什么是"按插入下标"的数组而不是一张表：音频线程每块要按插入顺序查一次，
+    // 数组下标是 O(1)，字典查询会在这条最热的循环里多一次哈希。
+    public IReadOnlyList<int> SidechainBufferForInsert { get; }
+
     // 这条节点上有没有 pre-fader 的边（= 有 send 设在推子之前）。
     // 建图时算一次，音频线程只读 —— 它决定 Source.AddData 用 unity 还是直接用推子折叠。
     public bool HasPreFaderOutput { get; }
 
     internal MixNode(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
-        IReadOnlyList<IMixInsert> inserts, IReadOnlyList<MixEdge> outputs)
+        IReadOnlyList<IMixInsert> inserts, IReadOnlyList<MixEdge> outputs,
+        IReadOnlyList<MixSidechainOutput>? sidechainOutputs = null,
+        IReadOnlyList<int>? sidechainBufferForInsert = null)
     {
         Id = id;
         Kind = kind;
@@ -91,6 +109,8 @@ public sealed class MixNode
         Source = source;
         Inserts = inserts;
         Outputs = outputs;
+        SidechainOutputs = sidechainOutputs ?? [];
+        SidechainBufferForInsert = sidechainBufferForInsert ?? [];
 
         for (int i = 0; i < outputs.Count; i++)
         {

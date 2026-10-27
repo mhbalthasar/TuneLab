@@ -213,6 +213,72 @@ public class InsertChainTests
     }
 
     [Fact]
+    public void InsertLatency_IsCompensatedWhenTheDelayedTrackIsCompiledFirst()
+    {
+        const int delay = 4;
+
+        // 与上一个用例同一张图，但**有延迟的轨先加入**。
+        // down[] 按拓扑序下标存，不是节点创建序；用创建序取 down 会把这条轨的延迟
+        // 当成 master 的 down，快的轨反而不补 —— 两条路差 4 个样本（梳状滤波）。
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState());
+
+        var b = builder.AddNode("track-b", MixNodeKind.Track, new TestState(),
+            new ConstantSource(MakeSamples(16, 0, 1f)), [new GainInsert(1.0, delay)]);
+
+        var a = builder.AddNode("track-a", MixNodeKind.Track, new TestState(),
+            new ConstantSource(MakeSamples(16, 0, 1f)));
+
+        builder.Connect(a, master, 1f);
+        builder.Connect(b, master, 1f);
+
+        var snapshot = builder.Build();
+        Assert.Equal(delay, snapshot.MaxLatencySamples);
+
+        Assert.Equal(0, snapshot.Nodes.Single(n => n.Id == "track-b").Outputs[0].DelaySamples);
+        Assert.Equal(delay, snapshot.Nodes.Single(n => n.Id == "track-a").Outputs[0].DelaySamples);
+    }
+
+    [Fact]
+    public void AuxBusWithUpstreamLatency_IsAlignedWithTheDirectPath()
+    {
+        const int delay = 4;
+
+        // 轨 T 自己带 4 样本延迟，同时直连 Master 和 send 到 AUX A（A 也带 4 样本延迟）。
+        // 正确补偿：T→Master 补 4，T→A 补 0，A→Master 补 0。
+        // 旧公式（用 own[i] 而不是实际 output[i]）会给 A→Master 再补 4，
+        // 整条 AUX 总线比直连晚 4 个样本 —— 并联压缩 / 混响一开就梳状滤波。
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState());
+
+        var track = builder.AddNode("track-0", MixNodeKind.Track, new TestState(),
+            new ConstantSource(MakeSamples(16, 0, 1f)), [new GainInsert(1.0, delay)]);
+
+        var aux = builder.AddNode("aux-1", MixNodeKind.Aux, new TestState(),
+            null, [new GainInsert(1.0, delay)]);
+
+        builder.Connect(track, master, 1f);
+        builder.Connect(track, aux, 1f);
+        builder.Connect(aux, master, 1f);
+
+        var snapshot = builder.Build();
+
+        Assert.Equal(2 * delay, snapshot.MaxLatencySamples);
+
+        int masterIndex = Enumerable.Range(0, snapshot.Nodes.Count)
+            .Single(i => snapshot.Nodes[i].Id == "master");
+        int auxIndex = Enumerable.Range(0, snapshot.Nodes.Count)
+            .Single(i => snapshot.Nodes[i].Id == "aux-1");
+
+        var trackNode = snapshot.Nodes.Single(n => n.Id == "track-0");
+        Assert.Equal(delay, trackNode.Outputs.Single(e => e.TargetIndex == masterIndex).DelaySamples);
+        Assert.Equal(0, trackNode.Outputs.Single(e => e.TargetIndex == auxIndex).DelaySamples);
+
+        var auxNode = snapshot.Nodes.Single(n => n.Id == "aux-1");
+        Assert.Equal(0, auxNode.Outputs.Single().DelaySamples);
+    }
+
+    [Fact]
     public void NoInserts_MeansNoDelay_SoTheGraphIsUnchanged()
     {
         const int frames = 16;

@@ -689,7 +689,7 @@ public sealed class MixerWindow : Window
         // 而那是 UI 回调里未捕获的异常，整个进程会直接退出。
         bool canAdd = mModel.SupportsInserts;
 
-        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mHost, canAdd);
+        var popup = new FxPopupWindow(strip.Channel, mModel.InsertFormats, mModel.Channels, mHost, canAdd);
         PlacePopup(popup, strip.FxAnchor);
         popup.Show(this);
         HookPopupShortcut(popup);

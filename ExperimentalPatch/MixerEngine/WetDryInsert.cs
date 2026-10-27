@@ -43,6 +43,11 @@ public sealed class WetDryInsert : IMixInsert
 
     public int LatencySamples => mInner.LatencySamples;
 
+    // [EP-MIXER-27] 侧链能力照抄内层：宿主/编译器问的是链上这一环。
+    public int InputChannels => mInner.InputChannels;
+
+    public int SidechainChannels => mInner.SidechainChannels;
+
     /// <summary>0 = 全干（只听原始信号），1 = 全湿（只听插件输出）。</summary>
     public float Mix
     {
@@ -53,13 +58,18 @@ public sealed class WetDryInsert : IMixInsert
     public void SetBypassed(bool bypassed) => mInner.SetBypassed(bypassed);
 
     public void Process(Span<float> buffer, int offset, int count)
+        => Process(buffer, offset, count, default);
+
+    // [EP-MIXER-27] 键必须原样转给内层。包装器是链上的一环，它不认识键，
+    // 但漏转发的症状极隐蔽（只有 mix < 1 时丢键），所以这里是**显式**的一行。
+    public void Process(Span<float> buffer, int offset, int count, ReadOnlySpan<float> sidechain)
     {
         float mix = mMix;
 
         // 全湿 = 包装器完全透明（连拷贝都省了）。这是最常见的默认值。
         if (mix >= 1f)
         {
-            mInner.Process(buffer, offset, count);
+            mInner.Process(buffer, offset, count, sidechain);
             return;
         }
 
@@ -70,7 +80,7 @@ public sealed class WetDryInsert : IMixInsert
         var dry = mDry.AsSpan(0, samples);
         buffer.Slice(offset, samples).CopyTo(dry);
 
-        mInner.Process(buffer, offset, count);
+        mInner.Process(buffer, offset, count, sidechain);
 
         if (mix <= 0f)
         {

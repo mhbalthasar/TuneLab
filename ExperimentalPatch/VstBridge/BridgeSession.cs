@@ -42,7 +42,7 @@ internal sealed class BridgeSession : IDisposable
             switch (kind)
             {
                 case BridgeMessageKind.Hello:
-                    Write(JsonSerializer.Serialize(new HelloAckMessage { Ok = true }));
+                    HandleHello(json);
                     break;
 
                 case BridgeMessageKind.Ping:
@@ -98,6 +98,27 @@ internal sealed class BridgeSession : IDisposable
     }
 
     // ── 各个处理器：解析 → 干活 → 回话。解析失败一律回 Error，绝不让会话死掉。 ──
+
+    // [EP-MIXER-27] 握手要校验协议版本：版本决定**共享环的布局**（2 声道还是 4 声道）。
+    // 版本不匹配时"能连上"比"连不上"更危险 —— 会按错的步长解读同一段内存。
+    // 所以这里回 Ok=false 并结束会话，让宿主把进程杀掉、去用配套的新桥。
+    void HandleHello(string? json)
+    {
+        HelloMessage? message = Deserialize<HelloMessage>(json);
+
+        if (message == null || message.Version != BridgeProtocol.ProtocolVersion)
+        {
+            string reason = message == null
+                ? "bad Hello message"
+                : $"protocol version mismatch (host {message.Version}, bridge {BridgeProtocol.ProtocolVersion})";
+
+            Write(JsonSerializer.Serialize(new HelloAckMessage { Ok = false, Reason = reason }));
+            mRunning = false;
+            return;
+        }
+
+        Write(JsonSerializer.Serialize(new HelloAckMessage { Ok = true }));
+    }
 
     void HandleLoad(string? json, byte[] payload)
     {

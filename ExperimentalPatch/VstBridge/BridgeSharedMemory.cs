@@ -36,11 +36,16 @@ public static class SharedAudioLayout
     // 而将来要做"提前一块流水、把桥的调度延迟藏掉"时协议一行都不用改。
     public const int SlotCount = 4;
 
-    // 上限：2048 帧 × 2 声道。宿主设备块长通常 512~1024，留一倍余量。
+    // 上限：2048 帧 × 4 声道（主 L/R + 侧链 L/R）。宿主设备块长通常 512~1024，留一倍余量。
     // 超了不是"凑合写进去"，而是拒绝——共享区大小是定死的，越界写就是踩别人的内存。
     public const int MaxBlockFrames = 2048;
 
-    public const int MaxChannels = 2;
+    // [EP-MIXER-27] 2 → 4：第 3/4 条平面是 VST2 的侧链输入（第 3 条起就是键，见 SIDECHAIN.md §2）。
+    //
+    // 【改这里 = 两端一起重发】共享区槽位大小由它算；宿主按 2 声道解读 4 声道布局
+    // 就是爆音/错位。协议版本（BridgeProtocol.ProtocolVersion）是那条封条，
+    // 旧桥会在 Hello 握手时被拒绝，不会"能连上但按错的布局解读"。
+    public const int MaxChannels = 4;
 
     // 每块的元数据头（16 字节，见 BlockHeader）。
     public const int BlockHeaderBytes = 16;

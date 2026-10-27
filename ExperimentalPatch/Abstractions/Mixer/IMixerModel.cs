@@ -165,6 +165,12 @@ public interface IMixerChannel
     // 免得用户点了个"点了没反应"的目标。Master 恒 false（它没有 send）。
     bool CanSendTo(IMixerOutput target);
 
+    // [EP-MIXER-27] 这条通道能不能当**侧链源**（source 的出口 → 本通道插入的键输入）。
+    //
+    // 判据与 CanSendTo 同源：Master 不能当源（它是终点），自己不能当自己的源，
+    // 会成环的源也不列出来。菜单据此**不显示**那些源，而不是显示了再报错。
+    bool CanSidechainFrom(IMixerChannel source);
+
     // 输入级（Master 没有：它没有音源可 Trim / 高通）。默认值 = 关闭。
     bool HasInputStage { get; }
     double TrimDb { get; set; }        // -24..+24 dB，0 = 不变
@@ -257,6 +263,22 @@ public interface IMixerInsert
 
     // 该插件有没有自己的界面（JSFX 没有 @gfx 时也可能没有）。
     bool HasEditor { get; }
+
+    // [EP-MIXER-27] 插件声明的输入通道总数。界面措辞要如实（"插件声明 4 进"），
+    // 不能替用户断言"这个插件有侧链"——4 进也可能是 L/C/R。
+    int InputChannels { get; }
+
+    // [EP-MIXER-27] 侧链宽度：0 = 没有额外输入（菜单里不显示 SC 入口）。
+    //
+    // 能力来自**已经建好的实例**，不是扫描缓存：缓存说 4 进、插件换了，
+    // 就会喂错。代价是工程刚打开、图还没编译的那一瞬间 SC 是灰的。
+    int SidechainChannels { get; }
+
+    // [EP-MIXER-27] 当前侧链源通道 id（"track:0" / AUX id）；null = 没有。
+    string? SidechainSourceId { get; }
+
+    // [EP-MIXER-27] 设置侧链源；null = 清除。结构变化，宿主会重建图。
+    void SetSidechainSource(string? sourceId);
 
     // 打开插件自己的设置窗。没有界面时是空实现。
     void OpenEditor();

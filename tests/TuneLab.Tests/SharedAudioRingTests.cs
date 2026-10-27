@@ -256,11 +256,14 @@ public class SharedAudioRingTests
             return;
 
         Assert.Equal(4, SharedAudioLayout.SlotCount);
-        Assert.Equal(2, SharedAudioLayout.MaxChannels);
 
-        // 头 16 + 4 槽 × (16 头 + 2 × 2048 × 4 音频) = 16 + 4 × 16400 = 65616
-        Assert.Equal(16 + 4 * (16 + 2 * 2048 * 4), SharedAudioLayout.SectionBytes);
-        Assert.Equal(16 + 2 * 2048 * 4, SharedAudioLayout.SlotBytes);
+        // [EP-MIXER-27] 2 → 4：侧链要额外两条声道（键 L/R）。改这个数字 = 改共享内存布局，
+        // 必须同时 bump BridgeProtocol.ProtocolVersion（否则新旧桥会按不同布局读写同一块内存）。
+        Assert.Equal(4, SharedAudioLayout.MaxChannels);
+
+        // 头 16 + 4 槽 × (16 头 + 4 × 2048 × 4 音频) = 16 + 4 × 32784 = 131152
+        Assert.Equal(16 + 4 * (16 + 4 * 2048 * 4), SharedAudioLayout.SectionBytes);
+        Assert.Equal(16 + 4 * 2048 * 4, SharedAudioLayout.SlotBytes);
     }
 }
 

@@ -376,6 +376,30 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
     // 真正打开面板时才查。这里不做往返，免得"建行"这种热路径被 IO 拖住。
     public bool HasParameters => factory.TryGetLive(slot.Id, out var insert) && insert != null;
 
+    // [EP-MIXER-27] 侧链能力问**活实例**（与 HasEditor 同一套纪律）。
+    // 工程刚打开、图还没编译的那一瞬间是 0 —— 菜单里不显示 SC，编译完就正常。
+    public int InputChannels
+        => factory.TryGetLive(slot.Id, out var insert) && insert != null ? insert.InputChannels : 0;
+
+    public int SidechainChannels
+        => factory.TryGetLive(slot.Id, out var insert) && insert != null ? insert.SidechainChannels : 0;
+
+    public string? SidechainSourceId
+        => slot.SidechainId.Value is { Length: > 0 } id ? id : null;
+
+    public void SetSidechainSource(string? sourceId)
+    {
+        string value = sourceId ?? string.Empty;
+
+        if (slot.SidechainId.Value == value)
+            return;
+
+        // 结构变化（图里多/少一条侧链边）→ 必须重建图，不像 mix/trim 那样是活值。
+        slot.SidechainId.Set(value);
+        onContentChanged?.Invoke();
+        Changed?.Invoke();
+    }
+
     public void OpenParameters(string context)
     {
         if (!factory.TryGetLive(slot.Id, out var insert) || insert == null)

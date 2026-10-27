@@ -312,7 +312,8 @@ internal sealed class PluginHost
             }
 
             // 把输入搬进槽位自己的平面缓冲（插件读的是这份）。
-            // 宿主送来的是 1~2 条；插件声明更多时，多出来的那几条保持静音。
+            // 宿主送来的是 2 条（无侧链）或 3~4 条（第 3/4 条是键，见 EP-MIXER-27）；
+            // 插件声明更多时，多出来的那几条保持静音。
             for (int c = 0; c < slot.InPlanes.Length; c++)
             {
                 if (c < ch)
@@ -331,8 +332,9 @@ internal sealed class PluginHost
 
             bool ok = CallProcess(slot, fr);
 
-            // 插件输出 → 宿主要的 1~2 条。单声道插件（1 出）在这里被复制到左右；
-            // 8 出插件只取前两条。返回的平面数组是"视图"，不是拷贝。
+            // 插件输出 → 宿主。单声道插件（1 出）在这里被复制到左右；
+            // 8 出插件只取前两条（多出来的那几条宿主不读，侧链不占输出）。
+            // 返回的平面数组是"视图"，不是拷贝。
             for (int c = 0; c < ch; c++)
                 slot.PublishPlanes[c] = slot.OutPlanes[Math.Min(c, slot.OutPlanes.Length - 1)];
 

@@ -112,6 +112,11 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
                 repointed += source.RepointSends(bus.Id, MixerRoute.Master);
             }
 
+            // [EP-MIXER-27] 侧链引用指向被删的 AUX → 清掉（同一个 merge 作用域 = 一步 undo）。
+            // 轨道删除走不到这里（编辑器直接删），但轨道用的是稳定序号，悬空引用只会被跳过，
+            // 不会指错轨 —— 见 MixerTrackIds 的注释。
+            PruneSidechainRefs(bus.Id);
+
             mProject.RemoveAux(bus);
         }
         finally
@@ -125,6 +130,28 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
 
         if (repointed > 0)
             HostLog.Warning($"mixer: removed AUX '{bus.Name.Value}', {repointed} route(s) now go to Master");
+    }
+
+    // [EP-MIXER-27] 清掉所有指向 removedId 的侧链引用。
+    // 调用方负责套 merge 作用域（AUX 删除时与"改指 Master"合成一步 undo）。
+    void PruneSidechainRefs(string removedId)
+    {
+        foreach (var channel in mChannels)
+        {
+            if (channel is MixerChannelBase source)
+                ClearSidechainRefs(source.InsertList, removedId);
+        }
+
+        ClearSidechainRefs(mProject.MasterInserts, removedId);
+    }
+
+    static void ClearSidechainRefs(IReadOnlyDataObjectList<InsertSlot> slots, string removedId)
+    {
+        foreach (var slot in slots)
+        {
+            if (slot.SidechainId.Value == removedId)
+                slot.SidechainId.SetInfo(string.Empty);
+        }
     }
 
     // ── 通道位置（轨道头右键菜单）──
@@ -324,7 +351,31 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
                 edges.Add((source.Id, send.Id));
         }
 
+        // [EP-MIXER-27] 侧链边也要进邻接表：否则"两条轨互相侧链"在菜单里都显示可用，
+        // 直到建图时才炸（那时已经晚了 —— 用户点了两下就失去整台混音器）。
+        foreach (var channel in mChannels)
+        {
+            if (channel is MixerChannelBase source)
+                AddSidechainEdges(edges, source.Id, source.InsertList);
+        }
+
+        // Master 不在 mChannels 里（它是单独一条），但它的插入也能吃侧链。
+        // 方向永远是 source → master，而 master 没有出边，所以加它不会成环；
+        // 仍然加进来是为了与编译器看到的边表一致。
+        AddSidechainEdges(edges, "master", mProject.MasterInserts);
+
         return MixGraphBuilder.WouldCreateCycle(edges, fromId, toId);
+    }
+
+    static void AddSidechainEdges(List<(string From, string To)> edges, string targetId,
+        IReadOnlyDataObjectList<InsertSlot> slots)
+    {
+        foreach (var slot in slots)
+        {
+            string sourceId = slot.SidechainId.Value;
+            if (!string.IsNullOrEmpty(sourceId))
+                edges.Add((sourceId, targetId));
+        }
     }
 
     void BuildOutputs()
@@ -412,7 +463,7 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         mChannels.Clear();
 
         for (int i = 0; i < mProject.Tracks.Count; i++)
-            mChannels.Add(new MixerTrackChannel(this, mProject.Tracks[i], i));
+            mChannels.Add(new MixerTrackChannel(this, mProject.Tracks[i]));
 
         foreach (var aux in mProject.Auxes)
             mChannels.Add(new MixerAuxChannel(this, aux));
@@ -709,6 +760,19 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
         return route.Id != Id && !Owner.WouldCycle(Id, route.Id);
     }
 
+    // [EP-MIXER-27] 能不能把 source 当侧链源。方向是 source → 本通道，
+    // 所以成环判定问的是 WouldCycle(source.Id, Id)。
+    public bool CanSidechainFrom(IMixerChannel source)
+    {
+        if (source.Kind == MixerChannelKind.Master)
+            return false;
+
+        if (source.Id == Id)
+            return false;
+
+        return !Owner.WouldCycle(source.Id, Id);
+    }
+
     // 串联插入（按顺序处理）。活读：增删 / 旁通要立刻反映在浮窗里。
     public virtual IReadOnlyList<IMixerInsert> Inserts
     {
@@ -851,10 +915,9 @@ internal abstract class MixerChannelBase : IMixerChannel, IDisposable
 // 一条轨的通道视图。
 internal sealed class MixerTrackChannel : MixerChannelBase
 {
-    public MixerTrackChannel(MixerModelAdapter owner, ITrack track, int index) : base(owner, track)
+    public MixerTrackChannel(MixerModelAdapter owner, ITrack track) : base(owner, track)
     {
         mTrack = track;
-        mIndex = index;
 
         track.Gain.Modified.Subscribe(OnStateModified);
         track.Pan.Modified.Subscribe(OnStateModified);
@@ -871,8 +934,9 @@ internal sealed class MixerTrackChannel : MixerChannelBase
 
     public override MixerChannelKind Kind => MixerChannelKind.Track;
 
-    // TODO(持久化): 换序/删轨后序号会变。落盘时会换成随工程保存的稳定 id。
-    public override string Id => "track:" + mIndex;
+    // [EP-MIXER-27] 稳定序号，不是列表位置：换序 / 删轨后侧链引用不会指错轨。
+    // 序号随对象走，落盘在 epMixer sidecar 里（见 MixerTrackIds 的注释）。
+    public override string Id => MixerTrackIds.IdOf(mTrack);
 
     public override IDataProperty<string> NameProperty => mTrack.Name;
     public override IDataProperty<MixerPin> PinProperty => mTrack.Pinned;
@@ -986,7 +1050,6 @@ internal sealed class MixerTrackChannel : MixerChannelBase
     void OnPinChanged() => Owner.RaiseChannelsChanged();
 
     readonly ITrack mTrack;
-    readonly int mIndex;
 }
 
 // 一条 AUX 的通道视图。与轨的差别：没有音源、没有选中态；电平表暂时没有宿主查询。
@@ -1253,6 +1316,15 @@ internal sealed class MixerMasterChannel : IMixerChannel
     public IMixerSend AddSend(IMixerOutput target) => throw new NotSupportedException("Master cannot have sends");
     public void RemoveSend(IMixerSend send) => throw new NotSupportedException("Master cannot have sends");
     public bool CanSendTo(IMixerOutput target) => false;
+
+    // [EP-MIXER-27] Master 的插入也能吃侧链，但 Master 自己不能当源（它是终点）。
+    public bool CanSidechainFrom(IMixerChannel source)
+    {
+        if (source.Kind == MixerChannelKind.Master)
+            return false;
+
+        return source.Id != Id && !mOwner.WouldCycle(source.Id, Id);
+    }
 
     // Master 的插入链挂在哪儿还是 TODO：它不在 Project.Auxes 里，需要一个等价的位置。
     // 在此之前如实说"不支持"，比让用户点出一个异常好。

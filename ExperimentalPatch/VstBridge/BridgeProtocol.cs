@@ -24,7 +24,13 @@ namespace TuneLab.ExperimentalPatch.VstBridge;
 public static class BridgeProtocol
 {
     public const string PipeName = "TuneLab.VstBridge";
-    public const int ProtocolVersion = 1;
+
+    // [EP-MIXER-27] 1 → 2：共享音频环的布局变了（MaxChannels 2 → 4）。
+    //
+    // 为什么必须抬版本：旧桥按 2 声道布局算槽位大小，新宿主按 4 声道写 ——
+    // 能连上、能握手，然后按错的步长解读同一段内存，症状是爆音或整段错位。
+    // 所以 Hello 里校验版本，不匹配就拒绝（见 BridgeSession.HandleHello）。
+    public const int ProtocolVersion = 2;
 
     // 约定：一条消息 = 4 字节小端长度 + UTF-8 JSON。
     // 上限 16 MB：足够装一个自己的大 state chunk，也挡住了"长度头读坏了当巨长"这种事故。
