@@ -29,17 +29,19 @@ internal static class MixerMetrics
     public const double MeterWidth = 13;
     public const double MeterGap = 4;
 
-    // 浮窗（send / FX / output 菜单）。
-    public const double PopupWidth = 380;
-    public const double PopupRowHeight = 30;
+    // send 浮窗：目标名 + 五个固定控件。名字列给 82px —— 常见 AUX 名一行放得下，
+    // 再长就换行；窗口宽度按这一行算死，不留一块把名字和旋钮拉开的空白。
+    // 218 = 左右 padding 20 + 5 个 4px 间隔 + 固定控件 178（48+46+42+24+18）。
+    public const double SendNameWidth = 82;
+    public const double SendPopupWidth = SendNameWidth + 218;
 
     // 插入效果浮窗的行更高：一行里有旁通/界面/删除三个键，挤在 30 里会贴边。
     // EP-MIXER-23 之后是**两条子行**（主行 + 湿/干·增益行），所以 = 40 + 24。
     public const double FxRowHeight = 64;
 
-    // send 浮窗的一行 = 增益子行 + pre/post·pan·mute 子行。两条都按 30 算，
-    // 中间 2 的间距由 StackPanel 出 —— 所以这里是 62。
-    public const double SendRowHeight = 62;
+    // send 浮窗的一行：目标名 + 增益旋钮（下挂 dB 读数）+ PRE/POST + pan 旋钮 + M + 删除。
+    // 旋钮本体 28，pan 旋钮连读数 42；行高 48 让两边的读数都完整露出。
+    public const double SendRowHeight = 48;
     public const double PopupHeaderHeight = 30;
     public const double PopupPadding = 10;
 }

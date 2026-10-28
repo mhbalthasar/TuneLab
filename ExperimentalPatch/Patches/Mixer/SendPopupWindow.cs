@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -8,6 +9,8 @@ using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
 using TuneLab.ExperimentalPatch.UI;
+using TuneLab.GUI.Components;
+using TuneLab.SDK;
 
 namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
@@ -32,7 +35,7 @@ public sealed class SendPopupWindow : Window
         mCanAdd = canAdd;
 
         Title = L("发送", "Sends");
-        Width = MixerMetrics.PopupWidth;
+        Width = MixerMetrics.SendPopupWidth;
         MinHeight = 120;
         MaxHeight = 420;
         SizeToContent = SizeToContent.Height;
@@ -82,9 +85,14 @@ public sealed class SendPopupWindow : Window
 
         var body = new ScrollViewer
         {
-            Content = new Panel { Children = { mRows, mEmpty } },
+            // 内边距放在内容上，不放在 ScrollViewer 上：ScrollViewer 的 Padding 不参与
+            // SizeToContent 的期望高度，最后一行会被裁掉（send 行的 dB 读数尤其明显）。
+            Content = new Panel
+            {
+                Margin = new Thickness(MixerMetrics.PopupPadding, 8),
+                Children = { mRows, mEmpty },
+            },
             MaxHeight = 240,
-            Padding = new Thickness(MixerMetrics.PopupPadding, 8),
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
         };
 
@@ -202,60 +210,68 @@ public sealed class SendPopupWindow : Window
         mRows.IsVisible = mChannel.Sends.Count > 0;
     }
 
-    // 一行 send：目标名 / 增益 / 读数，下面一小排 pre/post、声向、静音。
+    // 一行 send：目标名 / 增益旋钮 + 可键入的 dB 读数 / PRE-POST / 声向旋钮 / M / 删除。
     //
-    // 为什么分两行：一行放不下（名字 + 滑杆 + 读数 + 三个开关 + 删除键），
-    // 而且 pre/post、pan、mute 是次级信息，跟增益分开更不容易误触。
-    // 高度用 MixerMetrics.SendRowHeight（两条子行合计），别和 strip 上的行高混用。
+    // 为什么合成一行：send 的五个参数是一起调的（推混响量时顺手看 pre/post 和 pan），
+    // 拆成上下两行会让视线在同一个 send 里来回跳；一行也把行高从 62 降到 48。
+    // 增益旋钮下面留出完整的读数位（PanKnob 的读数同理），行高不再裁掉旋钮的数值。
     Control BuildRow(IMixerSend send)
     {
+        // 名字列固定 82px：单行名字靠右贴旋钮，短名字（Delay）和长名字（Hall Reverb）
+        // 的右缘都对齐；放不下的名字在列内换行（最多三行，仍放不下就省略号收尾），
+        // 换行后的文本块在列内左对齐。行高 48 足够容下三行 10.5px 文本。
         var name = new TextBlock
         {
             Text = send.Target.Name,
             FontSize = 10.5,
             Foreground = Palette.Brush(Palette.TextNormal),
             VerticalAlignment = VerticalAlignment.Center,
+            // 单行名字靠右贴旋钮；换行后的多行文本块在列内左对齐，读起来更顺。
+            HorizontalAlignment = HorizontalAlignment.Right,
+            TextAlignment = TextAlignment.Left,
+            TextWrapping = TextWrapping.Wrap,
+            MaxLines = 3,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
+        // 极长名字会被换行上限截断；悬停时仍能看到完整目标名。
+        ToolTip.SetTip(name, send.Target.Name);
 
-        var slider = new SendGainSlider
+        var gainKnob = new SendGainKnob
         {
             Value = send.GainDb,
-            Height = 18,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0),
+            Width = 48,
+            Height = 30,
+            HorizontalAlignment = HorizontalAlignment.Center,
         };
 
-        var readout = new TextBlock
+        // dB 读数：双击原地键入，拖动也能改（与参数面板同一个 DraggableNumberBox）。
+        // MinValue 故意留空：−∞ 是合法值，不能被当成"低于 −48"钳回 −48；
+        // 有限值的边界在 SendDbFormat.Parse 和 Response 里钳。
+        var gainBox = new DraggableNumberBox
         {
-            Text = Controls.Fader.FormatDb(send.GainDb),
-            FontSize = 10,
-            FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
-            Foreground = Palette.Brush(Palette.LightWhite),
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Right,
+            Width = 48,
+            Height = 16,
+            MaxValue = SendGainKnob.MaximumDb,
+            Step = 0.1,
+            NumberFormat = SendDbFormat,
+            Response = DragResponse.Custom((start, delta) =>
+            {
+                // −∞ 起拖时从最小可调值开始，否则会一直卡在 −∞。
+                double from = double.IsNegativeInfinity(start) ? SendGainKnob.MinimumDb : start;
+                return Math.Clamp(from + delta.X, SendGainKnob.MinimumDb, SendGainKnob.MaximumDb);
+            }),
+            HorizontalAlignment = HorizontalAlignment.Center,
         };
+        gainBox.Display(send.GainDb);
 
-        var remove = new ChromeButton { Text = "X", Width = 18, Height = 18, HoverColor = Palette.CloseHover, Margin = new Thickness(4, 0, 0, 0) };
-        remove.Click += () => mChannel.RemoveSend(send);
-
-        slider.ValueEdited += value =>
+        var gainModule = new StackPanel
         {
-            send.GainDb = value;
-            readout.Text = Controls.Fader.FormatDb(value);
+            Width = 48,
+            VerticalAlignment = VerticalAlignment.Top,
         };
+        gainModule.Children.Add(gainKnob);
+        gainModule.Children.Add(gainBox);
 
-        var top = new Grid { ColumnDefinitions = new ColumnDefinitions("64,*,44,20"), Height = MixerMetrics.PopupRowHeight };
-        Grid.SetColumn(name, 0);
-        Grid.SetColumn(slider, 1);
-        Grid.SetColumn(readout, 2);
-        Grid.SetColumn(remove, 3);
-        top.Children.Add(name);
-        top.Children.Add(slider);
-        top.Children.Add(readout);
-        top.Children.Add(remove);
-
-        // ---- 次级行：pre/post、声向、静音 ----
         var pre = new MixerToggle
         {
             Text = send.IsPreFader ? "PRE" : "POST",
@@ -263,6 +279,7 @@ public sealed class SendPopupWindow : Window
             CheckedColor = Palette.HighLight,
             Width = 46,
             Height = 18,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         pre.Toggled += on =>
         {
@@ -273,24 +290,9 @@ public sealed class SendPopupWindow : Window
         var pan = new PanKnob
         {
             Value = send.Pan,
-            Width = 30,
-            Height = 30,
-        };
-
-        var panReadout = new TextBlock
-        {
-            Text = FormatPan(send.Pan),
-            FontSize = 9,
-            FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
-            Foreground = Palette.Brush(Palette.TextLabel),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2, 0, 6, 0),
-        };
-
-        pan.PanEdited += value =>
-        {
-            send.Pan = value;
-            panReadout.Text = FormatPan(value);
+            Width = 42,
+            Height = MixerMetrics.SendRowHeight,
+            VerticalAlignment = VerticalAlignment.Top,
         };
 
         var mute = new MixerToggle
@@ -300,28 +302,77 @@ public sealed class SendPopupWindow : Window
             CheckedColor = Palette.MuteChecked,
             Width = 24,
             Height = 18,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         mute.Toggled += on => send.IsMute = on;
 
-        var bottom = new Grid { ColumnDefinitions = new ColumnDefinitions("46,Auto,Auto,24,*") };
-        Grid.SetColumn(pre, 0);
-        Grid.SetColumn(pan, 1);
-        Grid.SetColumn(panReadout, 2);
-        Grid.SetColumn(mute, 3);
-        bottom.Children.Add(pre);
-        bottom.Children.Add(pan);
-        bottom.Children.Add(panReadout);
-        bottom.Children.Add(mute);
+        var remove = new ChromeButton
+        {
+            Text = "X",
+            Width = 18,
+            Height = 18,
+            HoverColor = Palette.CloseHover,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        remove.Click += () => mChannel.RemoveSend(send);
 
-        var panel = new StackPanel { Spacing = 2 };
-        panel.Children.Add(top);
-        panel.Children.Add(bottom);
-        return panel;
+        gainKnob.ValueEdited += value =>
+        {
+            send.GainDb = value;
+            gainBox.Display(value);
+        };
+        gainKnob.EditStarted += mChannel.BeginEdit;
+        gainKnob.EditEnded += mChannel.EndEdit;
+
+        gainBox.ValueChanged.Subscribe(() =>
+        {
+            send.GainDb = gainBox.Value;
+            gainKnob.Value = gainBox.Value;
+        });
+        gainBox.ValueWillChange.Subscribe(mChannel.BeginEdit);
+        gainBox.ValueCommitted.Subscribe(mChannel.EndEdit);
+
+        pan.PanEdited += value => send.Pan = value;
+        pan.EditStarted += mChannel.BeginEdit;
+        pan.EditEnded += mChannel.EndEdit;
+
+        var row = new Grid
+        {
+            Height = MixerMetrics.SendRowHeight,
+            // 名字列用 *：没有滚动条时正好是 MixerMetrics.SendNameWidth（82px），
+            // 发送多到出现竖向滚动条时自动让出滚动条的宽度，不会把右边的 X 挤出窗口。
+            ColumnDefinitions = new ColumnDefinitions("*,48,46,42,24,18"),
+            ColumnSpacing = 4,
+        };
+        Grid.SetColumn(name, 0);
+        Grid.SetColumn(gainModule, 1);
+        Grid.SetColumn(pre, 2);
+        Grid.SetColumn(pan, 3);
+        Grid.SetColumn(mute, 4);
+        Grid.SetColumn(remove, 5);
+        row.Children.Add(name);
+        row.Children.Add(gainModule);
+        row.Children.Add(pre);
+        row.Children.Add(pan);
+        row.Children.Add(mute);
+        row.Children.Add(remove);
+        return row;
     }
 
-    // 与通道条的声向读数同一口径：中央 C，两边 L20..R20。
-    static string FormatPan(double pan)
-        => Math.Abs(pan) < 0.02 ? "C" : (pan < 0 ? "L" : "R") + Math.Round(Math.Abs(pan) * 20);
+    // dB 读数的双向格式：显示保留一位小数，−∞ 显示成 "−∞"；键入时接受 "−∞" / "-inf"。
+    // 有限值在 Parse 里钳到 [−48, +12]，DraggableNumberBox 的 MinValue 留空（见上）。
+    static readonly INumberFormat SendDbFormat = NumberFormat.Custom(
+        Fader.FormatDb,
+        text =>
+        {
+            text = text.Trim();
+            if (text is "-∞" or "−∞" or "-inf" or "-Infinity")
+                return double.NegativeInfinity;
+
+            return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var db)
+                ? Math.Clamp(db, SendGainKnob.MinimumDb, SendGainKnob.MaximumDb)
+                : null;
+        });
 
     protected override void OnClosed(EventArgs e)
     {
