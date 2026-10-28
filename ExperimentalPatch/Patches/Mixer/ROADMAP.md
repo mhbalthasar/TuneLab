@@ -117,3 +117,30 @@ FX 浮窗的 `SC` 键与源菜单、`InsertDto.SidechainId` 落盘、轨道稳�
 - **推子是 dB 刻度、线性映射**：没有推子曲线选项（DAW 里也常被关掉）。
 - **只有一个 Master**：没有 monitor / cue 分离。
 
+## 5. 收尾与后续（2026-10-28）
+
+§2 的编号队列已走完（2.1–2.6、2.8 ✅，2.7 🚫）。下面**不是排期**，只是把评估过的
+结论落在这里，免得下次重新分析。
+
+### 5.1 发布收尾（🔜 建议先做）
+
+- 2.8 侧链手工冒烟：VST2 为主（ReaComp / ReaGate / TDR），确认 3 进 / 4 进、单声道键
+  `(L + R) * 0.5`、PDC、删轨 / 换序后引用不指错。
+- 桥重新发布：协议 v2 + 4 声道布局（`tools/publish-bridges.ps1`）；旧桥会在 Hello 被拒。
+- 全量 `TuneLab.sln` build + `TuneLab.Tests` / `TuneLab.Hosting.Compat.Legacy.Tests`。
+- 真机回归：老工程打开 / 播放 / 导出与旧版一致；Master 插入、send、AUX、PDC。
+- VST3 真插件验证：DESIGN 里仍标"开发机无 64 位 VST3"。要承诺 VST3 就必须补。
+
+### 5.2 后续候选（未排期，按建议优先级）
+
+| 优先 | 项 | 一句话 |
+|---|---|---|
+| 1 | VST3 崩溃隔离 | 把 VST3 也走桥；现在插件崩 = 应用崩。收益最高，工作量最大 |
+| 2 | JSFX（M9） | 先 spike `ysfx` 的 P/Invoke、`@gfx`、许可 |
+| 3 | 多设备输出 / 监听耳返 | v2 用途；每设备一个 sink + 漂移补偿 |
+| 4 | 插入参数自动化 | 与正规 DAW 差距最大；要单独设计一轮 |
+| 5 | VST3 标准 `kSidechain` 总线 | 要 fork vendored 原生宿主，重建 `ownvst3.tlhost.dll` |
+| 6 | `daw_cable` | 现在是禁用占位 |
+| — | Master Ø | 唯一还写"待定"的小项；只加相位反相 |
+| — | 混音后的分轨导出 | `ExportTrack` 现在不跑混音链（见 DESIGN §3.8） |
+
