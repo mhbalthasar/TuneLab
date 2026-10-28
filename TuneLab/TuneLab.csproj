@@ -14,7 +14,9 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<AvaloniaResource Include="Assets\**" />
+		<!-- .axaml 已由 Avalonia 默认的 AvaloniaXaml glob 收走；这里再收一次会在资源索引里
+		     出现重复键（启动时 AssemblyDescriptor 直接抛 ArgumentException）。 -->
+		<AvaloniaResource Include="Assets\**" Exclude="Assets\**\*.axaml" />
 	</ItemGroup>
 
 	<ItemGroup>
