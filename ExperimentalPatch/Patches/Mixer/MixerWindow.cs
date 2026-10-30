@@ -814,9 +814,9 @@ public sealed class MixerWindow : Window
 
         foreach (var (law, label) in new[]
         {
-            ("linear", L("线性 0 dB（与旧版一致）", "Linear 0 dB (matches previous versions)")),
-            ("power3", L("等功率 −3 dB（pan 移动音量不变）", "Constant power −3 dB (level stays put)")),
-            ("power4.5", L("等功率 −4.5 dB（补偿更强）", "Constant power −4.5 dB (stronger)")),
+            ("linear", L("线性 0 dB", "Linear 0 dB")),
+            ("power3", L("等功率 −3 dB", "Constant power −3 dB")),
+            ("power4.5", L("等功率 −4.5 dB", "Constant power −4.5 dB")),
         })
         {
             var item = new MenuItem

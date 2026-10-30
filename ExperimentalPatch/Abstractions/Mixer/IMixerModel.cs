@@ -171,10 +171,11 @@ public interface IMixerChannel
     // 会成环的源也不列出来。菜单据此**不显示**那些源，而不是显示了再报错。
     bool CanSidechainFrom(IMixerChannel source);
 
-    // 输入级（Master 没有：它没有音源可 Trim / 高通）。默认值 = 关闭。
+    // 输入级。Track / AUX 有 Trim / Ø / HPF；Master 只有 Ø（没有音源可 Trim / 高通）。
+    // HasInputStage = false 只表示"没有完整的输入级浮窗"，Master 的 PhaseInvert 仍然可用。
     bool HasInputStage { get; }
     double TrimDb { get; set; }        // -24..+24 dB，0 = 不变
-    bool PhaseInvert { get; set; }     // true = 整条通道反相
+    bool PhaseInvert { get; set; }     // true = 整条通道反相（Master 也可用）
     double HpfHz { get; set; }         // ≤20 = 关；否则二阶 12 dB/oct 高通
 
     // 串联插入（按顺序处理）。Master 也可以有。
@@ -268,10 +269,10 @@ public interface IMixerInsert
     // 不能替用户断言"这个插件有侧链"——4 进也可能是 L/C/R。
     int InputChannels { get; }
 
-    // [EP-MIXER-27] 侧链宽度：0 = 没有额外输入（菜单里不显示 SC 入口）。
+    // [EP-MIXER-27] 侧链宽度：0 = 没有额外输入（菜单里不显示侧链入口）。
     //
     // 能力来自**已经建好的实例**，不是扫描缓存：缓存说 4 进、插件换了，
-    // 就会喂错。代价是工程刚打开、图还没编译的那一瞬间 SC 是灰的。
+    // 就会喂错。代价是工程刚打开、图还没编译的那一瞬间侧链图标是灰的。
     int SidechainChannels { get; }
 
     // [EP-MIXER-27] 当前侧链源通道 id（"track:0" / AUX id）；null = 没有。

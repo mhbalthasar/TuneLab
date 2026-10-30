@@ -35,9 +35,10 @@ internal static class MixerMetrics
     public const double SendNameWidth = 82;
     public const double SendPopupWidth = SendNameWidth + 218;
 
-    // 插入效果浮窗的行更高：一行里有旁通/界面/删除三个键，挤在 30 里会贴边。
-    // EP-MIXER-23 之后是**两条子行**（主行 + 湿/干·增益行），所以 = 40 + 24。
-    public const double FxRowHeight = 64;
+    // 插入效果浮窗的一行：序号 / 名字 / ▲▼ / 旁通 / 侧链 / 界面 / 增益旋钮 / 湿干旋钮 / 删除。
+    // 两个旋钮都是「左边圆盘 28 + 右边两行文字」，模块高度就是圆盘高度；
+    // 50 足够放下，仍是一行，不再拆成两条子行。
+    public const double FxRowHeight = 50;
 
     // send 浮窗的一行：目标名 + 增益旋钮（下挂 dB 读数）+ PRE/POST + pan 旋钮 + M + 删除。
     // 旋钮本体 28，pan 旋钮连读数 42；行高 48 让两边的读数都完整露出。

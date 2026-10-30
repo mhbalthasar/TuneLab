@@ -210,6 +210,11 @@ public sealed class Mixer
                 // 预览音在 Master 增益之前混进来 —— 与旧路径（MixData → AddData(预览) → MasterGain）同序。
                 masterInput?.AddData(position, count, target, targetOffset, 1f, 1f);
 
+                // [EP-MIXER-28] Master 的 Ø：在输入汇总之后、Master 插入之前。
+                // Master 的 Trim / HPF 恒为默认值，ApplyInputStage 只处理 Ø。
+                if (node.State != null)
+                    ApplyInputStage(node.State, target, targetOffset, count, runtime, i);
+
                 // Master **没有声向**（它是总线，不是通道），所以永远走线性语义 ——
                 // 用 PanLaw 的话，pan = 0 在等功率法则下会算出 0.7071，
                 // 于是 Master 推子变成额外的 −3 dB 衰减，整条母线都被压低。

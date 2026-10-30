@@ -11,16 +11,19 @@ using Avalonia.Media;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
 using TuneLab.ExperimentalPatch.UI;
-using TuneLab.GUI.Components;
-using TuneLabSlider = TuneLab.GUI.Components.Slider;
 
 namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 
-// 插入效果浮窗：按顺序列出这条通道的插入，每行有「旁通」与「界面」两个按钮。
+// 插入效果浮窗：按顺序列出这条通道的插入。
 //
-// 两个按钮的分工（按你的要求）：
-//   - 旁通 = 跳过这个效果器（音频直通），槽位还在、顺序不变；行会变暗。
-//   - 界面 = 打开插件自己的设置窗（JSFX 的 @gfx 也是走这里；没有界面的插件该按钮置灰）。
+// 每行（一行放完）：序号 / 名字 + 格式 / ▲▼ / 旁通图标 / 侧链图标 / 界面图标 /
+// 增益旋钮 / 湿干旋钮 / 删除。图标代替文字是为了给两个旋钮腾出宽度；
+// 增益与湿干横排在界面按钮之后，不再另起一条次级行。
+//
+//   - 旁通（⏻）= 跳过这个效果器（音频直通），槽位还在、顺序不变；行会变暗。
+//     电源图标语义是“开关”：未旁通（正在处理）时高亮，旁通时回到普通态。
+//   - 界面（▣）= 打开插件自己的设置窗（JSFX 的 @gfx 也是走这里）；没有界面时
+//     左键退回参数面板，不置灰。右键菜单里「插件 GUI」在无界面时置灰。
 // 顺序 = 处理顺序（自上而下）。v1 不做拖拽排序，用 ▲▼。
 public sealed class FxPopupWindow : Window
 {
@@ -42,7 +45,7 @@ public sealed class FxPopupWindow : Window
         mCanAdd = canAdd;
 
         Title = L("插入效果", "Inserts");
-        Width = 430;
+        Width = 480;
         MinHeight = 120;
         MaxHeight = 460;
         SizeToContent = SizeToContent.Height;
@@ -90,8 +93,9 @@ public sealed class FxPopupWindow : Window
 
         // 视口高度必须是**行距的整数倍**：早先写死 260，而 8 行之后剩下 4px，
         // 第 9 行只露出薄薄一绺、下半截被裁掉 —— 看起来像"列表最后一行坏了"。
-        // 现在按可见行数算：8 行 + 7 个间距 + 上下内边距，一行都不半露。
-        const int visibleRows = 8;
+        // 现在按可见行数算：7 行 + 6 个间距 + 上下内边距，一行都不半露
+        //（行高 50 时，7 行正好落在窗口的 460px 上限内）。
+        const int visibleRows = 7;
         const double verticalPadding = 8;
 
         var body = new ScrollViewer
@@ -285,7 +289,11 @@ public sealed class FxPopupWindow : Window
     {
         var menu = new ContextMenu();
 
-        var gui = new MenuItem { Header = L("插件 GUI", "Plugin GUI") };
+        var gui = new MenuItem
+        {
+            Header = L("插件 GUI", "Plugin GUI"),
+            IsEnabled = insert.HasEditor,
+        };
         gui.Click += (_, _) => insert.OpenEditor();
 
         var managed = new MenuItem
@@ -394,6 +402,7 @@ public sealed class FxPopupWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
+        ToolTip.SetTip(name, insert.Name);
 
         var format = new TextBlock
         {
@@ -401,14 +410,19 @@ public sealed class FxPopupWindow : Window
             FontSize = 9,
             Foreground = Palette.Brush(Palette.TextLabel, 0.8),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0, 0, 0),
         };
 
-        var nameRow = new StackPanel
+        // 名字占剩余宽度，格式与侧链来源固定在右侧：名字太长时只裁名字，
+        // 不会把格式标签顶到 ▲▼ 按钮底下。
+        var nameRow = new Grid
         {
-            Orientation = Orientation.Horizontal,
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+            ColumnSpacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
+            ClipToBounds = true,
         };
+        Grid.SetColumn(name, 0);
+        Grid.SetColumn(format, 1);
         nameRow.Children.Add(name);
         nameRow.Children.Add(format);
 
@@ -416,14 +430,17 @@ public sealed class FxPopupWindow : Window
         // 不标的话用户只能点开菜单才知道谁在压谁。
         if (insert.SidechainSourceId is { } sidechainSource)
         {
-            nameRow.Children.Add(new TextBlock
+            var sidechainLabel = new TextBlock
             {
-                Text = " ← " + SidechainSourceName(sidechainSource),
+                Text = "← " + SidechainSourceName(sidechainSource),
                 FontSize = 9,
                 Foreground = Palette.Brush(Palette.HighLight, 0.9),
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
-            });
+                MaxWidth = 90,
+            };
+            Grid.SetColumn(sidechainLabel, 2);
+            nameRow.Children.Add(sidechainLabel);
         }
 
         // 处理顺序 = 列表顺序。▲▼ 是最省事也最不会误操作的做法（拖拽以后再加）。
@@ -448,11 +465,15 @@ public sealed class FxPopupWindow : Window
 
         var bypass = new ChromeButton
         {
-            Text = L("旁通", "Bypass"),
-            Width = 52,
-            Height = 26,
-            IsChecked = insert.IsBypassed,
+            // 图标代替文字：一行里要塞下两个旋钮，文字按钮太占宽度。
+            // 电源图标语义 = 开关：**未旁通（正在处理）时高亮**，旁通时回到普通态。
+            // 与 FX 按钮本身一致 —— 亮着 = 这个效果器活着。
+            Text = "⏻",
+            Width = 22,
+            Height = 22,
+            IsChecked = !insert.IsBypassed,
         };
+        ToolTip.SetTip(bypass, L("旁通", "Bypass"));
 
         // 旁通要**当场**反映：只写数据槽位的话，音频图不会重建（旁通不是结构变化），
         // 用户按下去既听不出差别、按键也不亮，看起来就是"没反应"。
@@ -469,9 +490,10 @@ public sealed class FxPopupWindow : Window
 
         var sidechain = new ChromeButton
         {
-            Text = "SC",
-            Width = 30,
-            Height = 26,
+            // 链环图标 = 侧链输入；比 "SC" 更直观，也省一列宽度。
+            Text = "⛓",
+            Width = 22,
+            Height = 22,
             IsVisible = hasSidechain,
             IsChecked = insert.SidechainSourceId != null,
         };
@@ -479,19 +501,24 @@ public sealed class FxPopupWindow : Window
         if (hasSidechain)
         {
             ToolTip.SetTip(sidechain, L(
-                $"侧链输入（插件声明 {insert.InputChannels} 进）",
-                $"Sidechain input ({insert.InputChannels} plugin inputs)"));
+                $"侧链输入 · 插件声明 {insert.InputChannels} 进",
+                $"Sidechain input · {insert.InputChannels} plugin inputs"));
 
             sidechain.Click += () => ShowSidechainMenu(sidechain, insert);
         }
 
         var editor = new ChromeButton
         {
-            Text = L("界面", "UI"),
-            Width = 46,
-            Height = 26,
+            // 图标代替文字：窗口/面板的通用符号。右键菜单仍是「插件 GUI / 参数面板」。
+            Text = "▣",
+            Width = 22,
+            Height = 22,
             IsEnabled = insert.HasEditor || insert.HasParameters,
         };
+        ToolTip.SetTip(editor, insert.HasEditor
+            ? L("插件界面", "Plugin UI")
+            : L("参数面板", "Parameter panel"));
+
         // 左键：有插件 GUI 就开 GUI；没有 GUI（或 GUI 打不开）就走参数面板 ——
         // 别让用户对着一个点了没反应的键。右键菜单里两条路都列着，随时可换。
         editor.Click += () =>
@@ -509,13 +536,59 @@ public sealed class FxPopupWindow : Window
         // 干脆没做界面），但参数一直是能读能写的。
         editor.ContextMenu = BuildEditorMenu(insert);
 
-        var remove = new ChromeButton { Text = "✕", Width = 26, Height = 26, HoverColor = Palette.CloseHover };
+        var remove = new ChromeButton { Text = "✕", Width = 24, Height = 22, HoverColor = Palette.CloseHover };
         remove.Click += () => mChannel.RemoveInsert(insert);
 
-        // 没有侧链时把那一列压成 0：否则 2 进插件每行都会多出一段空白。
-        string columns = hasSidechain ? "22,*,22,22,52,30,46,26" : "22,*,22,22,52,0,46,26";
+        // 一行放完：序号 / 名字 / ▲▼ / 旁通 / 侧链 / 界面 / 增益旋钮 / 湿干旋钮 / 删除。
+        // 增益与湿干横排在「界面」之后；不再另起一条次级行，每个 FX 只占一行。
+        var gainKnob = new ValueKnob
+        {
+            Minimum = -24,
+            Maximum = 24,
+            DefaultValue = 0,
+            Step = 0.5,
+            Formatter = FormatGain,
+            Value = insert.GainDb,
+            Width = 28,
+            Height = 28,
+            ShowValue = false,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        gainKnob.ValueEdited += value => insert.GainDb = value;
+        ToolTip.SetTip(gainKnob, L("增益", "Gain"));
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions(columns), Height = MixerMetrics.FxRowHeight };
+        var mixKnob = new ValueKnob
+        {
+            Minimum = 0,
+            Maximum = 1,
+            DefaultValue = 1,
+            Step = 0.01,
+            Formatter = FormatMix,
+            Value = insert.Mix,
+            Width = 28,
+            Height = 28,
+            ShowValue = false,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        mixKnob.ValueEdited += value => insert.Mix = value;
+        ToolTip.SetTip(mixKnob, L("湿/干", "Mix"));
+
+        var gainModule = BuildKnobModule(L("增益", "Gain"), gainKnob);
+        var mixModule = BuildKnobModule(L("湿/干", "Mix"), mixKnob);
+
+        // 没有侧链时把那一列压成 0：否则 2 进插件每行都会多出一段空白。
+        string columns = hasSidechain
+            ? "22,*,22,22,22,22,22,64,64,24"
+            : "22,*,22,22,22,0,22,64,64,24";
+
+        var row = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions(columns),
+            ColumnSpacing = 4,
+            Height = MixerMetrics.FxRowHeight,
+        };
         Grid.SetColumn(order, 0);
         Grid.SetColumn(nameRow, 1);
         Grid.SetColumn(up, 2);
@@ -523,7 +596,9 @@ public sealed class FxPopupWindow : Window
         Grid.SetColumn(bypass, 4);
         Grid.SetColumn(sidechain, 5);
         Grid.SetColumn(editor, 6);
-        Grid.SetColumn(remove, 7);
+        Grid.SetColumn(gainModule, 7);
+        Grid.SetColumn(mixModule, 8);
+        Grid.SetColumn(remove, 9);
         row.Children.Add(order);
         row.Children.Add(nameRow);
         row.Children.Add(up);
@@ -531,97 +606,64 @@ public sealed class FxPopupWindow : Window
         row.Children.Add(bypass);
         row.Children.Add(sidechain);
         row.Children.Add(editor);
+        row.Children.Add(gainModule);
+        row.Children.Add(mixModule);
         row.Children.Add(remove);
 
-        // ── 次级行：湿/干 + 增益微调（EP-MIXER-23）──
-        //
-        // 与主行分开的理由：主行已经满了（序号 + 名字 + ▲▼ + 旁通 + 界面 + 删除），
-        // 而这两个是"调好了就不动"的参数，放二级不容易误触。
-        // TuneLab 的 Slider 用 SetRange + ValueChanged（不是 Avalonia 的 Minimum/Maximum/Value），
-        // 与参数面板的用法一致 —— 同一套控件同一套手感。
-        var mixSlider = new TuneLabSlider
-        {
-            Height = 18,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(22, 0, 6, 0),
-        };
-        mixSlider.SetRange(0, 1);
-        mixSlider.Display(insert.Mix);
-        var mixReadout = new TextBlock
-        {
-            Text = FormatMix(insert.Mix),
-            FontSize = 9,
-            FontFamily = new FontFamily("Consolas, Microsoft YaHei UI"),
-            Foreground = Palette.Brush(Palette.TextLabel),
-            VerticalAlignment = VerticalAlignment.Center,
-            Width = 40,
-        };
-        mixSlider.ValueChanged.Subscribe(() =>
-        {
-            double mix = mixSlider.Value;
-            insert.Mix = mix;
-            mixReadout.Text = FormatMix(mix);
-        });
+        return row;
+    }
 
-        var gainBox = new DraggableNumberBox
+    // 旋钮模块：左边圆盘，右边上下两行 —— 上行「增益 / 湿干」，下行读数。
+    // 这样旋钮不再自带下方读数，模块高度只有圆盘的 28px，行高可以收回 50。
+    Control BuildKnobModule(string caption, ValueKnob knob)
+    {
+        var label = new TextBlock
         {
-            MinValue = -24,
-            MaxValue = 24,
-            Width = 56,
-            Height = 20,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0, 0, 0),
-        };
-        gainBox.Display(insert.GainDb);
-        gainBox.ValueChanged.Subscribe(() =>
-        {
-            insert.GainDb = gainBox.Value;
-        });
-
-        var secondary = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,Auto,*,Auto,Auto") };
-        var mixLabel = new TextBlock
-        {
-            Text = L("湿/干", "Mix"),
-            FontSize = 9,
+            Text = caption,
+            FontSize = 8,
             Foreground = Palette.Brush(Palette.TextLabel),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(22, 0, 4, 0),
-        };
-        var gainLabel = new TextBlock
-        {
-            Text = L("增益", "Trim"),
-            FontSize = 9,
-            Foreground = Palette.Brush(Palette.TextLabel),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 4, 0),
-        };
-        var gainUnit = new TextBlock
-        {
-            Text = "dB",
-            FontSize = 9,
-            Foreground = Palette.Brush(Palette.TextLabel),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(3, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
 
-        Grid.SetColumn(mixLabel, 0);
-        Grid.SetColumn(mixSlider, 1);
-        Grid.SetColumn(mixReadout, 2);
-        Grid.SetColumn(gainLabel, 3);
-        Grid.SetColumn(gainBox, 4);
-        Grid.SetColumn(gainUnit, 5);
-        secondary.Children.Add(mixLabel);
-        secondary.Children.Add(mixSlider);
-        secondary.Children.Add(mixReadout);
-        secondary.Children.Add(gainLabel);
-        secondary.Children.Add(gainBox);
-        secondary.Children.Add(gainUnit);
+        var readout = new TextBlock
+        {
+            Text = knob.FormatValue(knob.Value),
+            FontSize = 9.5,
+            Foreground = Palette.Brush(Palette.TextNormal),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        // 除了拖动，undo / 外部改值也要让读数跟上；PropertyChanged 覆盖所有写入路径。
+        knob.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ValueKnob.ValueProperty)
+                readout.Text = knob.FormatValue(knob.Value);
+        };
 
-        var panel = new StackPanel { Spacing = 2 };
-        panel.Children.Add(row);
-        panel.Children.Add(secondary);
+        var text = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 1,
+            Width = 32,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        text.Children.Add(label);
+        text.Children.Add(readout);
+
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            Width = 64,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        panel.Children.Add(knob);
+        panel.Children.Add(text);
         return panel;
     }
+
+    // 增益读数：带符号一位小数；0 不写 "+0.0" 以外的多余符号。
+    static string FormatGain(double db)
+        => db.ToString("+0.0;-0.0;0.0", System.Globalization.CultureInfo.CurrentCulture);
 
     // 湿/干读数：0% / 100% 是整数，其余四舍五入到 5% 的倍数 ——
     // 百分比精度再高也没有听感意义，反而让读数抖个不停。

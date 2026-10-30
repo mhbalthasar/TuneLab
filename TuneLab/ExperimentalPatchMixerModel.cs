@@ -298,6 +298,7 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         foreach (var channel in mChannels)
             (channel as IDisposable)?.Dispose();
 
+        mMaster.Dispose();
         mChannels.Clear();
     }
 
@@ -1190,11 +1191,12 @@ internal sealed class MixerAuxChannel : MixerChannelBase
 }
 
 // Master 条：推子就是 AudioEngine.MasterGain（不是 DataProperty → 不进 undo、不序列化）。
-internal sealed class MixerMasterChannel : IMixerChannel
+internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
 {
     public MixerMasterChannel(MixerModelAdapter owner)
     {
         mOwner = owner;
+        mOwner.Project.MasterPhaseInvert.Modified.Subscribe(OnPhaseInvertModified);
     }
 
     public MixerChannelKind Kind => MixerChannelKind.Master;
@@ -1256,10 +1258,15 @@ internal sealed class MixerMasterChannel : IMixerChannel
 
     public IReadOnlyList<IMixerSend> Sends => [];
 
-    // Master 没有输入级（没有音源可 Trim / 高通）。界面据此不画那一行。
+    // Master 没有完整的输入级（没有音源可 Trim / 高通），只有 Ø。
+    // HasInputStage 仍为 false（界面据此不画 [IN] 浮窗），但 PhaseInvert 是活的。
     public bool HasInputStage => false;
     public double TrimDb { get => 0; set { } }
-    public bool PhaseInvert { get => false; set { } }
+    public bool PhaseInvert
+    {
+        get => mOwner.Project.MasterPhaseInvert.Value;
+        set => mOwner.Project.MasterPhaseInvert.Set(value);
+    }
     public double HpfHz { get => 0; set { } }
 
     // Master 的插入链：与轨道 / AUX 同一套适配器，只是槽位挂在工程上（Project.MasterInserts）。
@@ -1305,6 +1312,13 @@ internal sealed class MixerMasterChannel : IMixerChannel
             AudioEngine.InvokeRealtimeChannelLoudness("master", out _, out var truePeakDb);
             return double.IsNegativeInfinity(truePeakDb) ? null : truePeakDb;
         }
+    }
+
+    void OnPhaseInvertModified() => StateChanged?.Invoke();
+
+    public void Dispose()
+    {
+        mOwner.Project.MasterPhaseInvert.Modified.Unsubscribe(OnPhaseInvertModified);
     }
 
     public event Action? StateChanged;

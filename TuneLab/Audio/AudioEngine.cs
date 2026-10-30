@@ -165,6 +165,13 @@ internal static class AudioEngine
         AudioGraph.SetMasterInserts(inserts);
     }
 
+    // [EP-MIXER-28] Master 的 Ø 由工程提供（Project.MasterPhaseInvert）。
+    // 与插入链一样跟随当前工程；值本身是活值，音频线程每块现读。
+    public static void SetMasterPhaseInvert(DataProperty<bool>? phaseInvert)
+    {
+        AudioGraph.SetMasterPhaseInvert(phaseInvert);
+    }
+
     public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo)
     {
         ExportTrack(filePath, track, isStereo, SampleRate.Value, AudioEncodeSettings.Wav(16));

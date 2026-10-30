@@ -92,6 +92,29 @@ public class MixerPersistenceTests
         }
     }
 
+    // [EP-MIXER-28] Master 的 Ø 是工程数据：存读要一致，老文件默认 false。
+    [Fact]
+    public void MasterPhaseInvert_RoundTrips()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var source = NewProject("主唱");
+            source.MasterPhaseInvert.SetInfo(true);
+
+            MixerPersistence.Save(source, path);
+
+            var target = NewProject("主唱");
+            MixerPersistence.Load(target, path);
+
+            Assert.True(target.MasterPhaseInvert.Value);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
     // 改名（轨数不变）→ 路由按序号跟上。
     [Fact]
     public void RenamedTrack_KeepsItsRouting()
@@ -193,6 +216,46 @@ public class MixerPersistenceTests
 
         Assert.Equal("{\"branch\":1,\"auxes\":[]}", back.EpMixer);
         Assert.Equal("t1", back.Project.Tracks[0].Name);
+    }
+
+    // 崩溃恢复走的是"套回现有 Project"的另一条装载路径。它曾经只 SetInfo/SetExportConfig，
+    // 漏掉 MixerPersistence.Load —— 自动保存文件里明明有 epMixer，恢复出来却是空混音台。
+    [Fact]
+    public void Recovery_AppliesTheInFileEpMixerPayload()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var source = NewProject("主唱");
+            var aux = source.AddAux("AUX 1");
+            source.Tracks[0].Output.SetInfo(new MixerRoute(MixerOutputKind.Aux, aux.Id, aux.Name.Value));
+            source.MasterPhaseInvert.SetInfo(true);
+
+            var file = new NativeProjectFile
+            {
+                Project = source.GetInfo(),
+                EpMixer = MixerPersistence.Serialize(source),
+            };
+
+            using var stream = new MemoryStream();
+            new TuneLabProjectCbor().SerializeNative(stream, file);
+            using var read = new MemoryStream(stream.ToArray());
+            var recovered = new TuneLabProjectCbor().DeserializeNative(read);
+
+            var target = NewProject("主唱");
+            ProjectRecovery.Apply(target, recovered, path);
+
+            Assert.Single(target.Auxes);
+            Assert.Equal(aux.Id, target.Auxes[0].Id);
+            Assert.Equal("AUX 1", target.Auxes[0].Name.Value);
+            Assert.Equal(MixerOutputKind.Aux, target.Tracks[0].Output.Value.Kind);
+            Assert.Equal(aux.Id, target.Tracks[0].Output.Value.Id);
+            Assert.True(target.MasterPhaseInvert.Value);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
     }
 
     // 装载顺序：文件内 → sidecar（DESIGN.md §9.2）。

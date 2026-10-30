@@ -16,7 +16,8 @@ namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 // **三种通道共用同一套行**，好让推子在不同条上落在同一高度（比较电平的前提）。
 //   - Track：全部；
 //   - AUX：全部（AUX 也有 pan / M / S，只是 solo 只在 AUX 之间生效，那是模型的事）；
-//   - Master：没有 pan / send / M S —— 那几行**留空**，不是画假控件。
+//   - Master：没有 pan / send / M S —— 那几行**留空**，不是画假控件；
+//     输入行也留空（没有 Trim / HPF），Ø 放在推子正上方的 M/S 行。
 //
 // 【不持有状态】所有显示值都从 IMixerChannel 读；用户改动立刻写回。补丁侧不缓存增益或电平。
 internal sealed class MixerChannelStrip : UserControl
@@ -32,6 +33,7 @@ internal sealed class MixerChannelStrip : UserControl
     readonly PanKnob mPan = new();
     readonly StripButton mSend = new();
     readonly StripButton mInput = new();
+    readonly StripButton mPhase = new();
     readonly StripButton mFx = new();
     readonly MixerToggle mMute = new() { Text = "M", CheckedColor = Palette.MuteChecked };
     readonly MixerToggle mSolo = new() { Text = "S", CheckedColor = Palette.SoloChecked };
@@ -81,7 +83,7 @@ internal sealed class MixerChannelStrip : UserControl
     {
         var rows = new Grid
         {
-            // 固定行合计 192；* 给推子。三种通道行数一致 → 推子对齐。
+            // 固定行合计 214；* 给推子。三种通道行数一致 → 推子对齐。
             RowDefinitions = new RowDefinitions(
                 $"{MixerMetrics.IndexHeight},{MixerMetrics.NameHeight},{MixerMetrics.InputHeight},{MixerMetrics.PanHeight}," +
                 $"{MixerMetrics.CountButtonHeight},{MixerMetrics.CountButtonHeight},{MixerMetrics.ToggleHeight}," +
@@ -260,7 +262,8 @@ internal sealed class MixerChannelStrip : UserControl
     }
 
     // 输入级：一个 [IN] 键。非默认（Trim / Ø / HPF 动过）时高亮 ——
-    // 不打开弹窗也知道这条通道动过。Master 没有输入级，那一行留空以保持推子对齐。
+    // 不打开弹窗也知道这条通道动过。Master 没有完整的输入级（输入行留空），
+    // 它的 Ø 放在推子正上方，见 BuildToggles。
     Control BuildInputButton()
     {
         if (!mChannel.HasInputStage)
@@ -277,6 +280,12 @@ internal sealed class MixerChannelStrip : UserControl
 
     void RefreshInputButton()
     {
+        if (mIsMaster)
+        {
+            mPhase.IsActive = mChannel.PhaseInvert;
+            return;
+        }
+
         if (!mChannel.HasInputStage)
             return;
 
@@ -319,7 +328,21 @@ internal sealed class MixerChannelStrip : UserControl
     Control BuildToggles()
     {
         if (mIsMaster)
-            return new Control();
+        {
+            // Master 只有 Ø，没有 M/S。放在推子正上方（与轨道 M/S 同一行），
+            // 比塞在输入行更靠近推子，也更容易点。
+            mPhase.Text = "Ø";
+            mPhase.Width = 40;
+            mPhase.Height = 20;
+            mPhase.HorizontalAlignment = HorizontalAlignment.Center;
+            mPhase.VerticalAlignment = VerticalAlignment.Center;
+            mPhase.Click += () =>
+            {
+                mChannel.PhaseInvert = !mChannel.PhaseInvert;
+                RefreshInputButton();
+            };
+            return mPhase;
+        }
 
         mMute.Width = 26;
         mMute.Height = 18;
@@ -544,6 +567,7 @@ internal sealed class MixerChannelStrip : UserControl
 
             mSelectionBar.IsVisible = mChannel.IsSelected;
             Background = Palette.Brush(mChannel.IsSelected ? Palette.Interface : Palette.Dark);
+            RefreshInputButton();
         }
         finally
         {

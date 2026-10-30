@@ -24,7 +24,8 @@ internal sealed class MixerGraphCompiler
     volatile AuxChannelState[] mAuxStates = [];
 
     public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks,
-        IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null)
+        IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null,
+        DataProperty<bool>? masterPhaseInvert = null)
     {
         // Master 是"总轨"：它的插入链挂在 master 节点上（DESIGN §5.7.18）。
         // 没有就传 null，行为与以前完全一致。
@@ -52,7 +53,7 @@ internal sealed class MixerGraphCompiler
         var masterChain = BuildInserts("master", masterSlots);
         chains["master"] = masterChain;
 
-        var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(),
+        var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(masterPhaseInvert),
             null, masterChain);
 
         // v1 只有一个设备：所有"设备"输出都进同一个 sink（DESIGN.md §4.4）。
@@ -459,16 +460,23 @@ internal sealed class TrackMixSource : IMixSource
 // Master 的推子就是 AudioEngine.MasterGain（dB → 线性）。读活值，不缓存。
 internal sealed class MasterChannelState : IMixChannelState
 {
+    readonly DataProperty<bool>? mPhaseInvert;
+
+    public MasterChannelState(DataProperty<bool>? phaseInvert = null)
+    {
+        mPhaseInvert = phaseInvert;
+    }
+
     public double Volume => MusicTheory.dB2Level(AudioEngine.MasterGain);
 
     public double Pan => 0;
 
     public bool IsSilent => false;
 
-    // Master 没有输入级（没有音源可 Trim / 高通），三项恒为默认值 ——
-    // 引擎因此整段跳过，行为与以前完全一致。
+    // [EP-MIXER-28] Master 没有 Trim / HPF（没有音源可处理），只有 Ø。
+    // Trim / HPF 恒为默认值，引擎会整段跳过；Ø 是工程里的活值。
     public double TrimDb => 0;
-    public bool PhaseInvert => false;
+    public bool PhaseInvert => mPhaseInvert?.Value ?? false;
     public double HpfHz => 0;
 }
 

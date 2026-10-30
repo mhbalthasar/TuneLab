@@ -255,6 +255,30 @@ public class MixerEngineTests
     }
 
     [Fact]
+    public void MasterPhaseInvertNegatesTheBus()
+    {
+        const int frames = 64;
+        var data = new float[frames * 2];
+        Array.Fill(data, 0.25f);
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master,
+            new TestState { Volume = 1, PhaseInvert = true });
+        var node = builder.AddNode("track-0", MixNodeKind.Track, new TestState { Volume = 1 },
+            new ArraySource(data));
+        builder.Connect(node, master, 1f);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[frames * 2];
+        mixer.Render(0, frames, buffer, 0);
+
+        Assert.Equal(-0.25f, buffer[0]);
+        Assert.Equal(-0.25f, buffer[1]);
+    }
+
+    [Fact]
     public void HighPassRemovesDc()
     {
         // 直流输入 + 200 Hz 高通：稳态应该被压到接近 0（去掉直流，而不是"整体变小"）。

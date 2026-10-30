@@ -152,8 +152,12 @@ public partial class MainWindow : Window
                 if (mEditor.Project == null)
                     return;
 
-                mEditor.Project.SetInfo(file.Project);
-                mEditor.Project.SetExportConfig(file.Export);
+                // 恢复和普通打开走同一套工程装载：SetInfo + 导出配置 + epMixer。
+                // 自动保存文件里的 epMixer 是文件内载荷，优先于原工程的 sidecar。
+                var fallbackPath = string.IsNullOrEmpty(record.Meta?.OriginalPath)
+                    ? record.FilePath
+                    : record.Meta!.OriginalPath;
+                ProjectRecovery.Apply(mEditor.Project, file, fallbackPath);
                 mEditor.Playhead.Pos = Math.Max(0, file.Editor.PlayheadPos);
                 mEditor.Project.Commit();
                 foreach (var part in mEditor.Project.Tracks.SelectMany(track => track.Parts))

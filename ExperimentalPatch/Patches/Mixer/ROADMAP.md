@@ -18,6 +18,7 @@
 | ✅ 插入链（VST2 / VST3） | 旁通、插件界面、TuneLab 参数面板、状态随工程保存 | DESIGN §5.5–5.7 |
 | ✅ 插入顺序 | FX 行 ▲▼，一次移动 = 一步 undo | DESIGN §5.7.19 |
 | ✅ Master 插入链 | 总轨效果，槽位在 `Project.MasterInserts`，随工程落盘 | DESIGN §5.7.18 |
+| ✅ Master Ø | 总轨相位反相（没有 Trim / HPF），推子上方一个 Ø 键，随工程落盘 | DESIGN §5.7.22 |
 | ✅ 通道顺序 | 右键：上移/下移/置顶/置底/移动到…（**插入语义**，非交换） | DESIGN §5.7.16 |
 | ✅ 窗口次序 + F3 | 浮窗压在混音台上、混音台压在编辑器上；F3 开关 | DESIGN §5.7.21 |
 | ✅ 推子人机 | Shift 精细（0.1 dB）、双击回 unity | 控件内 |
@@ -95,7 +96,7 @@ ROADMAP 原来那句"需要新的路由模型"是错的。
 
 落地内容：共享环 4 声道 + 桥协议 v2（Hello 校验版本，旧桥会被拒绝）、每插入一条侧链边、
 推子后/插入后取信号、单声道键 `(L+R)*0.5` 下混、PDC 对齐（侧链边不参与主混音延迟）、
-FX 浮窗的 `SC` 键与源菜单、`InsertDto.SidechainId` 落盘、轨道稳定序号
+FX 浮窗的侧链图标（⛓）与源菜单、`InsertDto.SidechainId` 落盘、轨道稳定序号
 （`TrackDto.MixerId`，换序/删轨不会让引用指错）。
 
 **注意**：桥必须用 `tools/publish-bridges.ps1` 重新发布（协议 v2 与 4 声道布局）。
@@ -141,6 +142,5 @@ FX 浮窗的 `SC` 键与源菜单、`InsertDto.SidechainId` 落盘、轨道稳�
 | 4 | 插入参数自动化 | 与正规 DAW 差距最大；要单独设计一轮 |
 | 5 | VST3 标准 `kSidechain` 总线 | 要 fork vendored 原生宿主，重建 `ownvst3.tlhost.dll` |
 | 6 | `daw_cable` | 现在是禁用占位 |
-| — | Master Ø | 唯一还写"待定"的小项；只加相位反相 |
 | — | 混音后的分轨导出 | `ExportTrack` 现在不跑混音链（见 DESIGN §3.8） |
 

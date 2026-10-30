@@ -27,6 +27,9 @@ internal class ProjectDocument : DataDocument
         mProject.WillModify.Subscribe(() =>
         {
             // [EP-MIXER-19] 换工程：先把 Master 插入从音频图摘下来，新工程随后挂上自己那份。
+            // [EP-MIXER-28] Master Ø 与插入链同寿：先换引用，再让 SetMasterInserts 那次重建
+            // 把新的 MasterChannelState 建出来。
+            AudioEngine.SetMasterPhaseInvert(null);
             AudioEngine.SetMasterInserts(null);
             Project?.Detach();
             Project?.Dispose();
@@ -41,6 +44,7 @@ internal class ProjectDocument : DataDocument
             //   1. 打开另一个工程：新 Project 先构造（挂上自己的），旧 Project 再 Dispose（清空）；
             //   2. 导入轨道：TrackScrollView 为了拿 TempoManager 临时 new 一个 Project，直接把指针抢走。
             // 指针一空，master 节点就没有插入实例，Master 轨 FX 的「界面」键永远是灰的。
+            AudioEngine.SetMasterPhaseInvert(Project?.MasterPhaseInvert);
             AudioEngine.SetMasterInserts(Project?.MasterInserts);
         });
 

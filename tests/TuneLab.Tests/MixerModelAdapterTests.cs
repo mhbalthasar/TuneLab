@@ -83,6 +83,41 @@ public class MixerModelAdapterTests
         }
     }
 
+    // [EP-MIXER-28] Master 的 Ø 写回工程数据（undo / 落盘跟着工程走）。
+    [Fact]
+    public void MasterPhaseInvert_WritesToProject()
+    {
+        var (_, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            var master = model.Master;
+            Assert.False(master.PhaseInvert);
+
+            master.PhaseInvert = true;
+
+            Assert.True(project.MasterPhaseInvert.Value);
+            Assert.True(master.PhaseInvert);
+        }
+    }
+
+    // 撤销 / 重做也会改 MasterPhaseInvert：通道条要跟着刷新，不能只靠按钮自己那一次。
+    [Fact]
+    public void MasterPhaseInvert_StateChangedFiresWhenProjectChanges()
+    {
+        var (_, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            int fired = 0;
+            model.Master.StateChanged += () => fired++;
+
+            project.MasterPhaseInvert.Set(true);
+
+            Assert.True(fired > 0);
+        }
+    }
+
     [Fact]
     public void StateChanged_FiresWhenTrackIsEditedElsewhere()
     {

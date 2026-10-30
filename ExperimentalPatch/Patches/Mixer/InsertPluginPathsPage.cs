@@ -96,9 +96,9 @@ public sealed class InsertPluginPathsPage : UserControl
 
         // 悬停说明：这个按钮比"立即扫描"慢一个量级，得让用户知道为什么、以及什么时候该用它。
         ToolTip.SetTip(deep,
-            L("把每个 VST3 的厂商/版本问一遍（只问描述，不实例化插件，安全但慢）。\n" +
+            L("把每个 VST3 的厂商和版本问一遍。只问描述，不实例化插件，安全但慢。\n" +
               "普通扫描读的是二进制里的类别标记，多半没有厂商。",
-              "Asks every VST3 for its vendor/version (describes only, never instantiates - safe but slow).\n" +
+              "Asks every VST3 for its vendor and version. Describes only, never instantiates, safe but slow.\n" +
               "The quick scan reads binary markers and usually has no vendor."));
 
         mProgress.Margin = new Thickness(14, 8, 14, 0);

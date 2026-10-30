@@ -210,7 +210,7 @@ internal class AudioGraph()
 
         try
         {
-            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts));
+            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts, mMasterPhaseInvert));
         }
         catch (Exception ex)
         {
@@ -251,10 +251,20 @@ internal class AudioGraph()
     // [EP-MIXER-19] Master 的插入链（由当前工程提供）。编译时挂到 master 节点上。
     DataObjectList<InsertSlot>? mMasterInserts;
 
+    // [EP-MIXER-28] Master 的 Ø（由当前工程提供）。编译时交给 MasterChannelState；
+    // 之后改值走 DataProperty，音频线程每块现读，不需要重建图。
+    // 换工程时只换引用：调用方随后会 SetMasterInserts，由那次重建把新引用接上。
+    DataProperty<bool>? mMasterPhaseInvert;
+
     public void SetMasterInserts(DataObjectList<InsertSlot>? inserts)
     {
         mMasterInserts = inserts;
         RebuildSnapshot();
+    }
+
+    public void SetMasterPhaseInvert(DataProperty<bool>? phaseInvert)
+    {
+        mMasterPhaseInvert = phaseInvert;
     }
 
     int mSampleRate = 44100;
