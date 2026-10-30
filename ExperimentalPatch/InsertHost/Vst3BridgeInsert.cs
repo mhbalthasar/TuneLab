@@ -310,7 +310,11 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IDisposable
 
         if (loaded == null)
         {
+            // 加载超时（插件卡在 Create）会走到这里：LastBridgeError 里带着"没在 Ns 内回、桥已杀"。
             reason = "the 64-bit bridge did not answer the load request";
+            if (client.LastBridgeError is { Length: > 0 } detail)
+                reason += " — " + detail;
+
             return null;
         }
 

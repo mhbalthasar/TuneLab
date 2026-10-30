@@ -50,12 +50,17 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         {
             lock (mErrorLines)
             {
-                if (LastStartError is { Length: > 0 })
-                    return mErrorLines.Count == 0
-                        ? LastStartError
-                        : LastStartError + " | " + string.Join(" | ", mErrorLines);
+                var parts = new List<string>();
 
-                return mErrorLines.Count == 0 ? null : string.Join(" | ", mErrorLines);
+                if (LastStartError is { Length: > 0 })
+                    parts.Add(LastStartError);
+
+                if (LastTimeoutError is { Length: > 0 })
+                    parts.Add(LastTimeoutError);
+
+                parts.AddRange(mErrorLines);
+
+                return parts.Count == 0 ? null : string.Join(" | ", parts);
             }
         }
     }
@@ -67,6 +72,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
         LastStartError = null;
         LastEditorError = null;
+        LastTimeoutError = null;
     }
 
     // 启动阶段失败的原因（beyond the bridge's own stderr）。
@@ -74,6 +80,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
     // 编辑器最近一次失败的原因（超时 / 插件拒绝）。界面可以直接显示给用户。
     public string? LastEditorError { get; private set; }
+
+    // 最近一次"发出去了但没在时限内回来"的原因（加载 / state / 参数 / 卸载超时）。
+    // 超时即杀桥，所以这条也意味着"桥已经被杀过、下一次操作会重启一座新的"。
+    public string? LastTimeoutError { get; private set; }
 
     // 一次"发一条指令 + 读一条回复"必须原子：管道是单条流，
     // UI 线程改参数、音频线程发块，两条来回一交错就会把回复读错人。
@@ -461,13 +471,16 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 会把 UI 线程自己卡死（await 的续体要回 UI 线程执行，而 UI 线程正等着）。
     // Task.Run 把整条链甩到线程池，UI 线程空出来跑续体。
     public bool EnsureStartedBlocking()
-        => RunBlocking(() => EnsureStartedAsync());
+        => RunTimed("the bridge handshake", () => EnsureStartedAsync(), StartTimeout, false);
 
     public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass,
         string format = PluginFormats.Vst2)
-        => RunBlocking(() => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format));
+        => RunTimed("loading the plugin",
+            () => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format),
+            LoadTimeout, (LoadPluginResultMessage?)null);
 
-    public bool UnloadBlocking(int slot) => RunBlocking(() => TryUnloadAsync(slot));
+    public bool UnloadBlocking(int slot)
+        => RunTimed("unloading the plugin", () => TryUnloadAsync(slot), TeardownTimeout, false);
 
     // 开编辑器要等插件建 UI（几百毫秒很常见）。给它一个上限：插件在 effEditOpen 里卡死时
     // 不能把宿主 UI 线程一起带走 —— 超时就杀桥，音频本来也已经直通了。
@@ -504,7 +517,8 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         return task.Result;
     }
 
-    public bool CloseEditorBlocking(int slot) => RunBlocking(() => TryCloseEditorAsync(slot));
+    public bool CloseEditorBlocking(int slot)
+        => RunTimed("closing the editor", () => TryCloseEditorAsync(slot), TeardownTimeout, false);
 
     // 已经开着的窗口再点一次「界面」= 带到前台。桥没开窗（插件没界面 / 已关）时回 false，
     // 界面据此决定是重新开一扇还是什么都不做。
@@ -549,17 +563,38 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 建插件 UI 的上限。3 秒以上在交互上就是"软件卡死了"（用户原话）。
     static readonly TimeSpan EditorOpenTimeout = TimeSpan.FromSeconds(8);
 
-    public byte[]? GetStateBlocking(int slot) => RunBlocking(() => TryGetStateAsync(slot));
+    // 各条"一问一答"的上限。加载 / 卸载要等插件在 Create / effClose 里做完初始化，
+    // 给得比参数读写宽；state 可能几百 KB 到 MB 级。
+    static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(15);
+    static readonly TimeSpan LoadTimeout = TimeSpan.FromSeconds(20);
+    static readonly TimeSpan TeardownTimeout = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan StateTimeout = TimeSpan.FromSeconds(15);
+    static readonly TimeSpan ParameterTimeout = TimeSpan.FromSeconds(5);
 
-    public bool SetStateBlocking(int slot, byte[] data) => RunBlocking(() => TrySetStateAsync(slot, data));
+    public byte[]? GetStateBlocking(int slot)
+        => RunTimed("reading the plugin state", () => TryGetStateAsync(slot), StateTimeout, (byte[]?)null);
+
+    public bool SetStateBlocking(int slot, byte[] data)
+        => RunTimed("writing the plugin state", () => TrySetStateAsync(slot, data), StateTimeout, false);
 
     public IReadOnlyList<ParameterInfo>? GetParametersBlocking(int slot)
-        => RunBlocking(() => TryGetParametersAsync(slot));
+        => RunTimed("reading the plugin parameters", () => TryGetParametersAsync(slot),
+            ParameterTimeout, (IReadOnlyList<ParameterInfo>?)null);
 
     public bool SetParameterBlocking(int slot, long id, double value)
-        => RunBlocking(() => TrySetParameterAsync(slot, id, value));
+        => RunTimed("writing a plugin parameter", () => TrySetParameterAsync(slot, id, value),
+            ParameterTimeout, false);
 
-    static T RunBlocking<T>(Func<Task<T>> action) => Task.Run(action).GetAwaiter().GetResult();
+    // 一条控制消息的统一上限。超时 = 桥里那个插件卡死了（Create / process / state /
+    // teardown 里死循环、弹模态框、等一个永远不来的外部资源）——托管侧无从打断它，
+    // 只能杀桥。不超时的话，UI 线程会永远停在这里（实测 CHOWTapeModel / ChowMatrix
+    // 就卡在 Create，BYOD / ChowCentaur 卡在建第二个实例）。
+    T RunTimed<T>(string operation, Func<Task<T>> action, TimeSpan timeout, T fallback)
+        => BridgeTimeout.Run(action, timeout, fallback, () =>
+        {
+            LastTimeoutError = $"{operation} did not answer within {timeout.TotalSeconds:0.#}s; the bridge was killed";
+            KillBridge();
+        });
 
     // 音频路径。**不走 await**：它从音频线程调，那里不能等 Task。
     // 数据走共享内存（见 BridgeSharedMemory）：这一侧负责"写输入环、通知桥、等输出环"。

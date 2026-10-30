@@ -202,7 +202,7 @@ interface IVst3Insert : IMixInsert
 | P1 | 协议 format / 版本 3、`IBridgePluginHost` 路由、x64 桥的 `Vst3PluginHost`（音频 + state + 参数，**不含编辑器**）、`IVst3Insert` + `Vst3BridgeInsert`、设置开关（默认关） | 真插件：出声、state 存读、参数读写、latency 正确；桥被杀后宿主存活、插入 bypass |
 | P2 | 桥侧编辑器线程 + HWND 回传 + GL 判据；宿主 `Vst3EditorShell` 适配 | 打开/关闭插件 GUI；杀掉编辑器线程不带走宿主 |
 | P3 | 默认打开（Windows x64）；桥不可用时回退进程内并提示；文档 / 用户手册更新 | 真机回归；老工程（进程内挂的 VST3）打开后仍是同样声音 |
-| P4 | 挂起测试：造一个会卡住的假后端 / 插件，验证 load 20s 超时后杀桥、宿主恢复 | 宿主不冻结 |
+| P4 | 挂起测试：造一个会卡住的假后端 / 插件，验证 load 20s 超时后杀桥、宿主恢复（超时机制已在 P1 落地，剩端到端验证） | 宿主不冻结 |
 
 ## 7. 测试
 
@@ -260,9 +260,16 @@ interface IVst3Insert : IMixInsert
   记 `IsolationFallbackReason` 并回退进程内（宿主写日志）；桥是好的但插件拒绝 /
   加载时把桥弄没了 → 如实报失败，**不回退**（回退等于把刚炸完的插件又拉进宿主）。
 - 设置页（`InsertPluginPathsPage`）：新增"崩溃隔离"一节 + 开关，读写 `IInsertPluginSettings`。
-- 测试：`tests/TuneLab.Tests/Vst3BridgeInsertTests.cs`（假 `IBridgeChannel`）。
+- 超时保护（`InsertHost/BridgeTimeout.cs` + `VstBridgeClient.RunTimed`）：加载 20s、
+  state 15s、参数 5s、卸载 / 关编辑器 5s、握手 15s。任何一条超时 → **杀桥** +
+  记 `LastTimeoutError`，下一次操作会重启一座干净的桥。这是"插件卡在 Create
+  （实测 CHOWTapeModel / ChowMatrix）不会把宿主 UI 线程一起带走"的保证 ——
+  在此之前只有开编辑器一条路有上限。
+- 测试：`tests/TuneLab.Tests/Vst3BridgeInsertTests.cs`（假 `IBridgeChannel`）、
+  `tests/TuneLab.Tests/BridgeTimeoutTests.cs`（超时 / 兜底 / 杀桥三条分支）。
 - 验收状态：解决方案 / 两套测试全绿；两个桥重新发布。**尚未**在真机 + 真插件上跑通"经桥出声、
   state 存读"（需要开着 TuneLab 挂一个真 VST3），留待 P3 真机回归一起做。
+  "插槽标红"（超时 / 失败的插入在界面上可见）仍未做 —— 目前只记日志 + 旁通，留给 P3。
 
 **P2（未做）**
 
