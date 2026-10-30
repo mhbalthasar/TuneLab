@@ -130,13 +130,15 @@ FX 浮窗的侧链图标（⛓）与源菜单、`InsertDto.SidechainId` 落盘�
 - 桥重新发布：协议 v2 + 4 声道布局（`tools/publish-bridges.ps1`）；旧桥会在 Hello 被拒。
 - 全量 `TuneLab.sln` build + `TuneLab.Tests` / `TuneLab.Hosting.Compat.Legacy.Tests`。
 - 真机回归：老工程打开 / 播放 / 导出与旧版一致；Master 插入、send、AUX、PDC。
-- VST3 真插件验证：DESIGN 里仍标"开发机无 64 位 VST3"。要承诺 VST3 就必须补。
+- VST3 真插件验证：**已做（2026-10-30）**。独立进程探针跑了 21 个 64 位 VST3 的
+  加载 → 出声 → state 回灌，全部通过；同时发现 4 个 chowdsp 插件会**挂起**。
+  明细在 [NOTES-vst3-vendor.md](NOTES-vst3-vendor.md)。这条同时给隔离方案交了底。
 
 ### 5.2 后续候选（未排期，按建议优先级）
 
 | 优先 | 项 | 一句话 |
 |---|---|---|
-| 1 | VST3 崩溃隔离 | 把 VST3 也走桥；现在插件崩 = 应用崩。收益最高，工作量最大 |
+| 1 | VST3 崩溃隔离 | **方案已写：[VST3-BRIDGE.md](VST3-BRIDGE.md)**。把 VST3 也走桥；实测插件既可能崩、也可能挂，进程内兜不住。收益最高，工作量最大 |
 | 2 | JSFX（M9） | 先 spike `ysfx` 的 P/Invoke、`@gfx`、许可 |
 | 3 | 多设备输出 / 监听耳返 | v2 用途；每设备一个 sink + 漂移补偿 |
 | 4 | 插入参数自动化 | 与正规 DAW 差距最大；要单独设计一轮 |

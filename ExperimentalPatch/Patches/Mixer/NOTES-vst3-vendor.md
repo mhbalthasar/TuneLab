@@ -117,6 +117,25 @@ Full scan 会 load 每个插件**的描述**（不是实例），上游注释标
 
 ---
 
+## 真插件验收（2026-10-30，隔离前的基线）
+
+用独立进程探针（一次只装一个插件；加载 → Initialize(48k / 1024) → 跑一块音频 →
+GetState → 第二个实例 SetState 回灌）扫了这台机器 `C:\Program Files\Common Files\VST3`
+下的 64 位 VST3。结果分三类：
+
+| 结果 | 插件 | 说明 |
+|---|---|---|
+| **PASS（21）** | 13 个 Voxengo（AnSpec / Boogex / Correlometer / Latency Delay / MSED / Marvel GEQ / OldSkoolVerb / Overtone GEQ / SPAN / Sound Delay / Stereo Touch / Tempo Delay / Tube Amp）、3 个 chowdsp（ChowMultiTool / ChowPhaserMono / ChowPhaserStereo）、5 个 Blue Cat（Chorus / Flanger / Phaser / Gain / Triple EQ，均 Mono） | 出声、参数可读、state 能在第二个实例回灌。Latency Delay 报 `latency=10000`，Marvel GEQ 报 415，BYOD 报 4 —— PDC 数据是真实的 |
+| **HANG（4）** | CHOWTapeModel / ChowMatrix 卡在 `Create`（Initialize 之后、process 之前）；BYOD / ChowCentaur 过了音频与 state，卡在**第二个实例**的创建 | 没有 .NET 异常、没有崩溃，就是不再返回；宿主 UI 线程会被永久占住 |
+| **历史崩溃未复现** | Blue Cat Chorus(Mono) → Flanger(Mono) | 2026-10-21 记录的 3/3 native abort，本轮 5/5 全过（可能 native 版本变了）。不能据此删掉风险条目：abort / 纯虚调用 / 堆损坏本来就敲不掉 |
+
+**结论没变，而且更硬**：VST3 进程内加载既可能**崩**，也可能**挂**，两者都不是 .NET 能兜的
+（挂起的 native 调用无法从托管侧中止）。要兑现"插件崩了不带走应用"，只剩桥进程一条路；
+桥侧的 load / initialize / teardown 都必须带超时，超时后允许杀桥。
+
+> 复现探针不在仓库里（临时工程）：它按插件路径启动独立子进程，父进程只看退出码。
+> 这样做的前提正是"每个插件都可能把当前进程带走"。
+
 ## 落地时的形态（三选一，按性价比）
 
 | 方案 | 做法 | 评价 |

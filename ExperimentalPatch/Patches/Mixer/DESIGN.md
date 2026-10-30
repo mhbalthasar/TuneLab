@@ -458,8 +458,12 @@ ExperimentalPatch/InsertHost/
    而加载 / 读状态 / 写参数 / 开界面全在 UI 线程、全都会失败。塞进一个类 = 音频线程上跑 UI 代码。
    所以拆成 `Vst3Backend`（装配，允许失败）+ `Vst3Insert`（运行期）。
 
-**尚未验证**：开发机上没有 64 位 VST3 插件（只有 32 位的 Chow 系列，64 位进程 `LoadPlugin`
-会干净地返回 false）。所以"真插件出声 + 存读 + PDC 补偿"这条验收要等有插件时补做。
+**真插件验收（2026-10-30）**：开发机其实装了 60+ 个 64 位 VST3。用独立进程探针逐个跑
+"加载 → 出声 → GetState → 第二个实例回灌"，21 个通过（Voxengo / 部分 chowdsp / Blue Cat），
+声、参数、state、latency（Latency Delay = 10000 samples）都对。同时暴露第二条风险：
+**4 个 chowdsp 插件会挂起**（CHOWTapeModel / ChowMatrix 卡在 Create，BYOD / ChowCentaur
+卡在第二个实例），而挂起和 native abort 一样，托管侧兜不住。明细见
+[NOTES-vst3-vendor.md](NOTES-vst3-vendor.md)。隔离方案见 [VST3-BRIDGE.md](VST3-BRIDGE.md)。
 在那之前，`InsertChainTests` 用假后端覆盖了"链被接进图、旁通真的跳过、latency 真的补 PDC"这些
 与后端无关的行为。
 
@@ -1596,7 +1600,7 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 |---|---|---|
 | 引擎重写引入实时毛刺 / 爆音 | 高 | 先做 M3（无 AUX 的退化图），用现有测试与听感做基线；回调里零分配 |
 | PDC 算错 | 中 | 用"两条等长路径"与"一条带 1024 样本延迟插件"的用例验证相位 |
-| VST 崩溃带走应用 | 高 | VST2 已经全部过桥（§5.3）；VST3 仍在进程内（vendored wrapper），后续可沿用同一套桥 |
+| VST 崩溃 / 挂起带走应用 | 高 | VST2 已经全部过桥（§5.3）；VST3 仍在进程内（vendored wrapper）。2026-10-30 实测既有 native abort 历史、也有 chowdsp 挂起，进程内兜不住；隔离方案见 [VST3-BRIDGE.md](VST3-BRIDGE.md) |
 | JSFX 没有现成解释器 | 高 | §12 Q4；先 spike（ysfx 能否 P/Invoke + @gfx + 许可） |
 | VST2 许可与 SDK 合规 | 中 | 只做运行时加载、不分发 SDK；文档写明 |
 | 工程格式兼容 | 中 | 版本 +1，老版本硬失败；native DTO 不进 SDK |
