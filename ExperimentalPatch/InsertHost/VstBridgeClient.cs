@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.VstBridge;
 
 // 宿主侧的桥客户端（DESIGN.md §5.3）。
@@ -23,7 +24,7 @@ using TuneLab.ExperimentalPatch.VstBridge;
 // 【线程】加载/参数/状态在 UI 线程；Process 从音频线程调用（引擎的音频回调）。
 // 所以通道是双工的：控制消息走 await，音频走一个不被 await 阻塞的专用路径
 // —— 见 SendProcess 的说明。
-internal sealed class VstBridgeClient : IDisposable
+internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 {
     // 桥的可执行文件名。两个位数各一份（同名会让部署时互相覆盖）。
     const string BridgeExecutableName32 = "TuneLab.ExperimentalPatch.VstBridge.exe";

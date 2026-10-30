@@ -22,7 +22,7 @@ namespace TuneLab.Audio;
 // 【线程】全部只在 UI 线程调。
 public sealed class Vst3EditorShell : IInsertEditorWindow
 {
-    readonly Vst3Insert mInsert;
+    readonly IVst3Insert mInsert;
     readonly string mPluginName;
 
     // 泵插件消息的定时器。插件窗口活着它就活着；关掉编辑器 / 实例就停。
@@ -34,13 +34,13 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
     // 已经把它带到前台过一次了（窗口可能晚出现，所以要在定时器里重试）。
     bool mRaised;
 
-    Vst3EditorShell(Vst3Insert insert, string pluginName)
+    Vst3EditorShell(IVst3Insert insert, string pluginName)
     {
         mInsert = insert;
         mPluginName = pluginName;
     }
 
-    public static Vst3EditorShell Create(Vst3Insert insert, string pluginName)
+    public static Vst3EditorShell Create(IVst3Insert insert, string pluginName)
         => new(insert, pluginName);
 
     /// <summary>

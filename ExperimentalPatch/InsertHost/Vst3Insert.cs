@@ -17,7 +17,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 //
 // 【位数】插件是 32 位而我们（现在）是 64 位进程时，LoadPlugin 会失败，
 // 后端已经拦下来了。这里假定 wrapper 已经 Initialize 成功。
-public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
+public sealed unsafe class Vst3Insert : IMixInsert, IVst3Insert, IDisposable
 {
     readonly OwnVst3Wrapper mWrapper;
     readonly float[][] mInPlanes;   // 平面，每块一份
@@ -61,6 +61,9 @@ public sealed unsafe class Vst3Insert : IMixInsert, IDisposable
     public string Name { get; }
 
     public InsertPluginInfo Plugin { get; }
+
+    // 这个实例跑在**宿主进程内**（vendored wrapper 直载）—— 隔离关闭或退避时就是这样。
+    public bool IsIsolated => false;
 
     public bool IsBypassed => mBypassed;
 

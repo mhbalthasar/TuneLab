@@ -63,9 +63,12 @@ public sealed class InsertPluginPathsPage : UserControl
 
         var vst3Section = BuildSection(
             L("VST3 路径", "VST3 paths"),
-            L("进程内加载。", "Loaded in process."),
+            L("默认在进程内加载；下方可改为经桥进程加载以隔离崩溃。",
+              "Loaded in process by default; enable isolation below to run it through a bridge process."),
             Vst3Format,
             mVst3);
+
+        var isolationSection = BuildIsolationSection();
 
         var vst2Section = BuildSection(
             L("VST2 路径", "VST2 paths"),
@@ -138,7 +141,7 @@ public sealed class InsertPluginPathsPage : UserControl
             Content = new StackPanel
             {
                 Spacing = 18,
-                Children = { intro, vst3Section, vst2Section },
+                Children = { intro, vst3Section, isolationSection, vst2Section },
             },
             Padding = new Thickness(14),
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
@@ -151,6 +154,51 @@ public sealed class InsertPluginPathsPage : UserControl
         grid.Children.Add(footer);
 
         return grid;
+    }
+
+    // [VST3-BRIDGE] 隔离开关：把 VST3 放进 64 位桥进程。默认关（P1）。
+    Control BuildIsolationSection()
+    {
+        var header = new TextBlock
+        {
+            Text = L("崩溃隔离", "Crash isolation"),
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = Palette.Brush(Palette.TextLight),
+        };
+
+        var hint = new TextBlock
+        {
+            Text = L(
+                "默认关闭：VST3 在 TuneLab 进程内加载。打开后 VST3 改由 64 位桥进程加载 —— "
+                + "插件崩溃或卡死只会拖垮桥，TuneLab 与工程不受影响（该插入会旁通）。"
+                + "桥缺失或启动失败时自动回退进程内，并写一条日志。",
+                "Off by default: VST3 loads inside TuneLab. When on, VST3 is loaded by a 64-bit "
+                + "bridge process — a plugin crash or hang only takes down the bridge, not TuneLab "
+                + "(the insert is bypassed instead). If the bridge is missing or fails to start, "
+                + "the plugin falls back in process and a log line is written."),
+            FontSize = 10,
+            Foreground = Palette.Brush(Palette.TextLabel, 0.8),
+            Margin = new Thickness(0, 1, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        var toggle = new CheckBox
+        {
+            Content = L("经桥进程加载 VST3", "Load VST3 through the bridge"),
+            FontSize = 11,
+            Margin = new Thickness(0, 6, 0, 0),
+            IsChecked = mHost.InsertPlugins?.IsolateVst3 ?? false,
+            IsEnabled = mHost.InsertPlugins != null,
+        };
+
+        toggle.Click += (_, _) => mHost.InsertPlugins?.SetIsolateVst3(toggle.IsChecked == true);
+
+        var body = new StackPanel();
+        body.Children.Add(header);
+        body.Children.Add(hint);
+        body.Children.Add(toggle);
+        return body;
     }
 
     // 一段格式的清单：标题 + 说明 + 路径行 + 「添加路径」。

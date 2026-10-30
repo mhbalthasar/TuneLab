@@ -178,8 +178,8 @@ interface IVst3Insert : IMixInsert
 
 `Vst3Backend.Create`：
 
-- 新增设置 `Settings.IsolateVst3`（本机设置，默认 **Windows 且 x64 桥可用时 true**，
-  其它平台继续进程内）；
+- 新增设置 `Settings.IsolateVst3`（本机设置）。**P1 默认 false**（进程内，线上行为不变）；
+  P3 才改成"Windows 且 x64 桥可用时 true"，其它平台继续进程内；
 - 选桥模式：`VstBridgeClient.ForBitness(64)` → `EnsureStartedBlocking` →
   `LoadBlocking(..., format: "vst3")` → `Vst3BridgeInsert`；
 - 桥不可用 / 启动失败：回退进程内 `Vst3Insert`，并把原因写日志（不静默）。
@@ -208,7 +208,8 @@ interface IVst3Insert : IMixInsert
 
 - 协议：`BridgeProtocol` 的 format 分派、版本校验、`ParameterInfo.DefaultValue` 往返；
 - 桥主机：`Vst3PluginHost` 用假 wrapper（不加载真插件）覆盖 load/process/state/params；
-- 宿主：`Vst3BridgeInsert` 用假的 `VstBridgeClient` 覆盖超时、桥崩、state 回灌；
+- 宿主：`Vst3BridgeInsert` 用假的 `IBridgeChannel`（`VstBridgeClient` 的簿记子集）
+  覆盖音频往返、旁通、桥失败直通、state 回灌、参数往返；
 - 真插件集成（opt-in，独立进程）：复用 2026-10-30 的探针，加"桥模式"跑一遍；
 - 回归：`TuneLab.Tests` 与 legacy 全绿；进程内 VST3 路径一条不删。
 
@@ -243,10 +244,25 @@ interface IVst3Insert : IMixInsert
   `Vst3PluginHost.IsSupported` 在 32 位进程里为 false，不会误用。
 - 测试：`tests/TuneLab.Tests/BridgeProtocolFormatTests.cs` 钉住旧消息的缺省与各新字段的往返。
 
-**P1 宿主侧（未做）**
+**P1 宿主侧（已完成，2026-10-30）**
 
-设置开关、`IVst3Insert` / `Vst3BridgeInsert`、`Vst3Backend` 选桥 —— 即"真的把 VST3 交给桥"。
-在那之前宿主仍走进程内，线上行为与本次提交前完全一致。
+- `InsertSettings.IsolateVst3`（默认 false）+ `InsertInstanceFactory.IsolateVst3Provider`
+  由宿主注入（读 `insert-plugins.json` 的 `IsolateVst3`），工厂只拿值、不读文件。
+- `IVst3Insert`（`InsertHost/IVst3Insert.cs`）：进程内 `Vst3Insert` 与过桥 `Vst3BridgeInsert`
+  的宿主统一面。宿主里原来的 `is Vst3Insert` 全部改成 `is IVst3Insert`
+  （工厂的 state 存/读、`InsertSlotAdapter.HasEditor`、编辑器壳、参数面板）。
+- `Vst3BridgeInsert`（`InsertHost/Vst3BridgeInsert.cs`）：`IVst3Insert` 的桥实现，
+  与 `Vst2Insert` 同构（平面 ↔ 交织、共享环发 process、state/参数走消息）。P1 的编辑器
+  一律不可用（`HasEditor=false`），宿主自动退参数面板。
+- 连接面：从 `VstBridgeClient` 抽出 `IBridgeChannel`（内部子集），
+  `Vst3BridgeInsert` 只依赖它 —— 单测用假通道，不碰原生。
+- `Vst3Backend.Create`：`IsolateVst3` 且 Windows x64 时先试桥；桥不可用 / 起不来 →
+  记 `IsolationFallbackReason` 并回退进程内（宿主写日志）；桥是好的但插件拒绝 /
+  加载时把桥弄没了 → 如实报失败，**不回退**（回退等于把刚炸完的插件又拉进宿主）。
+- 设置页（`InsertPluginPathsPage`）：新增"崩溃隔离"一节 + 开关，读写 `IInsertPluginSettings`。
+- 测试：`tests/TuneLab.Tests/Vst3BridgeInsertTests.cs`（假 `IBridgeChannel`）。
+- 验收状态：解决方案 / 两套测试全绿；两个桥重新发布。**尚未**在真机 + 真插件上跑通"经桥出声、
+  state 存读"（需要开着 TuneLab 挂一个真 VST3），留待 P3 真机回归一起做。
 
 **P2（未做）**
 

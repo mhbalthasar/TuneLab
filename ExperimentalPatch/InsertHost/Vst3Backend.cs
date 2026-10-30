@@ -59,6 +59,10 @@ public sealed class Vst3Backend : IInsertBackend
 
     public string? UnavailableReason { get; private set; }
 
+    // 上一次 Create：要求隔离、但桥这一侧不可用而回退进程内的原因（null = 没发生）。
+    // InsertHost 自己没有日志，所以把原因留在这里，宿主读它来记日志 / 标示"未隔离"。
+    public string? IsolationFallbackReason { get; private set; }
+
     string? NativePath { get; set; }
 
     public Vst3Backend()
@@ -403,17 +407,39 @@ public sealed class Vst3Backend : IInsertBackend
     public IMixInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
     {
         reason = null;
+        IsolationFallbackReason = null;
+
+        if (string.IsNullOrEmpty(plugin.Locator))
+        {
+            reason = "plugin location is unknown (rescan first)";
+            return null;
+        }
+
+        // [VST3-BRIDGE] 隔离优先：开关打开且平台合适时先试桥。
+        //   桥不可用 / 起不来 → 记下原因、回退进程内（不静默：宿主读 IsolationFallbackReason）。
+        //   桥是好的、插件自己拒绝 / 把桥弄没了 → 如实报失败，**不回退**（回退等于把刚炸完的
+        //   插件又拉进宿主进程，正是隔离要避免的事）。
+        if (settings.IsolateVst3 && OperatingSystem.IsWindows() && Environment.Is64BitProcess)
+        {
+            var bridged = Vst3BridgeInsert.Create(plugin, settings, out string? bridgeReason, out bool bridgeUnavailable);
+
+            if (bridged != null)
+                return bridged;
+
+            if (!bridgeUnavailable)
+            {
+                reason = bridgeReason;
+                return null;
+            }
+
+            IsolationFallbackReason = bridgeReason;
+            // 落到下面走进程内。
+        }
 
         string? dll = NativePath;
         if (dll == null)
         {
             reason = "VST3 host library is missing";
-            return null;
-        }
-
-        if (string.IsNullOrEmpty(plugin.Locator))
-        {
-            reason = "plugin location is unknown (rescan first)";
             return null;
         }
 

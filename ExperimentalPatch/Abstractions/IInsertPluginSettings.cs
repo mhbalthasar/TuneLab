@@ -38,6 +38,17 @@ public interface IInsertPluginSettings
 
     // 上次扫描时间（本地时间）；null = 还没扫过。
     string? LastScanText { get; }
+
+    // [VST3-BRIDGE] 是否把 VST3 插件放进桥进程（崩溃 / 挂起隔离）。默认关。
+    //
+    // 【为什么是本机设置】它跟"这台机器上插件装在哪儿"是一类东西：取决于本机的
+    // 桥是否可用、用户愿不愿意付一次共享内存往返。与工程内容无关，所以不进工程文件。
+    // 默认实现 = false（补丁/测试里没有这个能力时按进程内走，行为不变）。
+    bool IsolateVst3 => false;
+
+    void SetIsolateVst3(bool value)
+    {
+    }
 }
 
 // 扫描进度。宿主**按目录**推进（一个目录报一次），界面据此画进度条。

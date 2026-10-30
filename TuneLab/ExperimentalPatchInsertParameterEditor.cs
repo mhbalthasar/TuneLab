@@ -81,7 +81,7 @@ public sealed class InsertParameterWindow : Window
     {
         ParameterSource source = insert switch
         {
-            Vst3Insert vst3 => new ParameterSource
+            IVst3Insert vst3 => new ParameterSource
             {
                 Read = () => vst3.Parameters
                     .Select(p => new Parameter(p.Id, p.Name, p.MinValue, p.MaxValue, p.CurrentValue,

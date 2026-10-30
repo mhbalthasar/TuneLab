@@ -89,6 +89,16 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         Save(state);
     }
 
+    // [VST3-BRIDGE] 隔离开关（本机设置，默认关）。读写都落进 insert-plugins.json。
+    public bool IsolateVst3 => Load().IsolateVst3;
+
+    public void SetIsolateVst3(bool value)
+    {
+        var state = Load();
+        state.IsolateVst3 = value;
+        Save(state);
+    }
+
     public IReadOnlyList<InsertPluginEntry> CachedPlugins
     {
         get
@@ -358,6 +368,9 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         public List<string>? Vst2Paths { get; set; }
         public List<CachedPlugin> Cache { get; set; } = [];
         public string? LastScanUtc { get; set; }
+
+        // [VST3-BRIDGE] 把 VST3 放进桥进程（隔离崩溃 / 挂起）。默认 false = 进程内。
+        public bool IsolateVst3 { get; set; }
     }
 
     // public 而不是 private：State.Cache 是 public 属性（要交给 JSON 序列化器），

@@ -221,6 +221,10 @@ internal static class ExperimentalPatchBootstrap
         static HostServices()
         {
             Audio.InsertInstanceFactory.PluginCacheProvider = () => sInsertPlugins.CachedPlugins;
+
+            // [VST3-BRIDGE] "把 VST3 放进桥进程"是本机设置：工厂不直接读文件，
+            // 由宿主注入一个取值器（见 InsertInstanceFactory.IsolateVst3Provider）。
+            Audio.InsertInstanceFactory.IsolateVst3Provider = () => sInsertPlugins.IsolateVst3;
         }
 
         const string Prefix = "[ExperimentalPatch] ";

@@ -92,4 +92,11 @@ public sealed class InsertSettings
     public double SampleRate { get; init; }
 
     public int MaxBlockSize { get; init; }
+
+    // [VST3-BRIDGE] 把 VST3 放进桥进程（隔离崩溃 / 挂起）。默认 false = 进程内。
+    //
+    // 这是**本机设置**（宿主从 insert-plugins.json 读进来）：默认关，P3 才会在
+    // Windows x64 上默认打开。打开后若 x64 桥不可用，Vst3Backend 回退进程内
+    // 并把原因记进 IsolationFallbackReason（宿主据此记日志 / 标示"未隔离"）。
+    public bool IsolateVst3 { get; init; }
 }

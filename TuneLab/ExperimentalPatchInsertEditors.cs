@@ -45,7 +45,7 @@ internal static class InsertEditorHost
         // 之后壳必须注销，否则再点「界面」只会复用一个已经停掉消息泵的旧壳
         // —— 表现是"第一次能开，之后再点没反应"。
 
-        if (insert is Vst3Insert vst3)
+        if (insert is IVst3Insert vst3)
         {
             var shell = Vst3EditorShell.Create(vst3, pluginName);
 
