@@ -247,6 +247,10 @@ public interface IMixerInsert
     // `VST3` / `VST2` / `JSFX`，显示在名字后面。
     string FormatName { get; }
 
+    // [VST3-BRIDGE] 建实例失败的原因（插件没装 / 隔离加载超时 / 桥崩…）；null = 正常。
+    // 界面据此把那一行标红，并把原因放进 tooltip。默认 null（没这个概念的插入不受影响）。
+    string? FailureReason => null;
+
     // 旁通 = 跳过这个效果器（音频直通）。与"从链里删掉"是两件事。
     bool IsBypassed { get; set; }
 

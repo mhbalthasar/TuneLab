@@ -394,15 +394,21 @@ public sealed class FxPopupWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
         };
 
+        // [VST3-BRIDGE] 建实例失败（插件没装 / 隔离加载超时 / 桥崩）的插入标红 + 加一个警示前缀。
+        // 颜色之外还留一个字形，色觉障碍下也看得出来；原因放进 tooltip。
+        bool failed = insert.FailureReason is { Length: > 0 };
+
         var name = new TextBlock
         {
-            Text = insert.Name,
+            Text = failed ? "⚠ " + insert.Name : insert.Name,
             FontSize = 11,
-            Foreground = Palette.Brush(insert.IsBypassed ? Palette.TextLabel : Palette.TextNormal),
+            Foreground = failed
+                ? Palette.Brush(Palette.Error)
+                : Palette.Brush(insert.IsBypassed ? Palette.TextLabel : Palette.TextNormal),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
-        ToolTip.SetTip(name, insert.Name);
+        ToolTip.SetTip(name, failed ? insert.FailureReason : insert.Name);
 
         var format = new TextBlock
         {

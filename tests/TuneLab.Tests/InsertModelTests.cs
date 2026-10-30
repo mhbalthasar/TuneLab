@@ -134,7 +134,35 @@ public class InsertModelTests
         Assert.Equal("vst3:B", list[1].PluginId.Value);
     }
 
+    // [VST3-BRIDGE] 建实例失败要留下可显示的原因，成功后要清掉 ——
+    // 界面据此把那一行标红（Reason 就是 tooltip 里那句话，见 FxPopupWindow）。
+    [Fact]
+    public void Factory_RecordsAndClearsInsertFailure()
+    {
+        var project = NewProject("t1");
+        var list = (DataObjectList<InsertSlot>)project.Tracks[0].Inserts;
+
+        // JSFX 没有后端：必失败，与开发机上有没有 VST3 native / 桥无关。
+        var slot = new InsertSlot("insert-fail-" + Guid.NewGuid().ToString("N"), "JSFX", "jsfx:1", "Test", list);
+        list.Add(slot);
+
+        var factory = new InsertInstanceFactory();
+
+        Assert.Null(factory.FailureOf(slot.Id));
+
+        var insert = factory.Create(slot, out var reason);
+
+        Assert.Null(insert);
+        Assert.False(string.IsNullOrEmpty(reason));
+        Assert.Equal(reason, factory.FailureOf(slot.Id));
+
+        // 槽位被释放，失败标记跟着走。
+        factory.Release(slot.Id);
+        Assert.Null(factory.FailureOf(slot.Id));
+    }
+
     // ── 契约层 ──
+
 
     [Fact]
     public void Inserts_AreReadLive_NotCached()

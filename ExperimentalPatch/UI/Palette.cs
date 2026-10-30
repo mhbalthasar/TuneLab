@@ -46,6 +46,9 @@ public static class Palette
     public static readonly Color AmpWarn = new(255, 255, 214, 51);
     public static readonly Color AmpPeak = new(255, 255, 71, 71);
 
+    // 插入效果**建实例失败**（插件没装 / 隔离加载超时 / 桥崩）时把那一行的名字染红。
+    public static readonly Color Error = new(255, 255, 71, 71);
+
     // 轨道头 M/S 开关的勾选色：这两个值在 TrackHead.cs 里是直接写死的字面量，不是 Style 字段。
     public static readonly Color MuteChecked = new(255, 0, 186, 173);
     public static readonly Color SoloChecked = new(255, 135, 84, 255);

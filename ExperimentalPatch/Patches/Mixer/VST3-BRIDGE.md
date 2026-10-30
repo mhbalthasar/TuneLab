@@ -267,9 +267,12 @@ interface IVst3Insert : IMixInsert
   在此之前只有开编辑器一条路有上限。
 - 测试：`tests/TuneLab.Tests/Vst3BridgeInsertTests.cs`（假 `IBridgeChannel`）、
   `tests/TuneLab.Tests/BridgeTimeoutTests.cs`（超时 / 兜底 / 杀桥三条分支）。
+- **插槽标红**：`InsertInstanceFactory` 记每个槽位最近一次建实例失败的原因，
+  经 `IMixerInsert.FailureReason`（DIM，默认 null）透传到 `FxPopupWindow`：
+  那一行名字变红 + `⚠` 前缀，原因进 tooltip。加载超时 / 桥崩 / 插件没装都走这一条。
+  尚未覆盖"运行期音频挂起"（桥在 process 里卡死 → 音频直通、实例还活着，没标红）—— 留给 P4。
 - 验收状态：解决方案 / 两套测试全绿；两个桥重新发布。**尚未**在真机 + 真插件上跑通"经桥出声、
   state 存读"（需要开着 TuneLab 挂一个真 VST3），留待 P3 真机回归一起做。
-  "插槽标红"（超时 / 失败的插入在界面上可见）仍未做 —— 目前只记日志 + 旁通，留给 P3。
 
 **P2（未做）**
 

@@ -30,6 +30,16 @@ internal sealed class InsertInstanceFactory
     // [EP-MIXER-23] 链上那一环（湿/干 / 增益微调包装后的）。与 mLive 分开：
     // mLive 面向"插件本身"，这张表面向"图里跑的那一环"。
     readonly Dictionary<string, object> mWrapped = [];
+
+    // [VST3-BRIDGE] 每个槽位**最近一次建实例失败**的原因（插件没装 / 隔离加载超时 / 桥崩 /
+    // 插件拒绝 state…）。界面据此把那一行标红并把原因放进 tooltip —— 早先失败只写日志，
+    // 用户看到的是"这个效果器没反应"，不知道是插件的问题还是宿主的问题。
+    //
+    // 生命期与 mLive 对齐：建成功就清、Release 就清。锁是因为编图可能发生在
+    // 工程加载线程上，而读它的界面在 UI 线程。
+    readonly Dictionary<string, string> mFailures = [];
+    readonly object mFailuresLock = new();
+
     readonly Vst3Backend mVst3 = new();
     readonly Vst2Backend mVst2 = new();
 
@@ -85,14 +95,15 @@ internal sealed class InsertInstanceFactory
         //
         // 换插件走 SetPlugin，它会先 Release；开工程走 ReleaseAll。所以"存在即复用"是安全的。
         if (mLive.TryGetValue(slot.Id, out var existing))
+        {
+            // 有活实例 = 这个槽位没失败过（失败的根本不会进 mLive）。
+            ClearFailure(slot.Id);
             return existing;
+        }
 
         var backend = Resolve(slot.Format);
         if (backend == null || !backend.IsAvailable)
-        {
-            reason = backend?.UnavailableReason ?? $"unknown insert format '{slot.Format}'";
-            return null;
-        }
+            return Fail(slot.Id, backend?.UnavailableReason ?? $"unknown insert format '{slot.Format}'", out reason);
 
         var plugin = FindPlugin(backend, slot.PluginId.Value);
         if (plugin == null)
@@ -111,8 +122,9 @@ internal sealed class InsertInstanceFactory
             }
             else
             {
-                reason = $"the plugin '{slot.Name.Value}' is not installed any more (id {slot.PluginId.Value})";
-                return null;
+                return Fail(slot.Id,
+                    $"the plugin '{slot.Name.Value}' is not installed any more (id {slot.PluginId.Value})",
+                    out reason);
             }
         }
 
@@ -126,7 +138,7 @@ internal sealed class InsertInstanceFactory
 
         var insert = backend.Create(plugin, settings, out reason);
         if (insert == null)
-            return null;
+            return Fail(slot.Id, reason, out reason);
 
         // [VST3-BRIDGE] 要求了隔离却回了进程内：原因是桥这一侧不可用（没起来 / 不带 vst3）。
         // 不静默 —— 记日志（P3 会在界面上也标"未隔离"）。
@@ -151,8 +163,36 @@ internal sealed class InsertInstanceFactory
                 HostLog.Warning($"insert: plugin '{slot.Name.Value}' refused the saved state; using its defaults");
         }
 
+        ClearFailure(slot.Id);
         mLive[slot.Id] = insert;
         return insert;
+    }
+
+    // 建实例失败：把原因记进 mFailures 并把同一个原因交给调用方（返回 null 给 Create）。
+    IMixInsert? Fail(string slotId, string? message, out string? reason)
+    {
+        reason = string.IsNullOrEmpty(message) ? "the insert could not be created" : message;
+
+        lock (mFailuresLock)
+            mFailures[slotId] = reason;
+
+        return null;
+    }
+
+    void ClearFailure(string slotId)
+    {
+        lock (mFailuresLock)
+            mFailures.Remove(slotId);
+    }
+
+    /// <summary>
+    /// 某个槽位最近一次建实例失败的原因；null = 正常（或还没编图）。
+    /// 界面据此把那一行标红 + 把原因放进 tooltip。
+    /// </summary>
+    public string? FailureOf(string slotId)
+    {
+        lock (mFailuresLock)
+            return mFailures.TryGetValue(slotId, out var reason) ? reason : null;
     }
 
     /// <summary>把某个槽位的实例状态读出来（保存工程时调）。</summary>
@@ -222,6 +262,9 @@ internal sealed class InsertInstanceFactory
     {
         // 编辑器窗口里挂的是插件自己的 view：必须在 Dispose（effClose / FreeLibrary）之前关掉。
         InsertEditorHost.Close(slotId);
+
+        // 槽位被释放了，失败标记也跟着走（重加同一个槽位是新的 id）。
+        ClearFailure(slotId);
 
         if (!mLive.Remove(slotId, out var insert))
             return;
@@ -320,6 +363,10 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
     public string Name => slot.Name.Value;
 
     public string FormatName => slot.Format;
+
+    // [VST3-BRIDGE] 建实例失败时给界面一个可显示的原因（那一行标红 + tooltip）；
+    // null = 正常（或还没编图）。插件没装 / 隔离加载超时 / 桥崩都走这里。
+    public string? FailureReason => factory.FailureOf(slot.Id);
 
     public bool IsBypassed
     {
