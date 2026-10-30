@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -13,7 +14,13 @@ using TuneLab.ExperimentalPatch.VstBridge;
 internal sealed class BridgeSession : IDisposable
 {
     readonly NamedPipeServerStream mPipe;
-    readonly PluginHost mHost = new();
+    readonly PluginHost mVst2 = new();
+    readonly Vst3PluginHost mVst3 = new();
+
+    // 槽位 → 宿主实现。Load 时按 format 决定，之后的每一条消息都照它转发。
+    // 只在桥的主线程读写，不需要锁。
+    readonly Dictionary<int, IBridgePluginHost> mOwner = [];
+
     readonly byte[] mLength = new byte[4];
     readonly SharedAudioRing? mInput;
     readonly SharedAudioRing? mOutput;
@@ -26,7 +33,10 @@ internal sealed class BridgeSession : IDisposable
         mOutput = output;
 
         if (input != null && output != null)
-            mHost.Attach(input, output);
+        {
+            mVst2.Attach(input, output);
+            mVst3.Attach(input, output);
+        }
     }
 
     public void Run()
@@ -117,7 +127,13 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        Write(JsonSerializer.Serialize(new HelloAckMessage { Ok = true }));
+        Write(JsonSerializer.Serialize(new HelloAckMessage
+        {
+            Ok = true,
+            Formats = Vst3PluginHost.IsSupported
+                ? [PluginFormats.Vst2, PluginFormats.Vst3]
+                : [PluginFormats.Vst2],
+        }));
     }
 
     void HandleLoad(string? json, byte[] payload)
@@ -129,8 +145,19 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
+        // 同一个槽位换插件（或换格式）：先把旧的从它自己的宿主里卸掉。
+        if (mOwner.Remove(message.Slot, out var previous))
+            previous.Unload(message.Slot);
+
+        IBridgePluginHost host = string.Equals(message.Format, PluginFormats.Vst3, StringComparison.OrdinalIgnoreCase)
+            ? mVst3
+            : mVst2;
+
         // 附带音频段在这个消息里用不到（加载不需要音频），忽略 payload。
-        var result = mHost.Load(message, out int inputChannels, out int outputChannels);
+        var result = host.Load(message, out int inputChannels, out int outputChannels);
+
+        if (result.Ok)
+            mOwner[message.Slot] = host;
 
         Write(JsonSerializer.Serialize(new LoadPluginResultMessage
         {
@@ -147,6 +174,10 @@ internal sealed class BridgeSession : IDisposable
         }));
     }
 
+    // 按槽位找当前承载它的宿主。找不到时用 VST2 的（对未知槽位统一回"失败"）。
+    IBridgePluginHost OwnerOf(int slotNumber)
+        => mOwner.TryGetValue(slotNumber, out var host) ? host : mVst2;
+
     void HandleOpenEditor(string? json)
     {
         OpenEditorMessage? message = Deserialize<OpenEditorMessage>(json);
@@ -156,7 +187,7 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        var result = mHost.OpenEditor(message.Slot, message.Title);
+        var result = OwnerOf(message.Slot).OpenEditor(message.Slot, message.Title);
 
         Write(JsonSerializer.Serialize(new OpenEditorResultMessage
         {
@@ -164,6 +195,8 @@ internal sealed class BridgeSession : IDisposable
             Ok = result.Ok,
             Reason = result.Reason,
             ChildWindows = result.ChildWindows,
+            // VST3 侧将来会填真实句柄（P2）；VST2 的窗口归桥自己置前，一直是 0。
+            WindowHandle = 0,
         }));
     }
 
@@ -176,7 +209,7 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        bool ok = mHost.CloseEditor(message.Slot);
+        bool ok = OwnerOf(message.Slot).CloseEditor(message.Slot);
         Write(JsonSerializer.Serialize(new CloseEditorResultMessage
         {
             Slot = message.Slot,
@@ -193,7 +226,8 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        bool ok = mHost.Unload(message.Slot);
+        bool ok = OwnerOf(message.Slot).Unload(message.Slot);
+        mOwner.Remove(message.Slot);
         Write(JsonSerializer.Serialize(new UnloadPluginResultMessage { Slot = message.Slot, Ok = ok }));
     }
 
@@ -208,7 +242,7 @@ internal sealed class BridgeSession : IDisposable
 
         // 音频数据走共享内存（见 BridgeSharedMemory 的说明）：
         // 这里 payload 只是"宿主要求处理一块"的指令，真正的样本在共享环里。
-        bool processed = mHost.Process(message.Slot, message.Bypass, out int frames, out int channels);
+        bool processed = OwnerOf(message.Slot).Process(message.Slot, message.Bypass, out int frames, out int channels);
 
         Write(JsonSerializer.Serialize(new ProcessResult
         {
@@ -230,7 +264,7 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        byte[]? state = mHost.GetState(message.Slot);
+        byte[]? state = OwnerOf(message.Slot).GetState(message.Slot);
 
         Write(JsonSerializer.Serialize(new StateChunkMessage
         {
@@ -248,7 +282,7 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        bool ok = mHost.SetState(message.Slot, message.Base64);
+        bool ok = OwnerOf(message.Slot).SetState(message.Slot, message.Base64);
 
         Write(JsonSerializer.Serialize(new SetStateResultMessage { Slot = message.Slot, Ok = ok }));
     }
@@ -262,7 +296,7 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        var parameters = mHost.GetParameters(message.Slot);
+        var parameters = OwnerOf(message.Slot).GetParameters(message.Slot);
 
         Write(JsonSerializer.Serialize(new ParameterListMessage
         {
@@ -280,7 +314,7 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
-        mHost.SetParameter(message.Slot, message.Id, message.Value);
+        OwnerOf(message.Slot).SetParameter(message.Slot, message.Id, message.Value);
 
         Write(JsonSerializer.Serialize(new SetParameterResultMessage { Slot = message.Slot, Ok = true }));
     }

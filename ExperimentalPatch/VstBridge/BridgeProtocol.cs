@@ -37,6 +37,13 @@ public static class BridgeProtocol
     public const int MaxFrameBytes = 16 * 1024 * 1024;
 }
 
+// 插件格式名。桥、宿主、扫描缓存都用这几个字面量；写死字符串迟早漂移。
+public static class PluginFormats
+{
+    public const string Vst2 = "vst2";
+    public const string Vst3 = "vst3";
+}
+
 public enum BridgeMessageKind
 {
     // ── 生命周期与握手 ──
@@ -105,6 +112,11 @@ public sealed class HelloAckMessage
 
     [JsonPropertyName("reason")]
     public string? Reason { get; init; }
+
+    // 桥能承载的插件格式。x86 桥是 ["vst2"]；x64 桥是 ["vst2","vst3"]（带 ownvst3）。
+    // 宿主据此决定"要不要把 VST3 交给这个桥隔离"（VST3-BRIDGE.md §5.2）。
+    [JsonPropertyName("formats")]
+    public string[] Formats { get; init; } = [];
 }
 
 // 加载一个插件。pluginPath 是桥这一侧的本地路径（宿主持有的工程里存的是
@@ -120,6 +132,11 @@ public sealed class LoadPluginMessage
 
     [JsonPropertyName("path")]
     public string Path { get; init; } = string.Empty;
+
+    // 插件格式（`vst2` / `vst3`）。缺省 `vst2`：旧宿主不带这个字段，
+    // 反序列化后保留初值，老行为一条不变。桥据此选哪个宿主实现（见 BridgeSession）。
+    [JsonPropertyName("format")]
+    public string Format { get; init; } = PluginFormats.Vst2;
 
     [JsonPropertyName("sampleRate")]
     public double SampleRate { get; init; }
@@ -171,6 +188,11 @@ public sealed class LoadPluginResultMessage
     // AEffect.flags 里的 effFlagsHasEditor（带编辑器）。混音台的「界面」键据此启用/置灰。
     [JsonPropertyName("hasEditor")]
     public bool HasEditor { get; init; }
+
+    // VST3 的界面是否**必须 OpenGL 1.3+**（DPF / NanoVG 那类）。只有 vst3 会置 true；
+    // 宿主据此决定"开 GUI 还是退回参数面板"（见 Vst3Insert.NeedsOpenGl）。
+    [JsonPropertyName("needsOpenGl")]
+    public bool NeedsOpenGl { get; init; }
 }
 
 public sealed class UnloadPluginMessage
@@ -336,6 +358,11 @@ public sealed class ParameterInfo
 
     [JsonPropertyName("value")]
     public double Value { get; init; }
+
+    // 插件声明的默认值（VST3 = VST3Parameter.DefaultValue）。参数面板的"复位"要用。
+    // VST2 没有这个概念，桥那边填与 Value 同值即可。
+    [JsonPropertyName("defaultValue")]
+    public double DefaultValue { get; init; }
 }
 
 public sealed class ParameterListMessage
@@ -462,6 +489,12 @@ public sealed class OpenEditorResultMessage
     // 初始化失败：这类故障用户看到的就是"窗口是空的，但没报错"）。宿主据此给一句明话。
     [JsonPropertyName("childWindows")]
     public int ChildWindows { get; init; }
+
+    // 插件窗口的 HWND（VST3 专有）。VST2 的窗口由桥自己建、桥自己置前，这里是 0；
+    // VST3 的窗口也由插件自己建，但宿主需要句柄才能把它带到前台 / 查询可见性。
+    // 跨进程传句柄只在本机有意义 —— 与这套桥的处境一致。
+    [JsonPropertyName("windowHandle")]
+    public long WindowHandle { get; init; }
 }
 
 public sealed class CloseEditorMessage

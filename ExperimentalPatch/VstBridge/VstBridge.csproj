@@ -41,7 +41,28 @@
     <AssemblyName>TuneLab.ExperimentalPatch.VstBridge</AssemblyName>
     <RootNamespace>TuneLab.ExperimentalPatch.VstBridge</RootNamespace>
     <Version>2.1.1</Version>
+    <!-- CS0436：桥与 InsertHost 各自编译一份 BridgeProtocol（两端逐字节一致是硬要求，
+         见 InsertHost.csproj）。桥引用了 InsertHost 之后，同一个全名类型出现两次，
+         编译器提醒"用的是本地的" —— 这正是我们要的，关掉这条噪声。 -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
     <!-- 桥进程自己不需要 Avalonia（插件编辑器窗口是另一个话题，见 BridgeProtocol）。 -->
   </PropertyGroup>
+
+  <!-- [VST3-BRIDGE] 桥也要承载 VST3：复用 InsertHost 里的 Vst3Backend / Vst3Insert，
+       不再把 VST3 逻辑抄第二遍。x86 桥在运行时用不了 VST3（native 是 win-x64），
+       所以它不支持并不冲突 —— Vst3PluginHost.IsSupported 会回 false，HelloAck 只声明 vst2。 -->
+  <ItemGroup>
+    <ProjectReference Include="..\InsertHost\InsertHost.csproj" />
+  </ItemGroup>
+
+  <!-- 引用 InsertHost 的副作用：它把自己的 Native/win-x64/ownvst3.tlhost.dll 内容复制到
+       引用方的输出。x86 桥里这枚 64 位 dll 永远不会被加载（见上），留着只会让 32 位目录
+       多躺一个 3MB 的无用文件。构完 / 发完顺手删掉。 -->
+  <Target Name="RemoveUnusedVst3Native" AfterTargets="Build">
+    <Delete Files="$(OutDir)ownvst3.tlhost.dll" Condition="Exists('$(OutDir)ownvst3.tlhost.dll')" />
+  </Target>
+  <Target Name="RemoveUnusedVst3NativeOnPublish" AfterTargets="Publish">
+    <Delete Files="$(PublishDir)ownvst3.tlhost.dll" Condition="Exists('$(PublishDir)ownvst3.tlhost.dll')" />
+  </Target>
 
 </Project>

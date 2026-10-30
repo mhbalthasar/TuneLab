@@ -103,6 +103,9 @@ internal sealed class VstBridgeClient : IDisposable
     // 桥是否在跑（且管道还连着）。
     public bool IsRunning => mPipe?.IsConnected == true;
 
+    // 桥在 HelloAck 里自报能承载的格式（见 EnsureStartedAsync）。桥没起 / 旧桥 = null。
+    public string[]? BridgeFormats { get; private set; }
+
     // 桥里的槽位号（插件的装载位）。每个桥进程各有一套，从 1 开始。
     int mNextSlot;
 
@@ -240,6 +243,10 @@ internal sealed class VstBridgeClient : IDisposable
                 return false;
             }
 
+            // 桥自报能承载的格式（x64 桥含 vst3）。宿主据此决定要不要把 VST3 交给它隔离
+            // （VST3-BRIDGE.md §5.2）。旧桥不带这个字段 → 空数组 → 只当 vst2。
+            BridgeFormats = helloAck.Formats;
+
             return true;
         }
         catch (Exception)
@@ -251,8 +258,9 @@ internal sealed class VstBridgeClient : IDisposable
 
     // 加载插件并拿回它的元数据（名字/厂商/延迟/声道数）。
     // 返回 null = 管道断了 / 桥没起来；Ok=false = 插件自己拒绝（原因在 Reason）。
+    // format：PluginFormats.Vst2（缺省）/ Vst3。桥据此选宿主实现。
     public async Task<LoadPluginResultMessage?> TryLoadAsync(int slot, string pluginPath, double sampleRate,
-        int maxBlock, bool bypass, CancellationToken cancellation = default)
+        int maxBlock, bool bypass, CancellationToken cancellation = default, string format = PluginFormats.Vst2)
     {
         if (!IsRunning)
             return null;
@@ -261,6 +269,7 @@ internal sealed class VstBridgeClient : IDisposable
         {
             Slot = slot,
             Path = pluginPath,
+            Format = format,
             SampleRate = sampleRate,
             MaxBlock = maxBlock,
             Bypass = bypass,
@@ -453,8 +462,9 @@ internal sealed class VstBridgeClient : IDisposable
     public bool EnsureStartedBlocking()
         => RunBlocking(() => EnsureStartedAsync());
 
-    public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass)
-        => RunBlocking(() => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass));
+    public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass,
+        string format = PluginFormats.Vst2)
+        => RunBlocking(() => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format));
 
     public bool UnloadBlocking(int slot) => RunBlocking(() => TryUnloadAsync(slot));
 

@@ -28,12 +28,27 @@
     <RootNamespace>TuneLab.ExperimentalPatch.VstBridge</RootNamespace>
     <Version>2.1.1</Version>
 
+    <!-- CS0436：桥与 InsertHost 各自编译一份 BridgeProtocol（两端逐字节一致是硬要求）。
+         x64 桥引用 InsertHost 复用 VST3 宿主之后，同一个全名类型出现两次，关掉这条噪声。 -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+
     <!-- 源码在兄弟目录里：关掉默认通配，显式包含，免得多收一份 obj/。 -->
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="..\VstBridge\*.cs" />
+  </ItemGroup>
+
+  <!-- [VST3-BRIDGE] x64 桥承载 VST3：引用 InsertHost 复用 Vst3Backend / Vst3Insert。 -->
+  <ItemGroup>
+    <ProjectReference Include="..\InsertHost\InsertHost.csproj" />
+  </ItemGroup>
+
+  <!-- ownvst3 的 native 必须躺在桥 exe 旁边（Vst3Backend 从 AppContext.BaseDirectory 找）。 -->
+  <ItemGroup>
+    <None Include="..\InsertHost\Native\win-x64\ownvst3.tlhost.dll"
+          CopyToOutputDirectory="PreserveNewest" Link="ownvst3.tlhost.dll" />
   </ItemGroup>
 
 </Project>

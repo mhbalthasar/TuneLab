@@ -222,3 +222,38 @@ interface IVst3Insert : IMixInsert
 | GL 在桥里 | 复用 `OpenGlAvailability`；桥侧判 `needsOpenGl`，不够就退参数面板 |
 | 大 state | 现有 base64 帧上限 16 MB；ChowMultiTool 274 KB 已实测可过 |
 | 进程内回退变成静默降级 | 回退必须写日志 + 界面标示"未隔离" |
+
+## 9. 实现进度（随提交更新）
+
+**P1 桥侧（已完成，2026-10-30）**
+
+- 协议（`VstBridge/BridgeProtocol.cs`，两端各编译一份）：`LoadPluginMessage.Format`（缺省
+  `vst2`，旧客户端行为不变）、`LoadPluginResultMessage.NeedsOpenGl`、`ParameterInfo.DefaultValue`、
+  `OpenEditorResultMessage.WindowHandle`、`HelloAckMessage.Formats`。全部是**追加字段**，
+  所以 `ProtocolVersion` 暂时仍为 2 —— 旧桥能继续服务 VST2，新宿主也能读旧桥的回执。
+- 宿主抽象：`IBridgePluginHost`（`VstBridge/IBridgePluginHost.cs`），`PluginHost`（VST2）与
+  新增的 `Vst3PluginHost` 都实现它。
+- `Vst3PluginHost`（`VstBridge/Vst3PluginHost.cs`）：**复用 InsertHost 的 `Vst3Backend` /
+  `Vst3Insert`**，只做协议/共享环的搬运。加载 / 处理 / state / 参数全部可用；
+  音频按平面 ↔ 交织转换；侧链沿第 3/4 条平面重建。
+- `BridgeSession`：按 `format` 选宿主、记录 `slot → 宿主`，其余消息按槽位转发；
+  `HelloAck.Formats`：x64 桥声明 vst2+vst3，x86 桥只声明 vst2。
+- 工程：两个桥都引用了 `InsertHost`（复用 VST3 逻辑，不抄第二遍）；x64 桥把
+  `ownvst3.tlhost.dll` 复制到身边。x86 桥虽然也编译了 VST3 支持，但
+  `Vst3PluginHost.IsSupported` 在 32 位进程里为 false，不会误用。
+- 测试：`tests/TuneLab.Tests/BridgeProtocolFormatTests.cs` 钉住旧消息的缺省与各新字段的往返。
+
+**P1 宿主侧（未做）**
+
+设置开关、`IVst3Insert` / `Vst3BridgeInsert`、`Vst3Backend` 选桥 —— 即"真的把 VST3 交给桥"。
+在那之前宿主仍走进程内，线上行为与本次提交前完全一致。
+
+**P2（未做）**
+
+桥侧编辑器：独立 STA 线程 + Win32 消息循环，`OpenEditorResult.WindowHandle` 回传真实句柄。
+当前 `Vst3PluginHost.OpenEditor` 一律回 false（`HasEditor` 也回 false），宿主走参数面板。
+
+**已知杂物**
+
+（暂无：引用 `InsertHost` 会让 x86 桥输出多一份 x64 的 `ownvst3.tlhost.dll`，
+已在 `VstBridge.csproj` 用 `AfterTargets=Build/Publish` 删掉。）

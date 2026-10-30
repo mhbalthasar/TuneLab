@@ -17,7 +17,7 @@ using TuneLab.ExperimentalPatch.VstBridge;
 //
 // 【线程】本类只在桥的主线程用（管道的读写在同一个线程上）。
 // 没有"音频线程"这一说：宿主每块发一个请求，我们同步处理完再回。
-internal sealed class PluginHost
+internal sealed class PluginHost : IBridgePluginHost
 {
     // VST2 的 magic：AEffect 前 4 字节，用来校验"拿到的指针真的是 AEffect"。
     const int VstMagic = ('V' << 24) | ('s' << 16) | ('t' << 8) | 'P';
