@@ -28,12 +28,13 @@ public sealed class Vst3Backend : IInsertBackend
     // 不需要改代码（DESIGN.md §5.4）。
     public const string NativeBaseName = "ownvst3.tlhost";
 
-    // 文件名要与 vendored 包装层（OwnVST3.cs 的 GetNativeLibraryName）一致：
-    // Windows 是重命名过的 ownvst3.tlhost.dll，Linux/macOS 用上游的 libownvst3.*。
+    // 文件名要与 vendored 包装层（OwnVST3.cs 的 GetNativeLibraryName）一致：三个平台都加
+    // .tlhost 后缀（Linux/macOS 是 libownvst3.tlhost.so / .dylib）。我们按显式路径加载，
+    // 不依赖 soname / install name，所以改名安全，也避免和别人的 libownvst3.* 撞车。
     public static string NativeFileName =>
         OperatingSystem.IsWindows() ? NativeBaseName + ".dll" :
-        OperatingSystem.IsMacOS() ? "libownvst3.dylib" :
-        "libownvst3.so";
+        OperatingSystem.IsMacOS() ? "libownvst3.tlhost.dylib" :
+        "libownvst3.tlhost.so";
 
     // 运行时标识（与 .NET 的 RID 同名）：win-x64 / win-arm64 / win-x86 /
     // linux-x64 / linux-arm64 / osx-x64 / osx-arm64。

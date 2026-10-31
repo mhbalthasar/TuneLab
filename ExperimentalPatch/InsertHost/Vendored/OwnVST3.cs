@@ -22,13 +22,15 @@ namespace OwnVST3Host
         private bool _disposed = false;
 
         // Library name constants
-        // [TL-VENDOR-1] 原生 dll 全部加 .tlhost 后缀：我们的宿主是"装在别人进程里的"那一层，
-        // 上游（或另一个扩展）也可能带一份 ownvst3.dll。按文件名加载的原生库会互相顶掉，
+        // [TL-VENDOR-1] 原生库全部加 .tlhost 后缀：我们的宿主是"装在别人进程里的"那一层，
+        // 上游（或另一个扩展）也可能带一份 ownvst3。按文件名加载的原生库会互相顶掉，
         // 改个名字就各自一份（DESIGN.md §5.4 的"ALC + 改名"方案）。
-        // 只改 Windows：Linux/macOS 的 .so/.dylib 由扩展名决定 soname，改名反而更难找。
+        // Linux/macOS 同样改名。我们从不按 soname / install name 去"找"它：
+        // OwnVst3Wrapper 拿的是显式路径，NativeLibrary.Load 走 dlopen(绝对路径)，
+        // 文件名不必等于内部 soname，所以改名安全（见 Vendored/README.md）。
         private const string WindowsLibraryName = "ownvst3.tlhost.dll";
-        private const string LinuxLibraryName = "libownvst3.so";
-        private const string MacOSLibraryName = "libownvst3.dylib";
+        private const string LinuxLibraryName = "libownvst3.tlhost.so";
+        private const string MacOSLibraryName = "libownvst3.tlhost.dylib";
 
         // Planar scratch the plugin reads and writes, off the GC heap entirely. Pinning
         // the caller's float[] per block used to cost two GC handles per channel per

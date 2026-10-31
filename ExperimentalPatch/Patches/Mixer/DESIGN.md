@@ -1211,18 +1211,24 @@ master 节点就没有插入链，槽位永远没有实例。两条日常路径�
 - 编译器遇到重复 id 只跳过并记日志，**绝不让整张图失败**（一张图建不出来比丢一条 AUX 严重）；
 - `AudioGraph` 只在锁里拷一份结构快照，编译与换快照都在锁外。
 
-#### 5.7.14 多平台：与 vendored 包装层对齐（2026-10-21）
+#### 5.7.14 多平台：与 vendored 包装层对齐（2026-10-21；2026-10-31 改名口径改为三平台统一）
 
-`OwnVST3.cs` 里已经写好了三平台的文件名：Windows `ownvst3.tlhost.dll`、
-Linux `libownvst3.so`、macOS `libownvst3.dylib`。`Vst3Backend.NativeFileName` 现在与它
-**逐字一致**（之前 Linux/macOS 写成了 `ownvst3.tlhost.so`，永远找不到）。
+`OwnVST3.cs` 的三平台文件名常量现在**都**带 `.tlhost` 后缀：Windows
+`ownvst3.tlhost.dll`、Linux `libownvst3.tlhost.so`、macOS `libownvst3.tlhost.dylib`。
+`Vst3Backend.NativeFileName` 与它**逐字一致**。
+
+（历史：最初只给 Windows 改名，理由是 Linux 的 soname / macOS 的 install name
+"与文件名强绑定"。后来确认我们**从不按 soname 找它** —— `OwnVst3Wrapper` 收的是
+显式路径，`NativeLibrary.Load` 走 `dlopen(绝对路径)`，没有别的库 `DT_NEEDED` 指向它
+—— 于是三平台统一加后缀，免得别的扩展带的 `libownvst3.*` 与我们撞车。见 §5.4 与
+Vendored/README.md。）
 
 查找顺序（都在 `AppContext.BaseDirectory` 下）：同目录 → `runtimes/<rid>/native/`
 （NuGet 惯例）→ `native/<rid>/` → 环境变量 `TL_VST3_NATIVE`。
 
 `InsertHost.csproj` 的 RID 选择也不再写死 x64：`$(RuntimeIdentifier)` → SDK 给的
 `$(NETCoreSdkPortableRuntimeIdentifier)`（覆盖 win/linux/osx 的 x64 与 arm64）→ 平台兜底。
-往 `Native/<rid>/` 里放对应平台的二进制即可，不需要改代码。
+`Native/<rid>/` 里现在有 win-x64 / win-arm64 / linux-x64 / linux-arm64 / osx-x64 / osx-arm64 六份。
 
 **顺带**：VST2 的窗口开在桥进程里，`SetForegroundWindow` 会被 Windows 静默拒绝
 （只有前台进程或获它授权的进程才能抢前台），表现是"窗口开了但藏在宿主下面"。

@@ -326,7 +326,7 @@ public class InsertChainTests
         // 后端必须退化到"不可用 + 有原因"，而不是崩。
         var backend = new Vst3Backend();
 
-        if (File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, "ownvst3.tlhost.dll")))
+        if (File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, Vst3Backend.NativeFileName)))
         {
             Assert.True(backend.IsAvailable);
             return;

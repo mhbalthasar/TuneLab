@@ -364,7 +364,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 | 产物 | 现位置 | 说明 |
 |---|---|---|
 | 桥 exe | `bridge/<rid>/TuneLab.ExperimentalPatch.VstBridge[.x64].exe` | 每 RID 各发一份（现 `publish-bridges.ps1` 只发 win-x86/win-x64） |
-| VST3 native | `Native/<rid>/ownvst3.tlhost.<ext>`（`InsertHost.csproj` 按 `Vst3NativeRid` 拷贝） | 上游覆盖 win/linux/osx 的 x64 + arm64；x86 已放弃 |
+| VST3 native | `Native/<rid>/`：Windows `ownvst3.tlhost.dll`、Linux `libownvst3.tlhost.so`、macOS `libownvst3.tlhost.dylib`（`InsertHost.csproj` 按 `Vst3NativeRid` 拷贝） | 已 vendor 6 份：win-x64 / win-arm64 / linux-x64 / linux-arm64 / osx-x64 / osx-arm64（上游 `OwnAudioVst` 1.7.0 的 `runtimes/<rid>/native/`，三平台统一加 `.tlhost` 后缀）；x86 已放弃 |
 | 控制/共享段清理 | 运行时 | 见 §9.6 |
 
 接线要点（P5.1–P5.3 已完成）：
@@ -377,9 +377,11 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
   并接进 `build-artifacts.yml`：CI 每个 RID 的产物里都带 `bridge/<rid>/`；
 - `VstBridge.X64.csproj` 的 native 目录选择改为按目标 RID，并删掉 ProjectReference 带错的
   外来 native（InsertHost 作为 P2P 不带 RID，只看宿主 OS）。
-- **唯一尚缺的是 native 二进制本身**：仓库里只有 `Native/win-x64/`；`Native/linux-x64`、
-  `Native/osx-*` 尚未 vendored，所以 linux/osx 的桥目前只有"能隔离 VST2 之外的空壳" ——
-  要真正隔离 VST3 得先把上游 ownvst3 的对应平台库放进 `Native/<rid>/`（见 §9.9 表）。
+- native 二进制已全部 vendor 进 `Native/<rid>/`（6 份，三平台统一 `.tlhost` 后缀；见 §9.9 表）。
+  **但注意 glibc**：上游 `linux-x64` 的 `.so` 要求 `GLIBC_2.38`（Ubuntu 24.04 级别），
+  RHEL8/Anolis8 这种 glibc 2.28 的机器 `dlopen` 会因 `libm.so.6` 版本缺失而失败
+  （已实测；与改名**无关** —— 原来的 `libownvst3.so` 报同样的错）。真要在老发行版上用 Linux VST3，
+  得向上游要 manylinux 口径的构建，或自己按低 glibc 重编。
 
 ### 9.10 验证清单（每个 OS 各跑一遍）
 
@@ -558,9 +560,19 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 - 实测（Windows 上交叉发布）：`-r linux-x64` 产物**无** `ownvst3.tlhost.dll`（布局
   `bridge/linux-x64/<exe>`），`-r win-x64` 产物**带** `ownvst3.tlhost.dll`；x86 桥（win-x86）
   照旧无 native。脚本经 `Parser::ParseInput` 校验语法（仓库 .ps1 均为 UTF-8 无 BOM，只供 pwsh 跑）。
-- **未完成**：`Native/linux-x64`、`Native/osx-*` 的 native 二进制尚未 vendored（仓库只有
-  `Native/win-x64/ownvst3.tlhost.dll`）。所以 linux/osx 的桥现在能起、能隔离进程，但装不了
-  VST3 插件（`Vst3PluginHost.IsSupported` 回 false）。这是 **P5.4** 要解决的一块（另加 macOS 实机）。
+- **native 已补齐并三平台统一改名（2026-10-31 接续）**：从上游 `OwnAudioVst` 1.7.0 的
+  `runtimes/<rid>/native/` 取 6 份（win-x64 / win-arm64 / linux-x64 / linux-arm64 / osx-x64 /
+  osx-arm64），按 RID 放进 `Native/<rid>/`，并把 Linux/macOS 也统一加 `.tlhost` 后缀
+  （`libownvst3.tlhost.so` / `libownvst3.tlhost.dylib`）。`OwnVST3.cs` 的三个库名常量、
+  `Vst3Backend.NativeFileName`、`VstBridge.X64.csproj` 的 `Vst3NativeFileName` 全部对齐；测试里
+  硬编码 `ownvst3.tlhost.dll` 的地方改用 `Vst3Backend.NativeFileName`。改名安全性已实测：
+  显式路径 `dlopen` 不看内部 soname（原名与改名在同一台机器上报同样的错）。上游 MIT
+  `LICENSE.txt` + `THIRD_PARTY_NOTICES.md` 一并放在 `Native/` 旁边。
+  **遗留**：上游 linux-x64 需 `GLIBC_2.38`，Anolis8 / glibc 2.28 的验证机上装不了 VST3（见 §9.9）。
+- 验证：Windows 全量构建 + `TuneLab.Tests` **946/0**、legacy compat **13/0**（在 `git archive` 副本里跑，
+  绕开锁着的 TuneLab.exe）；Linux `TuneLab.Tests` **14 失败**（全是既有 platform/SKIP，基线 16，**未新增**，
+  反而因测试改用 `Vst3Backend.NativeFileName` 少了两条）；Windows 上交叉发布 `-r linux-x64` 的桥产物带
+  `libownvst3.tlhost.so`、无 Windows dll，`-r win-x64` 反之。
 - x86 桥仍固定 win-x86，非 Windows 不发（VST2 跨平台不在范围内）。
 
 **已知杂物**

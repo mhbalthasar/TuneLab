@@ -4,9 +4,10 @@
 
 [ModernMube/OwnAudioVST3](https://github.com/ModernMube/OwnAudioVST3) 的**托管层**（`OwnVST3Host/`），
 从上游 `main`（提交 `fbd478cba62c0f377294b5ed1be94983b394d6a3`）复制并降到 **net8.0**。
-我们随包分发它的 `OwnAudioVst` NuGet 1.7.0 里的原生 dll（见 `Native/`）。
+我们随包分发它的 `OwnAudioVst` NuGet 1.7.0 里的原生库，按 RID 放在 `Native/<rid>/`
+（win-x64 / win-arm64 / linux-x64 / linux-arm64 / osx-x64 / osx-arm64）。
 
-上游许可是 MIT，`LICENSE.txt` 一并带在 `Native/` 旁边。
+上游许可是 MIT：`LICENSE.txt` 与 `THIRD_PARTY_NOTICES.md` 一并带在 `Native/` 旁边。
 
 ## 为什么整份搬进来，而不是装 NuGet 包
 
@@ -20,34 +21,40 @@
 | 改动 | 位置 | 为什么 |
 |---|---|---|
 | `<TargetFramework>net10.0</TargetFramework>` → `net8.0` | 我们的 `InsertHost.csproj`（不在本目录） | 降级的本体 |
-| 原生库名加 `.tlhost` 后缀 | `OwnVST3.cs` 的 `WindowsLibraryName` | 见下 |
+| 原生库名加 `.tlhost` 后缀（三平台） | `OwnVST3.cs` 的三个 `*LibraryName` 常量 | 见下 |
 
 **没有别的改动。** 上游的 C# 代码在 net8 下原样编译通过（无兼容性修补）。
 
 ## `.tlhost` 后缀（重要）
 
-原生库以 `ownvst3.tlhost.dll` 的名字分发，而不是上游的 `ownvst3.dll`。
+原生库以 `ownvst3.tlhost.dll`（Linux `libownvst3.tlhost.so`、macOS
+`libownvst3.tlhost.dylib`）的名字分发，而不是上游的 `ownvst3.dll` /
+`libownvst3.so` / `libownvst3.dylib`。
 
 原因（DESIGN.md §5.4 的"ALC + 改名"方案）：将来可能有别的扩展也带一份
 VST3 宿主。两个原生库同名同时加载，Windows 按**文件名**解析 —— 第二份会
 被静默忽略，用第一份的代码。结果是"两个插件忽然行为一样"这种极难排查的问题。
 
 加一个后缀就让它们各自一份。代价：托管层里所有按原名加载的地方都要改
-（`WindowsLibraryName` 常量），以及它的 DllImportResolver 要认得新名字
+（三个 `*LibraryName` 常量），以及它的 DllImportResolver 要认得新名字
 （`Vst3Backend` 里装的 resolver）。
 
-`.so` / `.dylib` **不**加后缀：Linux 的 soname、macOS 的 install name 都与
-文件名强绑定，改了反而更难被加载器找到。TuneLab 目前只在 Windows 上分发
-这个桥，所以这条不影响任何人。
+Linux/macOS 也改名，而且是安全的：`OwnVst3Wrapper` 拿的是**显式路径**
+（`Vst3Backend.FindNativeLibrary` 算出来传进去），`NativeLibrary.Load` 走的是
+`dlopen(绝对路径)` —— 加载器按路径认人，不按内部 soname / install name，
+也不靠 `DT_NEEDED` 反查（没有别的库依赖这份 ownvst3）。所以文件名与内部
+soname 不一致没关系，改名只是让"别人的 libownvst3.*" 和我们各走各的。
 
 ## 升级步骤（上游发了新版怎么做）
 
 1. `git clone` 上游，看 `OwnVST3Host/` 的 diff。
 2. 把 `*.cs` 覆盖到本目录，然后：
-   - 确认 `OwnVST3.cs` 的 `WindowsLibraryName` **还是** `ownvst3.tlhost.dll`。
+   - 确认 `OwnVST3.cs` 的三个 `*LibraryName` **还是** `.tlhost` 名字
+     （`ownvst3.tlhost.dll` / `libownvst3.tlhost.so` / `libownvst3.tlhost.dylib`）。
    - 确认原生 dll 的导出表没变（`VST3Plugin_Create` / `_ProcessAudio` / `_Destroy` 等）。
      上游 `OwnVST3Juce/src/ownvst3.def` 就是导出清单，对着看。
-3. 换 `Native/win-x64/ownvst3.tlhost.dll`（从新版 NuGet 包里取，**改名**后再放）。
+3. 换 `Native/<rid>/` 下的原生库（从新版 NuGet 包 `runtimes/<rid>/native/` 里取，
+   按上面的名字**改名**后再放，每个 RID 各一份）。
 4. 跑 `tests/TuneLab.Tests` 的 `InsertChainTests` —— 它不用真插件也能验证
    "原生库缺失时优雅降级"这条路径。
 5. 真实插件验证：随便找一个 64 位 VST3，`VstNet8Probe` 式的冒烟（加载 → Initialize →
