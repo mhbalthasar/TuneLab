@@ -19,7 +19,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 过桥之后，超时（P4）一杀桥，宿主只是"这个插入旁通了"。
 //
 // 【实时纪律】与 Vst2Insert 相同：Process 里不分配、不加锁、不抛异常。
-public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IDisposable
+public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFailure, IDisposable
 {
     readonly IBridgeChannel mChannel;
     readonly int mSlotId;
@@ -86,6 +86,12 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IDisposable
     public (int Width, int Height)? EditorSize => null;
 
     public void SetBypassed(bool bypassed) => mBypassed = bypassed;
+
+    // [P4] 运行期音频挂起：插件在桥的 process 里卡死 → SendProcess 连续失败到阈值，
+    // 桥的音频路停用（见 VstBridgeClient.AudioStalled）。实例本身还活着（还能改旁通 /
+    // 移除），但插件已经不工作了 —— 界面据此把这一行标红。
+    public string? RuntimeFailureReason
+        => mChannel.AudioStalled ? IRuntimeInsertFailure.AudioStallReason : null;
 
     public void Process(Span<float> buffer, int offset, int count)
         => Process(buffer, offset, count, default);

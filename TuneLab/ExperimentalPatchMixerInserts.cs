@@ -186,14 +186,29 @@ internal sealed class InsertInstanceFactory
     }
 
     /// <summary>
-    /// 某个槽位最近一次建实例失败的原因；null = 正常（或还没编图）。
+    /// 某个槽位最近一次失败的原因；null = 正常（或还没编图）。
     /// 界面据此把那一行标红 + 把原因放进 tooltip。
+    ///
+    /// [P4] 两个来源合流：建实例失败（mFailures）优先；没有的话再看活着的实例是不是
+    /// 在运行期停了（音频挂起）。对界面来说都是"这一行坏了"，不必区分。
     /// </summary>
     public string? FailureOf(string slotId)
     {
         lock (mFailuresLock)
-            return mFailures.TryGetValue(slotId, out var reason) ? reason : null;
+            if (mFailures.TryGetValue(slotId, out var reason))
+                return reason;
+
+        if (mLive.TryGetValue(slotId, out var insert)
+            && insert is IRuntimeInsertFailure { RuntimeFailureReason: { Length: > 0 } runtime })
+            return runtime;
+
+        return null;
     }
+
+    // 单测用：把一个假实例塞进 mLive，覆盖"活实例后来在运行期停了"这条路径，
+    // 不必起真插件 / 真桥（与 Vst3BridgeInsert.CreateForTest 同一套纪律）。
+    internal void RegisterLiveForTest(string slotId, IMixInsert insert)
+        => mLive[slotId] = insert;
 
     /// <summary>把某个槽位的实例状态读出来（保存工程时调）。</summary>
     public byte[]? CaptureState(InsertSlot slot)
@@ -364,8 +379,8 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
 
     public string FormatName => slot.Format;
 
-    // [VST3-BRIDGE] 建实例失败时给界面一个可显示的原因（那一行标红 + tooltip）；
-    // null = 正常（或还没编图）。插件没装 / 隔离加载超时 / 桥崩都走这里。
+    // [VST3-BRIDGE] 给界面一个可显示的原因（那一行标红 + tooltip）；null = 正常（或还没编图）。
+    // 建实例失败（插件没装 / 隔离加载超时 / 桥崩）与**运行期音频挂起**（P4）都走这里。
     public string? FailureReason => factory.FailureOf(slot.Id);
 
     public bool IsBypassed

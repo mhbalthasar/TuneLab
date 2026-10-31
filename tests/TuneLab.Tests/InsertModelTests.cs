@@ -4,6 +4,8 @@ using System.Linq;
 using TuneLab.Audio;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.ExperimentalPatch.InsertHost;
+using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Extensions.Formats.TLP;
 using TuneLab.Foundation;
 using TuneLab.SDK;
@@ -159,6 +161,32 @@ public class InsertModelTests
         // 槽位被释放，失败标记跟着走。
         factory.Release(slot.Id);
         Assert.Null(factory.FailureOf(slot.Id));
+    }
+
+    // [P4] 一个"活着但运行期停了"的假插入：只实现 FailureOf 需要的那点面。
+    sealed class StalledInsert : IMixInsert, IRuntimeInsertFailure
+    {
+        public string Name => "stalled";
+        public bool IsBypassed => false;
+        public int LatencySamples => 0;
+        public string? RuntimeFailureReason => IRuntimeInsertFailure.AudioStallReason;
+        public void SetBypassed(bool bypassed) { }
+        public void Process(Span<float> buffer, int offset, int count) { }
+    }
+
+    // [P4] 建实例没失败，但活着的实例在运行期停了（音频挂起）：对界面是同一件事
+    // （这一行标红）。工厂把两个来源合流。
+    [Fact]
+    public void Factory_SurfacesRuntimeFailureFromTheLiveInsert()
+    {
+        var factory = new InsertInstanceFactory();
+        string slotId = "insert-runtime-" + Guid.NewGuid().ToString("N");
+
+        Assert.Null(factory.FailureOf(slotId));
+
+        factory.RegisterLiveForTest(slotId, new StalledInsert());
+
+        Assert.Equal(IRuntimeInsertFailure.AudioStallReason, factory.FailureOf(slotId));
     }
 
     // ── 契约层 ──

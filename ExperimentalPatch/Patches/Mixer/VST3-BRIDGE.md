@@ -439,7 +439,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 - **插槽标红**：`InsertInstanceFactory` 记每个槽位最近一次建实例失败的原因，
   经 `IMixerInsert.FailureReason`（DIM，默认 null）透传到 `FxPopupWindow`：
   那一行名字变红 + `⚠` 前缀，原因进 tooltip。加载超时 / 桥崩 / 插件没装都走这一条。
-  尚未覆盖"运行期音频挂起"（桥在 process 里卡死 → 音频直通、实例还活着，没标红）—— 留给 P4。
+  运行期音频挂起（桥在 process 里卡死 → 音频直通、实例还活着）见 P4 条目。
 - 验收状态：解决方案 / 两套测试全绿；两个桥重新发布。**尚未**在真机 + 真插件上跑通"经桥出声、
   state 存读"（需要开着 TuneLab 挂一个真 VST3），留待 P3 真机回归一起做。
 
@@ -468,6 +468,28 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 - 验收：解决方案 / 两套测试全绿（932）；两个桥重新发布（x64 带 native，x86 不带）。
   **仍需真机 + 真 VST3** 才能确认"插件窗口真的画出来、能交互、关窗后再开正常"
   —— 留在 P3 真机回归一起做。
+
+**P4 运行期挂起标红 + 挂起测试（已完成，2026-10-31）**
+
+- 判定抽成 `InsertHost/AudioStallWatch.cs`：连续失败到阈值（`FailureLimit=50`，约 1 秒）
+  判死、成功一块清零、杀桥复位。从 `VstBridgeClient` 里搬出来，于是"到第几块判死 /
+  复位"能脱离真桥单测。
+- 运行期失败面：`IBridgeChannel.AudioStalled`；新增 `IRuntimeInsertFailure`
+  （`RuntimeFailureReason`），`Vst2Insert` / `Vst3BridgeInsert` 都实现 —— 音频停用后
+  实例还活着（能改旁通 / 移除），但界面要把这一行标红。
+- 工厂合流：`InsertInstanceFactory.FailureOf` 先看建实例失败，再看活实例的运行期失败 ——
+  两个来源对界面是同一件事，界面侧（`IMixerInsert.FailureReason` / tooltip）一行不用改。
+  （单测经 `RegisterLiveForTest` 塞一个假实例，不起真插件。）
+- 浮窗实时刷新：`FxPopupWindow` 加一个 700ms 的 `DispatcherTimer`，只在"失败集合"
+  指纹变化时才重建整行 —— `RoutingChanged` 只在**成员**增删时响，捕不到运行期失败，
+  而重建会重建控件，不能每周期白做。
+- 测试：`AudioStallWatchTests`（阈值 / 成功清零 / 复位 / 锁存）、`Vst3BridgeInsertTests`
+  新增三条（活着为 null / 通道已停即标红 / 连续失败到阈值后标红 —— 后两条用真的判定器
+  接起来）、`InsertModelTests` 新增工厂合流一条。加载超时 → 杀桥的机制仍由 P1 的
+  `BridgeTimeoutTests` 钉住（挂起测试的宿主侧那一半）。
+- 验收状态：解决方案 / 两套测试全绿（941）；两个桥未改、无需重发。**仍需真机 + 真 VST3**
+  跑一次"插件卡在 process → 一秒内标红 + 音频直通、宿主不冻结"（与 P1/P2 一起留待 P3
+  真机回归）。
 
 **已知杂物**
 

@@ -16,7 +16,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 都只是桥进程重启，工程与界面不受影响。
 //
 // 【实时纪律】与 Vst3Insert 相同：Process 里不分配、不加锁、不抛异常。
-public sealed class Vst2Insert : IMixInsert, IDisposable
+public sealed class Vst2Insert : IMixInsert, IRuntimeInsertFailure, IDisposable
 {
     readonly VstBridgeClient mClient;
     readonly int mSlotId;
@@ -98,6 +98,12 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     // 桥进程的 stderr（最近几十行）。编辑器/加载失败时带上它，
     // 否则"bridge did not answer"这种话等于没说。
     public string? BridgeError => mClient.LastBridgeError;
+
+    // [P4] 运行期音频挂起：插件在桥的 process 里卡死 → 连续失败到阈值，桥的音频路停用
+    // （见 VstBridgeClient.AudioStalled）。实例本身还活着（还能改旁通 / 移除），但插件
+    // 已经不工作了 —— 界面据此把这一行标红。
+    public string? RuntimeFailureReason
+        => mClient.AudioStalled ? IRuntimeInsertFailure.AudioStallReason : null;
 
     public void Process(Span<float> buffer, int offset, int count)
         => Process(buffer, offset, count, default);

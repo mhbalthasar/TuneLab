@@ -31,6 +31,10 @@ internal interface IBridgeChannel
 
     bool SendProcess(int slot, float[][] inPlanes, float[][] outPlanes, int channels, int frames, bool bypass);
 
+    // [P4] 桥的音频路是否已停用（连续失败过多，见 AudioStallWatch）。真实的 VstBridgeClient
+    // 会在一秒左右判死；宿主据此把这一个插入标红（运行期挂起，不是建实例失败）。
+    bool AudioStalled { get; }
+
     byte[]? GetStateBlocking(int slot);
 
     bool SetStateBlocking(int slot, byte[] data);

@@ -19,6 +19,15 @@ public class Vst3BridgeInsertTests
         public void ClearBridgeError() { }
         public string[]? BridgeFormats { get; set; } = [PluginFormats.Vst2, PluginFormats.Vst3];
 
+        // [P4] 音频路状态。两条驱动途径：
+        //   · StallAudio：SendProcess 一律失败，用**真的** AudioStallWatch 判死 ——
+        //     把"连续失败 → 判死 → 插入标红"整条接起来（阈值语义见 AudioStallWatchTests）；
+        //   · AudioStalledOverride：直接置位，覆盖"通道已停"这条读路径。
+        public bool StallAudio { get; set; }
+        public bool AudioStalledOverride { get; set; }
+        readonly AudioStallWatch mStall = new();
+        public bool AudioStalled => AudioStalledOverride || mStall.Stalled;
+
         public bool EnsureStartedBlocking() => true;
 
         int mNextSlot = 1;
@@ -48,6 +57,13 @@ public class Vst3BridgeInsertTests
             LastChannels = channels;
             LastFrames = frames;
             LastBypass = bypass;
+
+            // [P4] 模拟插件在 process 里卡住：这一块与之后每一块都直通。
+            if (StallAudio)
+            {
+                mStall.ReportFailure();
+                return false;
+            }
 
             if (ProcessImpl != null)
             {
@@ -192,6 +208,7 @@ public class Vst3BridgeInsertTests
         public string? LastBridgeError => null;
         public void ClearBridgeError() { }
         public string[]? BridgeFormats => [PluginFormats.Vst3];
+        public bool AudioStalled => false;
         public bool EnsureStartedBlocking() => true;
         public int AllocateSlot() => 1;
         public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock,
@@ -324,5 +341,42 @@ public class Vst3BridgeInsertTests
         Assert.Equal(0, Make(new FakeChannel(), inputChannels: 2).SidechainChannels);
         Assert.Equal(1, Make(new FakeChannel(), inputChannels: 3).SidechainChannels);
         Assert.Equal(2, Make(new FakeChannel(), inputChannels: 4).SidechainChannels);
+    }
+
+    // ── [P4] 运行期音频挂起：实例还活着，但音频路停了，界面要能把这一行标红 ──
+
+    [Fact]
+    public void RuntimeFailure_IsNullWhileTheBridgeIsAlive()
+    {
+        Assert.Null(Make(new FakeChannel()).RuntimeFailureReason);
+    }
+
+    [Fact]
+    public void RuntimeFailure_AppearsWhenTheAudioPathStalls()
+    {
+        // 桥在 process 里卡死 → VstBridgeClient 连续失败到阈值后置 AudioStalled（见下一条）。
+        var insert = Make(new FakeChannel { AudioStalledOverride = true });
+
+        Assert.Equal(IRuntimeInsertFailure.AudioStallReason, insert.RuntimeFailureReason);
+    }
+
+    [Fact]
+    public void RuntimeFailure_AppearsAfterEnoughFailedBlocks()
+    {
+        // 把"通道连续失败 → 判死 → 插入标红"整条接起来：条数用真的阈值，
+        // 阈值本身的边界归 AudioStallWatchTests。
+        var channel = new FakeChannel { StallAudio = true };
+        var insert = Make(channel);
+
+        var buffer = new float[] { 1, 2, 3, 4 };
+
+        for (int i = 0; i < AudioStallWatch.FailureLimit - 1; i++)
+            insert.Process(buffer, 0, 2);
+
+        Assert.Null(insert.RuntimeFailureReason);   // 还差一块，没判死
+
+        insert.Process(buffer, 0, 2);
+
+        Assert.Equal(IRuntimeInsertFailure.AudioStallReason, insert.RuntimeFailureReason);
     }
 }

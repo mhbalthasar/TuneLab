@@ -8,6 +8,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
 using TuneLab.ExperimentalPatch.UI;
@@ -35,6 +36,12 @@ public sealed class FxPopupWindow : Window
     readonly StackPanel mRows = new() { Spacing = 4 };
     readonly TextBlock mEmpty = new();
 
+    // [P4] 运行期失败（音频挂起）异步于界面发生：插件的音频路可能在浮窗**正开着**时
+    // 停掉。RoutingChanged 只在成员增删时响，靠它刷新不到 —— 用一个低频定时器轮询
+    // "失败集合"，只在真的变了才重建整行（重建会重建控件，不能每周期白做一次）。
+    readonly DispatcherTimer mFailureTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
+    string mFailureSignature = string.Empty;
+
     public FxPopupWindow(IMixerChannel channel, IReadOnlyList<IMixerInsertFormat> formats,
         IReadOnlyList<IMixerChannel> channels, IHostServices host, bool canAdd = true)
     {
@@ -58,6 +65,9 @@ public sealed class FxPopupWindow : Window
         mChannel.RoutingChanged += Rebuild;
 
         Rebuild();
+
+        // [P4] 轮询运行期失败：见 mFailureTimer 的注释。窗口打开时启动、关闭时停。
+        mFailureTimer.Tick += (_, _) => RefreshFailures();
     }
 
     Control BuildContent()
@@ -282,6 +292,29 @@ public sealed class FxPopupWindow : Window
         mEmpty.Text = L("还没有插入效果", "No inserts yet");
         mEmpty.IsVisible = mChannel.Inserts.Count == 0;
         mRows.IsVisible = mChannel.Inserts.Count > 0;
+
+        mFailureSignature = FailureSignature();
+    }
+
+    // 失败集合的指纹：名字 + 原因。任一插入的失败态变了，指纹就变。
+    string FailureSignature()
+    {
+        var parts = new List<string>();
+
+        foreach (var insert in mChannel.Inserts)
+            if (insert.FailureReason is { Length: > 0 } reason)
+                parts.Add(insert.Name + "\u001f" + reason);
+
+        return string.Join("\u001e", parts);
+    }
+
+    // 定时器回调：失败集合变了才重建整行（正常时一次都不重建）。
+    void RefreshFailures()
+    {
+        if (FailureSignature() == mFailureSignature)
+            return;
+
+        Rebuild();
     }
 
     // 「界面」键的右键菜单：插件自己的 GUI，或者由 TuneLab 接管画参数。
@@ -679,9 +712,16 @@ public sealed class FxPopupWindow : Window
         return percent + "%";
     }
 
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+        mFailureTimer.Start();
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         base.OnClosed(e);
+        mFailureTimer.Stop();
         mChannel.RoutingChanged -= Rebuild;
     }
 

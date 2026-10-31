@@ -605,7 +605,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     public bool SendProcess(int slot, float[][] inPlanes, float[][] outPlanes, int channels, int frames, bool bypass)
     {
         // 桥已经确定赶不上了：直接直通，不再每块白等 20ms（见 FailAudioBlock）。
-        if (mAudioStalled)
+        if (mAudioStall.Stalled)
             return false;
 
         if (mInput == null || mOutput == null)
@@ -646,7 +646,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
                 for (int ch = 0; ch < Math.Min(channels, outChannels); ch++)
                     Array.Copy(planes[ch], outPlanes[ch], Math.Min(frames, outFrames));
 
-                mAudioFailures = 0;
+                mAudioStall.ReportSuccess();
                 return true;
             }
             finally
@@ -667,20 +667,16 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 停掉之后旁通/移除这个效果器即可，混音台其余部分照常。
     bool FailAudioBlock()
     {
-        if (++mAudioFailures >= AudioFailureLimit)
-            mAudioStalled = true;
-
+        mAudioStall.ReportFailure();
         return false;
     }
 
-    volatile bool mAudioStalled;
-    int mAudioFailures;
+    // [P4] 连续失败到阈值就停用音频路。判定抽成 AudioStallWatch：它能给计数喂失败、
+    // 脱离真桥单测"到第几块判死 / 杀桥后复位"；这里只负责把一次块失败喂进去。
+    readonly AudioStallWatch mAudioStall = new();
 
-    // 连续多少块失败就认定桥赶不上了：20ms/块 × 50 ≈ 连续 1 秒都拿不到结果。
-    const int AudioFailureLimit = 50;
-
-    /// <summary>桥的音频路是否已停用（连续失败过多）。宿主可据此提示用户。</summary>
-    public bool AudioStalled => mAudioStalled;
+    /// <summary>桥的音频路是否已停用（连续失败过多）。宿主据此把这一个插入标红。</summary>
+    public bool AudioStalled => mAudioStall.Stalled;
 
     /// <summary>宿主主动关闭桥（例如关闭混音台窗口）。</summary>
     public void KillBridge()
@@ -716,10 +712,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         mOutput = null;
 
         // 音频路的失败计数也清零：桥是新的，之前那串"赶不上"不能算到它头上。
-        // （不清的话，一次超时杀桥之后 mAudioStalled 会一直为 true —— 桥重启了、
+        // （不清的话，一次超时杀桥之后停滞态会一直为 true —— 桥重启了、
         //  插件也重新装上了，音频却还是永远直通。）
-        mAudioFailures = 0;
-        mAudioStalled = false;
+        mAudioStall.Reset();
     }
 
     public void Dispose()
