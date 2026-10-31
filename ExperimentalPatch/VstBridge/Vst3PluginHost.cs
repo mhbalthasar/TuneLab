@@ -29,11 +29,12 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
     SharedAudioRing? mOut;
     Vst3Backend? mBackend;
 
-    // native 库与 Vst3Backend 的查找规则一致：exe 同目录的 ownvst3.tlhost.dll。
-    // 只读文件是否存在，不加载 —— 探测本身不该有任何副作用。
+    // native 库与 Vst3Backend 的查找规则一致：exe 同目录的 native 文件（Vst3Backend.NativeFileName
+    // 按平台给 .dll / .so / .dylib）。只读文件是否存在，不加载 —— 探测本身不该有任何副作用。
+    // [P5.1] 平台闸门放开到所有 64 位：非 Windows 的桥同样能承载 VST3（native 就位时）。
     static string? FindNativeLibrary()
     {
-        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
+        if (!Environment.Is64BitProcess)
             return null;
 
         string beside = Path.Combine(AppContext.BaseDirectory, Vst3Backend.NativeFileName);

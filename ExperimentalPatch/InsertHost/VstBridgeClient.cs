@@ -26,13 +26,17 @@ using TuneLab.ExperimentalPatch.VstBridge;
 // —— 见 SendProcess 的说明。
 internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 {
-    // 桥的可执行文件名。两个位数各一份（同名会让部署时互相覆盖）。
-    const string BridgeExecutableName32 = "TuneLab.ExperimentalPatch.VstBridge.exe";
-    const string BridgeExecutableName64 = "TuneLab.ExperimentalPatch.VstBridge.x64.exe";
+    // 桥的可执行文件名（不含扩展名，扩展名按平台补）。两个位数各一份（同名会让部署时互相覆盖）。
+    const string BridgeAssemblyName32 = "TuneLab.ExperimentalPatch.VstBridge";
+    const string BridgeAssemblyName64 = "TuneLab.ExperimentalPatch.VstBridge.x64";
 
     Process? mProcess;
     JobHandle? mJob;
     NamedPipeClientStream? mPipe;
+
+    // [P5.1] Unix 专用：宿主持有的"存活管道"写端。进程一死它被内核回收 → 桥的看门狗读到
+    // EOF 并带走自己的进程组。Windows 上为 null（走 JobObject，见 §9.4）。
+    AnonymousPipeServerStream? mLiveness;
 
     // 音频数据的通路（与 mPipe 分工：管道只走"指令"，音频走这两段共享内存）。
     SharedAudioRing? mInput;    // 宿主 → 桥
@@ -114,6 +118,14 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 桥是否在跑（且管道还连着）。
     public bool IsRunning => mPipe?.IsConnected == true;
 
+    // [P5.1] 单测用：当前桥进程的 PID（没起 / 已退出 = null）。验证"自成进程组 / 被杀掉"。
+    internal int? BridgeProcessIdForTest =>
+        mProcess is { HasExited: false } process ? process.Id : null;
+
+    // [P5.1] 单测用：只放掉存活管道的写端（不杀桥），模拟"宿主进程死掉、写端被回收"。
+    // 正常的宿主死亡路径就是这一件事：进程没了 → 写端被内核关掉 → 桥的看门狗读到 EOF。
+    internal void CloseLivenessForTest() => mLiveness?.Dispose();
+
     // 桥在 HelloAck 里自报能承载的格式（见 EnsureStartedAsync）。桥没起 / 旧桥 = null。
     public string[]? BridgeFormats { get; private set; }
 
@@ -135,14 +147,21 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
         // ── 1. 先建作业：必须在启动子进程**之前**，
         //    否则"我们崩在启动与加入之间"的那一瞬，桥就成孤儿了。
-        mJob ??= JobHandle.Create();
-        if (mJob == null)
-            return false;
+        //    [P5.1] 作业是 Windows 的孤儿防线；Unix 用存活管道 + 进程组（见下），不建作业。
+        if (OperatingSystem.IsWindows())
+        {
+            mJob ??= JobHandle.Create();
+            if (mJob == null)
+                return false;
+        }
 
         // ── 2. 找桥的可执行文件。就在我们自己的 exe 旁边（一起发布）。
         string? bridge = FindBridgeExecutable(mBitness);
         if (bridge == null)
+        {
+            LastStartError = $"no bridge executable for rid {BridgeRid(mBitness)} beside {AppContext.BaseDirectory}";
             return false;
+        }
 
         // ── 3. 启动。把作业句柄与管道名递给它。
         //     管道名带位数：两个桥可以同时活着，不能撞。
@@ -164,18 +183,39 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             mInput = SharedAudioRing.Create(inName, null);
             mOutput = SharedAudioRing.Create(outName, pipeName + ".ready");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             mInput = null;
             mOutput = null;
+            LastStartError = "creating the shared audio rings failed: " + ex.Message;
             return false;
+        }
+
+        // [P5.1] Unix：开一根存活管道。写端留在宿主这边，读端（fd）交给桥 —— 宿主怎么死，
+        // 写端都被内核回收，桥的看门狗读到 EOF 就会带走自己的进程组（§9.4）。
+        string livenessArg = string.Empty;
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                mLiveness?.Dispose();
+                mLiveness = new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.Inheritable);
+                livenessArg = " --liveness " + mLiveness.GetClientHandleAsString();
+            }
+            catch (Exception ex)
+            {
+                mLiveness?.Dispose();
+                mLiveness = null;
+                LastStartError = "creating the liveness pipe failed: " + ex.Message;
+                return false;
+            }
         }
 
         var start = new ProcessStartInfo
         {
             FileName = bridge,
             // 桥是我们启动的私有实例，不共用一个固定的管道名 —— 两个 TuneLab 同时开会撞。
-            Arguments = $"--pipe {pipeName}",
+            Arguments = $"--pipe {pipeName}{livenessArg}",
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
@@ -187,7 +227,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
         mProcess = Process.Start(start);
         if (mProcess == null)
+        {
+            LastStartError = "Process.Start returned no process for the bridge";
             return false;
+        }
 
         // 立刻把它收进作业。作业句柄不能靠命令行递给子进程（那是进程本地的句柄），
         // 只能由我们在自己这边拿到子进程句柄再加进去。
@@ -195,7 +238,8 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         // 【那一小段竞争】"启动 → 加入"之间我们若崩，桥就成了孤儿。窗口是微秒级，
         // 而且是**我们崩**这种已经很难看的情形；比起"句柄传递处处不生效"，
         // 这个取舍划算。加入失败就把刚起的进程杀掉，绝不留一个游离的桥。
-        if (mJob == null || !mJob.Assign(mProcess))
+        // [P5.1] 只在 Windows 收作业；Unix 的孤儿防线是存活管道（桥侧看门狗），无需这一步。
+        if (OperatingSystem.IsWindows() && (mJob == null || !mJob.Assign(mProcess)))
         {
             KillBridge();
             LastStartError = $"assigning the bridge to the job object failed ({Marshal.GetLastWin32Error()})";
@@ -691,6 +735,30 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
         mPipe = null;
 
+        // [P5.1] Unix：先放掉存活管道的写端 —— 桥的看门狗一读到 EOF 就会带走自己的进程组
+        // （主动关桥时的"协作式"退出路径）。再显式按进程组 SIGKILL 兜底：桥可能还没跑到
+        // 装看门狗那一步，或者看门狗本身也卡住了。
+        try
+        {
+            mLiveness?.Dispose();
+        }
+        catch (Exception)
+        {
+        }
+
+        mLiveness = null;
+
+        if (!OperatingSystem.IsWindows() && mProcess is { HasExited: false } unixBridge)
+        {
+            try
+            {
+                UnixProcess.KillProcessGroup(unixBridge.Id);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
         if (mProcess is { HasExited: false })
         {
             try
@@ -732,10 +800,39 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
     // ── 内部 ──
 
+    // [P5.3] 当前平台 + 位数对应的桥 RID。
+    // Windows：win-x86 / win-x64（VST2 是双位数）。Unix：只有 64 位（VST2 是 Windows-only，
+    // VST3 锁 64 位，见 VST3-BRIDGE.md §9.1）——32 位在非 Windows 没有产物，返回 null。
+    static string? BridgeRid(int bitness)
+    {
+        if (OperatingSystem.IsWindows())
+            return bitness == 32 ? "win-x86" : "win-x64";
+
+        if (bitness == 32)
+            return null;
+
+        bool arm = RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
+
+        if (OperatingSystem.IsMacOS())
+            return arm ? "osx-arm64" : "osx-x64";
+
+        return arm ? "linux-arm64" : "linux-x64";
+    }
+
+    // [P5.3] 可执行文件名：Windows 带 .exe，Unix 的 apphost 不带扩展名。
+    static string BridgeExecutableName(int bitness)
+    {
+        string stem = bitness == 32 ? BridgeAssemblyName32 : BridgeAssemblyName64;
+        return OperatingSystem.IsWindows() ? stem + ".exe" : stem;
+    }
+
     static string? FindBridgeExecutable(int bitness)
     {
-        string name = bitness == 64 ? BridgeExecutableName64 : BridgeExecutableName32;
-        string rid = bitness == 64 ? "win-x64" : "win-x86";
+        string? rid = BridgeRid(bitness);
+        if (rid == null)
+            return null;
+
+        string name = BridgeExecutableName(bitness);
 
         string baseDirectory = AppContext.BaseDirectory;
 

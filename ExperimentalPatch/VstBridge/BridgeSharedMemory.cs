@@ -1,8 +1,8 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using System.Threading;
 
 namespace TuneLab.ExperimentalPatch.VstBridge;
@@ -105,6 +105,10 @@ public sealed unsafe class SharedAudioRing : IDisposable
 
     readonly EventWaitHandle? mDataAvailable;
 
+    // [P5.1] Unix：共享内存用的是宿主私有目录里的一个文件（.NET 不支持命名映射）。
+    // 这个字段非空 = 本实例是"创建者"，Dispose 时负责删掉那个文件（P5.2 的显式清理）。
+    readonly string? mOwnedSectionPath;
+
     public bool HasGate => mDataAvailable != null;
 
     // 诊断用。宿主侧把它暴露给界面（"插件卡住"要看得见），桥侧写日志。
@@ -114,10 +118,11 @@ public sealed unsafe class SharedAudioRing : IDisposable
 
     public long TimedOutWrites { get; private set; }
 
-    SharedAudioRing(MemoryMappedFile section, EventWaitHandle? gate)
+    SharedAudioRing(MemoryMappedFile section, EventWaitHandle? gate, string? ownedSectionPath)
     {
         mSection = section;
         mDataAvailable = gate;
+        mOwnedSectionPath = ownedSectionPath;
 
         mAccessor = section.CreateViewAccessor(0, SharedAudioLayout.SectionBytes, MemoryMappedFileAccess.ReadWrite);
 
@@ -128,33 +133,73 @@ public sealed unsafe class SharedAudioRing : IDisposable
         mBlocks = pointer + sizeof(SectionHeader);
     }
 
+    // Unix 上命名共享内存不可用（MemoryMappedFile.CreateNew(name) 直接抛
+    // "Named maps are not supported."）。设计稿 §9.3 因此定的是**宿主私有目录里的文件**：
+    // 两端只交换段名，各自映射到同一个路径；创建者 Dispose 时删文件（显式清理）。
+    static string UnixSectionPath(string sectionName)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "tunelab-vstbridge");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, sectionName);
+    }
+
     /// <summary>创建一段共享内存（生产者所在的那一端）。</summary>
-    [SupportedOSPlatform("windows")]
+    // [P5.1] 去掉 [SupportedOSPlatform("windows")]：Windows 用命名段，Unix 用文件承载。
     public static SharedAudioRing Create(string sectionName, string? gateName)
     {
-        // 容量对两端必须一致：从同一份源码编译出来的常量，这里断言一次。
-        var section = MemoryMappedFile.CreateNew(sectionName, SharedAudioLayout.SectionBytes);
+        // 容量对两端必须一致：从同一份源码编译出来的常量。
+        MemoryMappedFile section;
+        string? ownedPath = null;
+
+        if (OperatingSystem.IsWindows())
+        {
+            section = MemoryMappedFile.CreateNew(sectionName, SharedAudioLayout.SectionBytes);
+        }
+        else
+        {
+            ownedPath = UnixSectionPath(sectionName);
+
+            // FileMode.Create 截断重建：上一次崩溃可能留下同名文件，里面是旧序号。
+            using (var file = new FileStream(ownedPath, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite))
+                file.SetLength(SharedAudioLayout.SectionBytes);
+
+            section = MemoryMappedFile.CreateFromFile(ownedPath, FileMode.Open, null,
+                SharedAudioLayout.SectionBytes, MemoryMappedFileAccess.ReadWrite);
+        }
 
         // gate 用 ManualReset（不是 AutoReset）：见 WaitUntil 的注释。
         // 发布后 Set，消费者确认数据到位后 Reset。
-        var gate = gateName == null
-            ? null
-            : new EventWaitHandle(true, EventResetMode.ManualReset, gateName);
+        var gate = gateName == null ? null : CreateOrOpenGate(gateName, create: true);
 
-        return new SharedAudioRing(section, gate);
+        return new SharedAudioRing(section, gate, ownedPath);
+    }
+
+    // [P5.1] Unix 没有可用的**命名**同步原语（.NET 的命名 EventWaitHandle 在 Unix 上直接抛
+    // "The named version of this synchronization primitive is not supported on this platform."）。
+    // 这一版先不装 gate：消费者退化成自旋 + Yield（WaitUntil 的既有兜底）——正确，只是
+    // b2h 那条实时路会多烧一点 CPU。eventfd / POSIX 信号量门铃留待 P5.4（设计稿 §9.7 的可选项）。
+    static EventWaitHandle? CreateOrOpenGate(string gateName, bool create)
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+
+        return create
+            ? new EventWaitHandle(true, EventResetMode.ManualReset, gateName)
+            : EventWaitHandle.OpenExisting(gateName);
     }
 
     /// <summary>打开一段已存在的共享内存（消费者/另一端）。</summary>
-    [SupportedOSPlatform("windows")]
+    // [P5.1] 同 Create：Unix 上也受支持（按路径打开同一个文件）。
     public static SharedAudioRing Open(string sectionName, string? gateName)
     {
-        var section = MemoryMappedFile.OpenExisting(sectionName);
+        var section = OperatingSystem.IsWindows()
+            ? MemoryMappedFile.OpenExisting(sectionName)
+            : MemoryMappedFile.CreateFromFile(UnixSectionPath(sectionName), FileMode.Open, null,
+                SharedAudioLayout.SectionBytes, MemoryMappedFileAccess.ReadWrite);
 
-        var gate = gateName == null
-            ? null
-            : EventWaitHandle.OpenExisting(gateName);
+        var gate = gateName == null ? null : CreateOrOpenGate(gateName, create: false);
 
-        return new SharedAudioRing(section, gate);
+        return new SharedAudioRing(section, gate, null);
     }
 
     // ── 生产者侧 ──
@@ -390,5 +435,18 @@ public sealed unsafe class SharedAudioRing : IDisposable
         mAccessor.Dispose();
         mSection.Dispose();
         mDataAvailable?.Dispose();
+
+        // [P5.1] 创建者负责删掉 Unix 的承载文件（已映射的 inode 在所有句柄关闭后才真正释放，
+        // 所以这里删了也不影响另一端还在读的映射）。
+        if (mOwnedSectionPath is { Length: > 0 } path)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception)
+            {
+            }
+        }
     }
 }

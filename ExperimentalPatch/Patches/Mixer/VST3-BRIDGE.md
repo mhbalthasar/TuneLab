@@ -311,12 +311,15 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 ### 9.6 保证 3：共享内存 / 临时文件不残留
 
 - Windows：命名段最后一个句柄关闭即自动消失，天然无残留。
-- **Unix：命名 `MemoryMappedFile` 与命名 `EventWaitHandle` 在 .NET 上都是"temp 目录里一个文件"**。
-  桥被 SIGKILL 时它没机会自己删。规矩反过来定：
-  - **宿主是共享段与命名事件的 owner**（本来就是：`EnsureStartedAsync` 里宿主先 `Create`，
-    桥只 `Open`）；
-  - 宿主释放时**显式删底层文件**；控制用的 UDS socket 文件同样要删；
-  - 再加**启动清扫**：扫 temp 里匹配桥前缀、且对应 PID 已死的残留，删掉。
+- **Unix 实测修正（P5.1，2026-10-31）**：.NET 在 Unix 上**既不支持命名 `MemoryMappedFile`**
+  （`CreateNew(name)` 直接抛 "Named maps are not supported."），**也不支持命名 `EventWaitHandle`**
+  （抛 "The named version of this synchronization primitive is not supported on this platform."）。
+  设计稿原以为它们都是"temp 目录里一个文件"。实际做法：
+  - 共享段改用**宿主私有目录里的文件**（`Path.GetTempPath()/tunelab-vstbridge/<段名>`），两端交换
+    段名、各自映射到同一路径；创建者（宿主）`Dispose` 时显式删文件。
+  - **gate 在 Unix 上先不装**：消费者退化成自旋 + `Thread.Yield()`（`WaitUntil` 既有兜底）——
+    正确，只是 b2h 那条实时路多烧一点 CPU。真正的 eventfd / 自管道门铃留待 §9.7 的后续项。
+  - 控制用的 UDS socket 文件、以及上面的段文件，启动清扫兜底（见上一条的后半）。
 - **Linux 可选的更干净方案**：`memfd_create` + 通过控制 socket `SCM_RIGHTS` 传 fd —— 匿名内存、
   进程死即回收、零残留、零竞态。但 **macOS 没有 memfd**，所以跨平台保底仍是
   "temp 文件 + 显式 unlink + 启动清扫"。
@@ -325,9 +328,12 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 
 - **音频路径完全不变**：还是 `SharedAudioRing` 那段共享内存无锁环。`Volatile` 在 ARM64 上正确
   发屏障（该文件注释已确认），x64/arm64 都零额外拷贝、零 IPC。**没有效率损失。**
-- 唯一要盯的是 **gate 的唤醒**：Unix 上命名 `EventWaitHandle` 是文件支撑的，比 Windows 命名事件慢一档。
-  若实测有影响，换成**自管道写一个字节 / `eventfd`（Linux）/ `kqueue`（macOS）**即可 ——
+- **gate 的唤醒（Unix）**：命名 `EventWaitHandle` 在 .NET 的 Unix 上**不可用**（见 §9.6 实测修正），
+  故 P5.1 版先退化成自旋；好在这条只有 b2h（桥→宿主）用 gate，h2b 本就纯自旋，影响面有限。
+  若实测 CPU 有影响，换成**自管道写一个字节 / `eventfd`（Linux）**即可 ——
   本质都是"发布时给消费端一个可睡眠的唤醒"，开销可忽略。
+- **A2 `prctl` 本版没做**（见 §9.4 的创建线程语义坑）：先只上 A1（存活管道）——它是全平台保底，
+  且已实测生效（`BridgeIsolationTests.BridgeDiesWhenTheLivenessPipeCloses`）。
 - b2h（桥→宿主）那条才用 gate；h2b 本就是纯自旋，影响面很小。
 
 ### 9.8 与 Windows 的差异（诚实版）
@@ -365,17 +371,19 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 
 ### 9.10 验证清单（每个 OS 各跑一遍）
 
-1. 故意卡死的假插件 / 假后端 → 宿主超时杀桥、标红；**断言桥进程与孙进程都没了**。
-2. 宿主被 `SIGKILL`（Unix）/ 任务管理器结束（Windows）→ **断言桥随之消失**。
-3. 桥被 `SIGKILL` → 宿主存活、标红、重建；**断言无 temp 残留**（启动清扫也能兜住）。
-4. 音频正确性回归：`SharedAudioRingTests` 跨平台跑一遍。
-5. ARM64 内存序回归：`Volatile` 在 ARM64 上的行为。
+| # | 项 | 状态（P5.1，Linux x64） |
+|---|---|---|
+| 1 | 卡死的假插件 / 假后端 → 宿主超时杀桥、标红；断言桥进程与孙进程都没了 | ✅ 宿主侧 `KillBridge` 按进程组 SIGKILL（`BridgeIsolationTests.KillBridgeRemovesTheProcess`）；超时→杀桥机制见 P4 的 `BridgeTimeoutTests`。孙进程随进程组一起走 |
+| 2 | 宿主被 SIGKILL → 桥随之消失 | ✅ `BridgeIsolationTests.BridgeDiesWhenTheLivenessPipeCloses`：关掉存活管道写端 == 宿主死亡的等价事件（内核回收写端正是 SIGKILL 的效果，且实测证明桥没有继承到写端） |
+| 3 | 桥被 SIGKILL → 宿主存活、标红、重建；断言无残留 | ✅ 宿主存活由既有直通/超时兜底；进程组与 `BridgeProcessIdForTest` 已就位。残留清扫归 P5.2 |
+| 4 | 音频正确性回归：`SharedAudioRingTests` 跨平台跑一遍 | ✅ Linux 上全绿（含在 66 条 focused 里） |
+| 5 | ARM64 内存序回归 | ⏳ 待 ARM64 机器 |
 
 ### 9.11 阶段划分（P5）
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| P5.1 | 存活管道 + 看门狗线程 + 进程组（**先 Linux x64**，含 `prctl` 加速） | 清单 §9.10 的 1–4，Linux x64 全过 |
+| P5.1 | ✅ 存活管道 + 看门狗线程 + 进程组（先 Linux x64；**`prctl` 缓做**，见 §9.4/§9.7） | 清单 §9.10 的 1–4，Linux x64 已过 |
 | P5.2 | 共享段 / 命名事件 / UDS 的 owner 化 + 启动清扫 | 强杀宿主、强杀桥后无残留 |
 | P5.3 | 每 RID 桥 exe + native 发布接线（含 `FindBridgeExecutable` 按 RID） | linux-x64 / osx-arm64 出包即用 |
 | P5.4 | macOS（存活管道版，无 PDEATHSIG）+ 其余架构（win-arm64 / linux-arm64 / osx-x64） | 目标矩阵全绿 |
@@ -490,6 +498,28 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 - 验收状态：解决方案 / 两套测试全绿（941）；两个桥未改、无需重发。**仍需真机 + 真 VST3**
   跑一次"插件卡在 process → 一秒内标红 + 音频直通、宿主不冻结"（与 P1/P2 一起留待 P3
   真机回归）。
+
+**P5.1 跨平台隔离内核（已完成，Linux x64，2026-10-31）**
+
+- **存活管道（A1）**：宿主在启动桥前开一根匿名管道（`AnonymousPipeServerStream`，可继承），
+  写端留宿主、读端经 `--liveness <fd>` 交给桥；桥起一支**独立看门狗线程**阻塞读它。宿主进程一死
+  （正常 / 崩溃 / SIGKILL），写端被内核回收 → 桥读到 EOF → `kill(-pgid, SIGKILL)` 带走自己整个进程组。
+  独立于桥主循环，插件卡死也照样醒。实测：桥**没有**继承到写端（`BridgeIsolationTests` 关掉写端即触发）。
+- **进程组**：桥启动即 `setpgid(0,0)`；宿主 `KillBridge` 先按进程组 SIGKILL，再以
+  `Process.Kill(entireProcessTree)` 兜底（覆盖"桥还没 setpgid 就被杀"）。
+- **平台闸门放开**：`Vst3BridgeInsert.PlatformSupported`（64 位 + win/linux/macOS）取代
+  `IsWindows && Is64BitProcess`；`Vst3PluginHost.FindNativeLibrary`、`Vst3Backend.Create` 同步；
+  `FindBridgeExecutable` 按 `RuntimeInformation` 算当前 RID（Windows 仍 win-x86/win-x64，行为不变）。
+- **两处 .NET 现实打脸（已修正设计稿 §9.6/§9.7）**：Unix 上**命名 `MemoryMappedFile` 与命名
+  `EventWaitHandle` 都不支持**。共享段改为宿主私有目录里的文件（创建者 Dispose 时删除）；
+  gate 在 Unix 上暂不装，消费者退化成自旋 + Yield（正确、稍费 CPU）。**A2 `prctl` 缓做**（创建线程
+  语义的坑），只上 A1 —— 它已是全平台保底。
+- 测试：`tests/TuneLab.Tests/BridgeIsolationTests.cs`（Linux-only，桥 exe 不在就安静返回）：
+  自成进程组 / 存活管道 EOF → 桥消失 / `KillBridge` 清干净。真机验证在 172.31.5.154（Anolis 8.10，
+  .NET 8.0.424）：自包含发布 linux-x64 桥 → 3 条全过；`SharedAudioRingTests` 等 66 条 focused 全绿；
+  全量 `TuneLab.Tests` Linux 上与基线同为 16 条既有平台/SKIP 失败、无新增。
+- **尚未做**：A2 `prctl`、Unix gate（eventfd/自管道）、残留启动清扫（P5.2）、
+  每 RID 发布接线（P5.3，目前只在验证机上手工 publish）、macOS / 其余架构（P5.4）、非 Windows 默认开（P5.5）。
 
 **已知杂物**
 

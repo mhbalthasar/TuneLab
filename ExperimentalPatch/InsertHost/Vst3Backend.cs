@@ -419,7 +419,8 @@ public sealed class Vst3Backend : IInsertBackend
         //   桥不可用 / 起不来 → 记下原因、回退进程内（不静默：宿主读 IsolationFallbackReason）。
         //   桥是好的、插件自己拒绝 / 把桥弄没了 → 如实报失败，**不回退**（回退等于把刚炸完的
         //   插件又拉进宿主进程，正是隔离要避免的事）。
-        if (settings.IsolateVst3 && OperatingSystem.IsWindows() && Environment.Is64BitProcess)
+        // [P5.1] 平台闸门从"仅 Windows"放开到所有 64 位（Windows / Linux / macOS）。
+        if (settings.IsolateVst3 && Vst3BridgeInsert.PlatformSupported)
         {
             var bridged = Vst3BridgeInsert.Create(plugin, settings, out string? bridgeReason, out bool bridgeUnavailable);
 

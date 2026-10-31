@@ -321,6 +321,13 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
 
     // ── 建实例 ──
 
+    // [P5.1] 隔离在当前平台是否**原则上**被支持：64 位 + Windows / Linux / macOS。
+    // 具体能不能真用，还要看桥 exe 与 native 是否就位 —— EnsureStartedBlocking / BridgeFormats
+    // 会如实回报，缺了就报 bridgeUnavailable 让调用方回退进程内。
+    public static bool PlatformSupported =>
+        Environment.Is64BitProcess &&
+        (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS());
+
     /// <summary>
     /// 把 VST3 装进 64 位桥。失败返回 null 并写 reason。
     /// bridgeUnavailable = 失败在"桥这一侧"（没起来 / 不带 vst3）—— 这时调用方应回退进程内；
@@ -333,10 +340,10 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
         reason = null;
         bridgeUnavailable = false;
 
-        // VST3 的 native 只 vendor 了 win-x64 一份；别的平台 / 位数没有可用的桥。
-        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
+        // 32 位宿主 / 未知平台没有可用的桥（VST3 锁 64 位，见 VST3-BRIDGE.md §9.1）。
+        if (!PlatformSupported)
         {
-            reason = "the isolated VST3 host is only available on Windows x64";
+            reason = "the isolated VST3 host requires a 64-bit Windows, Linux or macOS host";
             bridgeUnavailable = true;
             return null;
         }
