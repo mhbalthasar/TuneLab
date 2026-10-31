@@ -203,6 +203,7 @@ interface IVst3Insert : IMixInsert
 | P2 | 桥侧编辑器线程 + HWND 回传 + GL 判据；宿主 `Vst3EditorShell` 适配 | 打开/关闭插件 GUI；杀掉编辑器线程不带走宿主 |
 | P3 | 默认打开（Windows x64）；桥不可用时回退进程内并提示；文档 / 用户手册更新 | 真机回归；老工程（进程内挂的 VST3）打开后仍是同样声音 |
 | P4 | 挂起测试：造一个会卡住的假后端 / 插件，验证 load 20s 超时后杀桥、宿主恢复（超时机制已在 P1 落地，剩端到端验证） | 宿主不冻结 |
+| P5 | 跨平台隔离（linux / macOS）+ 架构扩展；VST3 锁 64 位、放弃 32 位 VST3（VST2 维持 Windows-only）。设计见 §9 | §9.10 的隔离验证清单在目标矩阵上全过 |
 
 ## 7. 测试
 
@@ -224,7 +225,175 @@ interface IVst3Insert : IMixInsert
 | 大 state | 现有 base64 帧上限 16 MB；ChowMultiTool 274 KB 已实测可过 |
 | 进程内回退变成静默降级 | 回退必须写日志 + 界面标示"未隔离" |
 
-## 9. 实现进度（随提交更新）
+## 9. 跨平台隔离设计（linux / macOS）
+
+> 2026-10-31 设计稿（P5 的输入）。目标是把"VST3 崩溃隔离"从 Windows x64 扩展到
+> linux / macOS，并覆盖用户要求的架构集合。**本章不改 P1–P4 已落地的 Windows 路径**，
+> 而是给出等价的跨平台机制与落地清单。
+
+### 9.1 范围与目标平台
+
+- **VST2 保持 Windows-only**（既有决策，`Vst2Backend.IsAvailable => OperatingSystem.IsWindows()`）。
+  非 Windows **不提供 VST2**，本章不为它做任何事。
+- **VST3 锁 64 位**：放弃 32 位 VST3（上游 ownvst3 不构建 x86，且 32 位 VST3 插件已边缘化）。
+  目标矩阵：
+
+  | OS \ 架构 | x64 | arm64 |
+  |---|---|---|
+  | Windows | ✅ 已有（P1–P4） | ➕ 新增 |
+  | Linux | ➕ 新增 | ➕ 新增 |
+  | macOS | ➕ 新增 | ➕ 新增（CI 已在构建 host） |
+
+- 隔离覆盖面与 Windows 对齐：load / initialize / process / state / parameters / unload 的
+  **进程隔离与生命周期**（宿主怎么死都不留孤儿；桥崩/卡宿主照常活、可重建、可标红）。
+- **不在本章**：编辑器 GUI 的跨平台消息泵（macOS Cocoa runloop / Linux X11-Wayland）。
+  那是独立工作项；本章的桥在无编辑器能力时与 P1 一样**退回参数面板**。
+- **暂缓**：loongarch64（见 §9.12）。
+
+### 9.2 现状盘点：哪些已天然跨平台，哪些是 Windows 专属
+
+| 机制 | 现位置 | Windows 专属？ |
+|---|---|---|
+| 控制通道 | `BridgeProgram` 的 `NamedPipeServerStream` | 否（.NET 在 Unix 上映射 Unix domain socket） |
+| 音频环 | `BridgeSharedMemory.SharedAudioRing` | 否（纯 `MemoryMappedFile` + `Volatile` + 裸指针 SPSC） |
+| 命名事件 gate | `EventWaitHandle(name)` | 否（Unix 上文件支撑，比 Windows 命名事件慢一档） |
+| 命名共享段 | `MemoryMappedFile.CreateNew(name, …)` | 否（Unix 上其实是 temp 目录里一个文件） |
+| **孤儿防止** | `JobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` | **是**（`VstBridgeClient` 行 138/198/956、`BridgeProgram` 行 14） |
+| 桥 exe 选择 | `VstBridgeClient.FindBridgeExecutable` 写死 `win-x86` / `win-x64`（行 743） | **是** |
+| 编辑器 | `Vst3EditorWindow` / `Vst3Insert` 的 user32 | **是** |
+| 后端闸门 | `Vst3BridgeInsert.Create`（行 331）、`Vst3PluginHost.FindNativeLibrary`（行 36）要求 `IsWindows && Is64BitProcess` | **是** |
+
+结论：**真正要重做的只有"孤儿防止"这一条内核机制，加上若干接线**；音频通道、控制通道、
+无锁环的逻辑本身已经跨平台。
+
+### 9.3 Windows 的保证，拆成四条
+
+JobObject 给的其实不止一件事。把它拆开，逐条找 Unix 对应物：
+
+1. **宿主死（正常 / 崩溃 / 被强杀）→ 桥死**，不留孤儿。
+2. **桥卡死 / 崩溃 → 宿主存活**，能杀掉整棵树、能重建、能标红。
+3. **无残留**：不留下游离进程、句柄、共享内存或临时文件。
+4. **音频路径零额外开销**。
+
+下面 §9.4–§9.7 逐条给方案。
+
+### 9.4 保证 1：宿主死 → 桥死
+
+Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + macOS 都成立：
+
+**A1. 存活管道（liveness pipe）——便携主力**
+
+- 宿主启动桥**之前**建一根管道：**读端交给桥，写端只有宿主持有**，务必 `O_CLOEXEC`
+  （否则插件或桥的其它子进程继承了写端，EOF 永不触发）。
+- 桥里起一个**专职看门狗线程**，阻塞 `read()` 这根管道。宿主进程一死，写端句柄被内核回收
+  → `read()` 返回 0（EOF）→ 看门狗立刻 `kill(-pgid, SIGKILL)` 杀掉自己的整个进程组后退出。
+- **为什么不用"监听控制管道断开"**：插件卡死时桥的主循环读不到控制管道，但看门狗线程独立，
+  照样会醒。这是关键。
+- 对"宿主被 SIGKILL"同样有效：进程一死句柄必被回收，EOF 是确定性的，**无 PID 复用竞态**。
+
+**A2. `prctl(PR_SET_PDEATHSIG, SIGKILL)`——Linux 上的加速路径（可选）**
+
+- 桥（Linux 限定）启动时向内核登记"父线程一死就 SIGKILL 我"。内核级、零延迟，作为 A1 之前的第一道闸。
+- **两个坑必须处理**：
+  1. 它触发于**创建它的那个线程**死亡，不是整个进程死亡 —— .NET 的 `Process.Start` 可能在线程池
+     线程上 fork，所以要固定承载线程，或在设置后再校验 `getppid()`；
+  2. 只管**直接子进程**，孙进程不管 —— 靠进程组（§9.5）补齐。
+- **macOS 没有这个**，所以 A2 只是 Linux 的锦上添花，**A1 才是全平台保底**。
+
+### 9.5 保证 2：桥卡/崩 → 宿主存活 + 杀掉整棵树
+
+- **进程组化**：桥启动时 `setpgid(0, 0)` 自成一个进程组（Windows 侧继续用 JobObject）。
+- 宿主超时后用 `kill(-pgid, SIGKILL)` 一次干掉桥**和它可能拉起的任何孙进程**。
+- 保留 `Process.Kill(entireProcessTree: true)` 作为兜底（Linux 走 `/proc/*/stat` 的 PPID 链，
+  macOS 走 `sysctl`），但**进程组为主用**——它不受"孙进程恰好被 reparent"影响。
+- 桥退出/被杀后，宿主侧 `Process.Exited`（跨平台）或既有超时逻辑照旧标红、重建。
+
+### 9.6 保证 3：共享内存 / 临时文件不残留
+
+- Windows：命名段最后一个句柄关闭即自动消失，天然无残留。
+- **Unix：命名 `MemoryMappedFile` 与命名 `EventWaitHandle` 在 .NET 上都是"temp 目录里一个文件"**。
+  桥被 SIGKILL 时它没机会自己删。规矩反过来定：
+  - **宿主是共享段与命名事件的 owner**（本来就是：`EnsureStartedAsync` 里宿主先 `Create`，
+    桥只 `Open`）；
+  - 宿主释放时**显式删底层文件**；控制用的 UDS socket 文件同样要删；
+  - 再加**启动清扫**：扫 temp 里匹配桥前缀、且对应 PID 已死的残留，删掉。
+- **Linux 可选的更干净方案**：`memfd_create` + 通过控制 socket `SCM_RIGHTS` 传 fd —— 匿名内存、
+  进程死即回收、零残留、零竞态。但 **macOS 没有 memfd**，所以跨平台保底仍是
+  "temp 文件 + 显式 unlink + 启动清扫"。
+
+### 9.7 保证 4：效率
+
+- **音频路径完全不变**：还是 `SharedAudioRing` 那段共享内存无锁环。`Volatile` 在 ARM64 上正确
+  发屏障（该文件注释已确认），x64/arm64 都零额外拷贝、零 IPC。**没有效率损失。**
+- 唯一要盯的是 **gate 的唤醒**：Unix 上命名 `EventWaitHandle` 是文件支撑的，比 Windows 命名事件慢一档。
+  若实测有影响，换成**自管道写一个字节 / `eventfd`（Linux）/ `kqueue`（macOS）**即可 ——
+  本质都是"发布时给消费端一个可睡眠的唤醒"，开销可忽略。
+- b2h（桥→宿主）那条才用 gate；h2b 本就是纯自旋，影响面很小。
+
+### 9.8 与 Windows 的差异（诚实版）
+
+| 维度 | Windows (JobObject) | Unix 方案 | 实际等效度 |
+|---|---|---|---|
+| 宿主崩溃 → 桥死 | 内核级、即时 | 存活管道 EOF → 看门狗自杀 | **等效**（都确定、无竞态） |
+| 宿主被强杀（SIGKILL / 任务管理器） | 生效 | 生效（EOF） | **等效** |
+| 杀整棵进程树 | 内核按 job 跟踪 | 进程组 `kill(-pgid)` | 近似（插件 `setsid` 逃亡才漏；VST3 是 in-proc dll，几乎不存在） |
+| 桥陷入不可中断内核等待（D 状态） | 杀不动，要等它出来 | 同样杀不动 | **打平** —— JobObject 也救不了 D 状态 |
+| 音频速度 | 零拷贝共享环 | 零拷贝共享环 | **等效** |
+
+**要接受的两点**：
+1. Unix 多一个**用户态看门狗线程**（每桥一个，成本可忽略），而非纯内核机制；因此
+   "宿主死 → 桥死"最短路径比 Windows 略长一档（微秒 → 毫秒级），但**结果一致、不产生残留**。
+2. macOS 拿不到 PDEATHSIG，只有存活管道；Linux 两条都有。
+
+### 9.9 每 RID 产物清单
+
+隔离要在某平台上可用，该 RID 必须同时具备：
+
+| 产物 | 现位置 | 说明 |
+|---|---|---|
+| 桥 exe | `bridge/<rid>/TuneLab.ExperimentalPatch.VstBridge[.x64].exe` | 每 RID 各发一份（现 `publish-bridges.ps1` 只发 win-x86/win-x64） |
+| VST3 native | `Native/<rid>/ownvst3.tlhost.<ext>`（`InsertHost.csproj` 按 `Vst3NativeRid` 拷贝） | 上游覆盖 win/linux/osx 的 x64 + arm64；x86 已放弃 |
+| 控制/共享段清理 | 运行时 | 见 §9.6 |
+
+接线要点：
+- `VstBridgeClient.FindBridgeExecutable`（行 743）从"写死 win-x86/win-x64"改为按
+  `RuntimeInformation` 算当前 RID；
+- `Vst3BridgeInsert.Create`（行 331）与 `Vst3PluginHost.FindNativeLibrary`（行 36）的
+  `IsWindows && Is64BitProcess` 闸门放开为"当前平台有 native + 有桥"；
+- `BridgeSharedMemory` 的 `[SupportedOSPlatform("windows")]` 标注放开，并按 §9.6 处理残留；
+- `publish-bridges.ps1` 扩为按 RID 矩阵发布（或改由 CI 的 `-r <rid>` 一并构建，纳入 release 产物）。
+
+### 9.10 验证清单（每个 OS 各跑一遍）
+
+1. 故意卡死的假插件 / 假后端 → 宿主超时杀桥、标红；**断言桥进程与孙进程都没了**。
+2. 宿主被 `SIGKILL`（Unix）/ 任务管理器结束（Windows）→ **断言桥随之消失**。
+3. 桥被 `SIGKILL` → 宿主存活、标红、重建；**断言无 temp 残留**（启动清扫也能兜住）。
+4. 音频正确性回归：`SharedAudioRingTests` 跨平台跑一遍。
+5. ARM64 内存序回归：`Volatile` 在 ARM64 上的行为。
+
+### 9.11 阶段划分（P5）
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| P5.1 | 存活管道 + 看门狗线程 + 进程组（**先 Linux x64**，含 `prctl` 加速） | 清单 §9.10 的 1–4，Linux x64 全过 |
+| P5.2 | 共享段 / 命名事件 / UDS 的 owner 化 + 启动清扫 | 强杀宿主、强杀桥后无残留 |
+| P5.3 | 每 RID 桥 exe + native 发布接线（含 `FindBridgeExecutable` 按 RID） | linux-x64 / osx-arm64 出包即用 |
+| P5.4 | macOS（存活管道版，无 PDEATHSIG）+ 其余架构（win-arm64 / linux-arm64 / osx-x64） | 目标矩阵全绿 |
+| P5.5 | 隔离在非 Windows 的默认开关 + 回退提示 + 文档 / 用户手册 | 真机回归；老工程声音不变 |
+
+> 编辑器 GUI 的跨平台 pump 不在 P5，另立一项（macOS Cocoa / Linux X11-Wayland）。
+
+### 9.12 待决与风险
+
+| 项 | 说明 |
+|---|---|
+| loongarch64 | .NET 8 无官方 `linux-loongarch64` RID，需社区运行时；且 `Vst3Backend.NativeRid` 的 `else` 分支会把它错判成 `linux-x64`。本轮暂缓，恢复前须先补 RID 映射与运行时可行性论证 |
+| macOS 无 PDEATHSIG | 只有存活管道；看门狗线程必须可靠（`read()` 不能被信号打断成假唤醒） |
+| 编辑器 | 非 Windows 的 GUI pump 是另一条独立工作；在它落地前，桥在非 Windows 一律退参数面板 |
+| 32 位宿主 | 若将来出 win-x86 host：VST3 应显式**禁用并可见提示**，而不是静默找不到 x86 native |
+| 回退语义 | 与 Windows 一致：桥**起不来** → 回退进程内并可见标示；桥**是好的但插件把桥弄没** → 如实报失败，不回退 |
+
+## 10. 实现进度（随提交更新）
 
 **P1 桥侧（已完成，2026-10-30）**
 
