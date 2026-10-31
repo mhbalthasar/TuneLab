@@ -243,16 +243,13 @@ internal sealed class BridgeSession : IDisposable
 
         // 音频数据走共享内存（见 BridgeSharedMemory 的说明）：
         // 这里 payload 只是"宿主要求处理一块"的指令，真正的样本在共享环里。
-        bool processed = OwnerOf(message.Slot).Process(message.Slot, message.Bypass, out int frames, out int channels);
-
-        Write(JsonSerializer.Serialize(new ProcessResult
-        {
-            Slot = message.Slot,
-            Ok = true,
-            Processed = processed,
-            Frames = frames,
-            Channels = channels,
-        }));
+        //
+        // 【为什么不回执】音频路径上的同步点必须全部有上限（20ms）。原来的实现处理完写一条
+        // ProcessResult，宿主在**音频线程**上同步读它，而那次读没有超时 —— 插件在 process 里
+        // 卡死时桥的主循环就卡在这里，回执永远不来，宿主的音频线程跟着无限期阻塞
+        // （实测：真 VST3 卡死 → 整个宿主死锁）。处理结果本来就在共享环里，
+        // 宿主等输出环（20ms 上限）就够了，这条回执是多余的一次同步点。
+        OwnerOf(message.Slot).Process(message.Slot, message.Bypass, out _, out _);
     }
 
     void HandleGetState(string? json)

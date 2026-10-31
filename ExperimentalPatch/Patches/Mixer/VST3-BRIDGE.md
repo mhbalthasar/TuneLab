@@ -575,6 +575,58 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
   `libownvst3.tlhost.so`、无 Windows dll，`-r win-x64` 反之。
 - x86 桥仍固定 win-x86，非 Windows 不发（VST2 跨平台不在范围内）。
 
+**P5 真 VST3 端到端验证台（进行中，2026-11-01）**
+
+验证台是独立仓库 `mhbalthasar/project_debugger`：把宿主 ↔ 桥的进程间机制**逐字复制**过去，
+在真机上跑真进程（6 平台 CI），并在同一座桥上装**真的 VST3 插件**——真的 `ownvst3` 原生库
+（从 NuGet `OwnAudioVst` 1.7.0 取，与发布版同一份）+ 用 Steinberg SDK 现场编的测试插件
+（5 个变体：正常 / 崩在 process / 卡在 process / 崩在加载 / 卡在加载）。
+
+这一轮把「真插件在 Windows 上稳」变成了「真插件在三个平台上都稳」，代价是**在正式代码里
+找出四个真问题**（都已回灌本仓库，见下）。发现编号沿用验证台 README。
+
+- **发现 4（致命）**：`VstBridge/Vst3PluginHost.cs` 的 `Load` 用 `File.Exists(request.Path)`
+  判断插件在不在，而 VST3 在三个平台上都是**目录包**（`<Name>.vst3/Contents/<arch>/...`）。
+  于是隔离模式下**一个真 VST3 都装不上**，统一报 "plugin file not found"；进程内那条路
+  （`Vst3Backend` 把 Locator 直接交给 native，不查存在性）从来没暴露过。
+  修正：`File.Exists(path) || Directory.Exists(path)`。
+- **发现 5（宿主会死锁）**：插件卡在 `process` 里时，**宿主的音频线程被无限期阻塞**。
+  两处叠加：① `SendProcess` 在音频线程上同步读 ProcessRequest 的回执，而那次读
+  （`ReadControlBlocking`）**没有超时** —— 桥的主循环卡在插件里，回执永远不来；
+  ② Windows 命名管道不显式给 `inBufferSize/outBufferSize` 时实际是**同步管道**，
+  写进去的每一帧都要等对端读走，于是第二块连写都写不进去。Linux/macOS 的 UDS 有内核
+  缓冲，②不发作，但①一个就够。修正：`BridgeSession.HandleProcess` **不再回执**
+  （处理结果本来就在共享环里，宿主等输出环就够了，回执是多余的一次同步点）+
+  `BridgeProgram` 的 `NamedPipeServerStream` 显式要 64 KiB 缓冲。
+- **发现 6（Unix 专属）**：Windows 命名管道的 `IsConnected` 在对端进程消失后会变 false，
+  Unix（UDS 模拟）**一直为真** —— 于是桥被插件带走后，宿主一路走到写，拿到 EPIPE →
+  IOException，而 `ExchangeAsync` 让异常飘到 `TryLoad*` 的 catch 里只返回 null、**不判死**。
+  桥明明死了 `IsRunning` 还是真，之后每次加载都失败，直到重启应用。修正：`ExchangeAsync`
+  把写/读抛出的异常（`OperationCanceledException` 除外）也当作死亡，就地 `KillBridge()`。
+（发现 1「EOF 不判死」和发现 2「杀桥后不等退出就放共享段」是上一轮就回灌过的两条，本轮
+真插件测试才把它们真正压到极限：发现 1 的 Unix 到达路径就是发现 6。）
+
+- **发现 7（并发杀桥）**：超时线程（`BridgeTimeout.Run` 的 `onTimeout`）和被打断的那条
+  交换任务（管道被 Dispose 之后它读到 EOF / 抛 IOException，也走 `KillBridge`）会**同时**
+  杀桥，两边都可能看到非 null 的 `mInput` / `mOutput` 并各 Dispose 一次，第二次在
+  `MemoryMappedViewAccessor.Dispose`（内部 `Flush`）里抛 `ObjectDisposedException`。
+  win-arm64 上稳定复现（x64 只是时间窗口更小）。修正：`KillBridge` 串行化
+  （`mKillLock`），原方法体改名为 `KillBridgeCore`。
+
+- 回灌后的验收：Windows `TuneLab.Tests` **946/0**、legacy compat **13/0**；两个桥重新编译通过。
+- **CI 结果（`53ffff5`，六平台全绿）**：win-x64 / linux-x64 / linux-arm64 / osx-arm64 /
+  osx-x64 各 **20/20**（13 条进程机制 + 7 条真 VST3）；win-arm64 也是 20/20，但它是
+  实验性 runner、testhost 是 x64，所以那一档 `vst3: false`（7 条真 VST3 直接跳过）。
+  真插件的逐样本断言（输出 = 输入 × 0.25）在 Windows / Linux x64 / Linux arm64 /
+  macOS arm64 / macOS x64 上都成立，五个故障变体（正常 / 崩在 process / 卡在 process /
+  崩在加载 / 卡在加载）的隔离结论也一致 —— 即
+  **VST3 隔离在三个平台上与 Windows 同样可靠**。
+- 验证台侧的构建坑（**不影响产品，只影响测试插件的编法**）：手写 `add_library` 取代
+  `smtg_add_vst3plugin` 之后，macOS 上要自己补 `-framework CoreFoundation`，还要自己加
+  平台入口源文件 —— `public.sdk/source/main/macmain.cpp`（`bundleEntry` / `bundleExit`）。
+  Windows / Linux 的宿主直接取 `GetPluginFactory`，缺入口文件也能加载，所以这两条只在 macOS 上炸，
+  且第二条报的错和"架构不对"一模一样（"could not be loaded"）。
+
 **已知杂物**
 
 （暂无：引用 `InsertHost` 会让 x86 桥输出多一份 x64 的 `ownvst3.tlhost.dll`，

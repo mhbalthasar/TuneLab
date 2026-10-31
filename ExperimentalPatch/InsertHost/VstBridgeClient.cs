@@ -30,6 +30,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     const string BridgeAssemblyName32 = "TuneLab.ExperimentalPatch.VstBridge";
     const string BridgeAssemblyName64 = "TuneLab.ExperimentalPatch.VstBridge.x64";
 
+    // 杀桥后等它真退出再放共享段的上限（见 KillBridge 里那段说明）。正常几毫秒。
+    const int KillExitWaitMs = 2000;
+
     Process? mProcess;
     JobHandle? mJob;
     NamedPipeClientStream? mPipe;
@@ -688,11 +691,12 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
                 return FailAudioBlock();
             }
 
-            // 2) 等桥的结果。桥处理完会把结果推进桥→宿主的环，然后回一个短回执。
-            string? reply = ReadControlBlocking();
-            if (reply == null)
-                return FailAudioBlock();
-
+            // 2) 等桥的结果。**只等共享环**（这一步有 20ms 上限）。
+            //
+            // 这里原来还要读一条控制管道的回执，而那次读没有超时：桥的主循环卡在插件的
+            // process 里时回执永远不来，音频线程就被无限期阻塞（实测：真 VST3 卡死 →
+            // 整个宿主死锁）。桥侧已经不再为 ProcessRequest 回执（见 BridgeSession），
+            // 于是音频路径上不再有任何"等管道"的动作。
             if (!mOutput.TryRead(BlockWaitMs, out _, out var planes, out int outChannels, out int outFrames))
                 return FailAudioBlock();
 
@@ -733,8 +737,21 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     /// <summary>桥的音频路是否已停用（连续失败过多）。宿主据此把这一个插入标红。</summary>
     public bool AudioStalled => mAudioStall.Stalled;
 
+    // 两处会同时杀桥：超时线程（BridgeTimeout.Run 的 onTimeout），和被打断的那条交换任务
+    // （管道被 Dispose 之后它读到 EOF / 抛 IOException，也会走 KillBridge）。
+    // 不串行化的话两边都可能看到非 null 的 mInput / mOutput 并各 Dispose 一次 ——
+    // 第二次在 MemoryMappedViewAccessor.Dispose（内部 Flush）里抛 ObjectDisposedException。
+    // win-arm64 上稳定复现；win-x64 只是时间窗口更小、没撞上。
+    readonly object mKillLock = new object();
+
     /// <summary>宿主主动关闭桥（例如关闭混音台窗口）。</summary>
     public void KillBridge()
+    {
+        lock (mKillLock)
+            KillBridgeCore();
+    }
+
+    void KillBridgeCore()
     {
         try
         {
@@ -781,8 +798,25 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             }
         }
 
-        mProcess?.Dispose();
+        // 等桥真的退出再放共享段。Process.Kill 只是投递信号、Dispose 也不等退出：
+        // Windows 上段还活着的那个瞬间再 CreateNew 会抛
+        // "Cannot create a file when that file already exists." —— 于是"杀桥 → 立刻重启"
+        // 就失败（插件直接掉成不可用）。2 秒是上限，超时也照旧往下走，不能卡死关窗。
+        var dyingBridge = mProcess;
         mProcess = null;
+
+        if (dyingBridge != null)
+        {
+            try
+            {
+                dyingBridge.WaitForExit(KillExitWaitMs);
+            }
+            catch (Exception)
+            {
+            }
+
+            dyingBridge.Dispose();
+        }
 
         // 共享段也一起放。桥已经死了，没有对端，留着只是占用一段命名内存。
         mInput?.Dispose();
@@ -908,8 +942,37 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         await mRoundTrip.WaitAsync(cancellation).ConfigureAwait(false);
         try
         {
-            await SendControlAsync(json, cancellation).ConfigureAwait(false);
-            return await ReadControlAsync(cancellation).ConfigureAwait(false);
+            string? reply;
+            try
+            {
+                await SendControlAsync(json, cancellation).ConfigureAwait(false);
+                reply = await ReadControlAsync(cancellation).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // 管道自己的写/读抛异常，同样是"桥死了"。
+                //
+                // Unix 上这一点是**必需**的：Windows 命名管道的 IsConnected 在服务端进程
+                // 消失后会变 false，TryLoad* 开头的 `if (!IsRunning)` 就挡掉了；而 Unix
+                // （UDS 模拟）的 IsConnected 一直为真，于是一路走到写，拿到 EPIPE →
+                // IOException。不在这里判死，异常会飘到 TryLoad* 的 catch 里只返回 null，
+                // 桥明明死了 IsRunning 却还是真，之后每次加载都失败。
+                KillBridge();
+                return null;
+            }
+
+            // 控制管道 EOF（reply == null）说明桥已经没了，而 IsRunning 只看 mPipe.IsConnected
+            // —— 偏偏这正是桥崩溃时的形态：进程在，管道断。不收尾的话 IsRunning 永远为 true，
+            // 之后每一次 EnsureStarted 都直接返回 true 去用一个断掉的管道，这个位数上的桥
+            // 就永久不可用了（要重启宿主）。所以这里当场把桥判死，下一次 EnsureStarted 重建。
+            if (reply == null)
+                KillBridge();
+
+            return reply;
         }
         finally
         {

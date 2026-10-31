@@ -60,7 +60,10 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         if (!IsSupported)
             return (false, "the VST3 host library is missing in this bridge", null, null, 0, false, false, false);
 
-        if (!File.Exists(request.Path))
+        // VST3 在三个平台上都是**目录包**（<Name>.vst3/Contents/<arch>/...），不是单个文件：
+        // 只判 File.Exists 的话目录恒不为真，隔离模式下任何真插件都会被这句挡掉
+        // （进程内那条路不查存在性，所以从来没人发现）。详见 VST3-BRIDGE.md §10。
+        if (!File.Exists(request.Path) && !Directory.Exists(request.Path))
             return (false, "plugin file not found", null, null, 0, false, false, false);
 
         mBackend ??= new Vst3Backend();
