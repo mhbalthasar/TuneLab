@@ -45,10 +45,41 @@
     <ProjectReference Include="..\InsertHost\InsertHost.csproj" />
   </ItemGroup>
 
-  <!-- ownvst3 的 native 必须躺在桥 exe 旁边（Vst3Backend 从 AppContext.BaseDirectory 找）。 -->
-  <ItemGroup>
-    <None Include="..\InsertHost\Native\win-x64\ownvst3.tlhost.dll"
-          CopyToOutputDirectory="PreserveNewest" Link="ownvst3.tlhost.dll" />
+  <!-- [P5.3] ownvst3 的 native 必须躺在桥 exe 旁边（Vst3Backend 从 AppContext.BaseDirectory 找）。
+       按**目标 RID** 选目录，口径与 InsertHost.csproj 一致 —— 否则给 linux/osx 发桥会把
+       Windows 的 ownvst3.tlhost.dll 一起塞进去（既没用、又和 NativeFileName 对不上）。
+       上游文件名保持不变（libownvst3.so / libownvst3.dylib），正是 Vst3Backend.NativeFileName 认的。 -->
+  <PropertyGroup>
+    <Vst3NativeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and '$(NETCoreSdkPortableRuntimeIdentifier)' != ''">$(NETCoreSdkPortableRuntimeIdentifier)</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == ''">linux-x64</Vst3NativeRid>
+
+    <!-- 目标 RID 应该带哪一种 native（名字必须与 Vst3Backend.NativeFileName 一致）。 -->
+    <Vst3NativeFileName Condition="$(Vst3NativeRid.StartsWith('win'))">ownvst3.tlhost.dll</Vst3NativeFileName>
+    <Vst3NativeFileName Condition="$(Vst3NativeRid.StartsWith('osx'))">libownvst3.dylib</Vst3NativeFileName>
+    <Vst3NativeFileName Condition="'$(Vst3NativeFileName)' == ''">libownvst3.so</Vst3NativeFileName>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('..\InsertHost\Native\$(Vst3NativeRid)')">
+    <None Include="..\InsertHost\Native\$(Vst3NativeRid)\*"
+          CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
   </ItemGroup>
+
+  <!-- [P5.3] InsertHost 作为 ProjectReference 是**不带 RID** 编译的，它的 Native/<rid> 只看宿主
+       OS —— 跨 RID 发布（在 Windows 上发 linux/osx 包）会顺着引用把 Windows 的 dll 带进来。
+       这里按目标 RID 定夺：不是本 RID 的那几种 native 名，一律删掉（与 x86 桥的
+       RemoveUnusedVst3Native 同一个路子）。同 RID 时保留，空转。 -->
+  <Target Name="DropForeignVst3Native" AfterTargets="Build">
+    <Delete Files="$(OutDir)ownvst3.tlhost.dll"    Condition="'$(Vst3NativeFileName)' != 'ownvst3.tlhost.dll'" />
+    <Delete Files="$(OutDir)libownvst3.so"         Condition="'$(Vst3NativeFileName)' != 'libownvst3.so'" />
+    <Delete Files="$(OutDir)libownvst3.dylib"      Condition="'$(Vst3NativeFileName)' != 'libownvst3.dylib'" />
+  </Target>
+  <Target Name="DropForeignVst3NativeOnPublish" AfterTargets="Publish">
+    <Delete Files="$(PublishDir)ownvst3.tlhost.dll" Condition="'$(Vst3NativeFileName)' != 'ownvst3.tlhost.dll'" />
+    <Delete Files="$(PublishDir)libownvst3.so"      Condition="'$(Vst3NativeFileName)' != 'libownvst3.so'" />
+    <Delete Files="$(PublishDir)libownvst3.dylib"   Condition="'$(Vst3NativeFileName)' != 'libownvst3.dylib'" />
+  </Target>
 
 </Project>

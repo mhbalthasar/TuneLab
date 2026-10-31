@@ -1,23 +1,29 @@
-# 把 VST2 桥（两个位数）发布到应用目录旁边。
+# 把 VST 桥发布到应用目录旁边。
 #
-# 为什么需要这一步：桥是独立的 exe，不是 ProjectReference（位数不同、
+# 为什么需要这一步：桥是独立的 exe，不是 ProjectReference（位数/平台与宿主不同，
 # 也不能让宿主带 x86 目标）。运行时要求固定布局：
 #
-#   <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.exe
-#   <app>/bridge/win-x64/TuneLab.ExperimentalPatch.VstBridge.x64.exe
+#   <app>/bridge/<rid>/TuneLab.ExperimentalPatch.VstBridge.x64         （64 位，VST2 + VST3）
+#   <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.exe       （32 位，仅 VST2）
 #
-# 两个目录必须分开：hostfxr.dll / coreclr.dll 同名不同架构，混放必炸。
-# 又因为多数机器只装了 x64 的 .NET 运行时（x86 的通常没有），
-# x86 那份必须 --self-contained。x64 也按同样的方式发，保持一致。
+# 目录必须按 RID 分开：hostfxr / coreclr 同名不同平台/架构，混放必炸。
+# 又因为多数机器只装了 x64 的 .NET 运行时，桥一律 --self-contained。
 #
 # 用法：
-#   pwsh tools/publish-bridges.ps1                     # 发到 TuneLab/bin/Debug/net8.0
+#   pwsh tools/publish-bridges.ps1                                  # Windows 开发默认：win-x86 + win-x64
 #   pwsh tools/publish-bridges.ps1 -Configuration Release
 #   pwsh tools/publish-bridges.ps1 -AppOutput "D:\TuneLab"
+#   pwsh tools/publish-bridges.ps1 -AppOutput workspace -Runtime linux-x64   # CI：按目标 RID 发一份
+#
+# [P5.3] -Runtime 给了就只发"该目标平台需要的桥"：
+#   · 64 位桥：目标 RID 各一份；
+#   · Windows 目标额外补一份 win-x86 桥（32 位 VST2 只能在 x86 进程里加载）；
+#   · 非 Windows 目标没有 32 位 VST（VST2 跨平台不在范围内），只发 64 位桥。
 
 param(
     [string]$Configuration = "Debug",
     [string]$AppOutput = "",
+    [string]$Runtime = "",
     [string]$Dotnet = "dotnet"
 )
 
@@ -32,16 +38,33 @@ if (-not (Test-Path $AppOutput)) {
     throw "app output directory not found: $AppOutput (build TuneLab first, or pass -AppOutput)"
 }
 
-$bridges = @(
-    @{ Project = "ExperimentalPatch/VstBridge/VstBridge.csproj";       Rid = "win-x86"; Folder = "bridge/win-x86" },
-    @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = "win-x64"; Folder = "bridge/win-x64" }
-)
+$bridges = @()
+
+if (-not $Runtime) {
+    # 没给目标 RID：保持老的 Windows 开发默认（两个位数都发）。
+    $bridges = @(
+        @{ Project = "ExperimentalPatch/VstBridge/VstBridge.csproj";         Rid = "win-x86"; Folder = "bridge/win-x86" },
+        @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = "win-x64"; Folder = "bridge/win-x64" }
+    )
+}
+elseif ($Runtime -like "win-*") {
+    $bridges += @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = $Runtime; Folder = "bridge/$Runtime" }
+
+    if ($Runtime -ne "win-x86") {
+        # Windows 宿主同时要能加载 32 位 VST2：x86 桥固定 win-x86。
+        $bridges += @{ Project = "ExperimentalPatch/VstBridge/VstBridge.csproj"; Rid = "win-x86"; Folder = "bridge/win-x86" }
+    }
+}
+else {
+    # linux-* / osx-*：只有 64 位桥。
+    $bridges += @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = $Runtime; Folder = "bridge/$Runtime" }
+}
 
 foreach ($bridge in $bridges) {
     $project = Join-Path $repo $bridge.Project
     $target = Join-Path $AppOutput $bridge.Folder
 
-    Write-Host "publishing $($bridge.Project) -> $target"
+    Write-Host "publishing $($bridge.Project) [$($bridge.Rid)] -> $target"
 
     & $Dotnet publish $project `
         -c $Configuration `
@@ -52,7 +75,7 @@ foreach ($bridge in $bridges) {
         --nologo -v:q
 
     if ($LASTEXITCODE -ne 0) {
-        throw "publish failed: $($bridge.Project)"
+        throw "publish failed: $($bridge.Project) [$($bridge.Rid)]"
     }
 }
 

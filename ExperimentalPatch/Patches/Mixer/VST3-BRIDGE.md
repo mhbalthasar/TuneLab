@@ -367,13 +367,19 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 | VST3 native | `Native/<rid>/ownvst3.tlhost.<ext>`（`InsertHost.csproj` 按 `Vst3NativeRid` 拷贝） | 上游覆盖 win/linux/osx 的 x64 + arm64；x86 已放弃 |
 | 控制/共享段清理 | 运行时 | 见 §9.6 |
 
-接线要点：
-- `VstBridgeClient.FindBridgeExecutable`（行 743）从"写死 win-x86/win-x64"改为按
-  `RuntimeInformation` 算当前 RID；
-- `Vst3BridgeInsert.Create`（行 331）与 `Vst3PluginHost.FindNativeLibrary`（行 36）的
-  `IsWindows && Is64BitProcess` 闸门放开为"当前平台有 native + 有桥"；
-- `BridgeSharedMemory` 的 `[SupportedOSPlatform("windows")]` 标注放开，并按 §9.6 处理残留；
-- `publish-bridges.ps1` 扩为按 RID 矩阵发布（或改由 CI 的 `-r <rid>` 一并构建，纳入 release 产物）。
+接线要点（P5.1–P5.3 已完成）：
+- `VstBridgeClient.FindBridgeExecutable` 已从"写死 win-x86/win-x64"改为按
+  `RuntimeInformation` 算当前 RID（win-/linux-/osx- 各 x64/arm64；非 Windows 无 32 位桥）；
+- `Vst3BridgeInsert.Create` 与 `Vst3PluginHost.FindNativeLibrary` 的
+  `IsWindows && Is64BitProcess` 闸门已放开为 `PlatformSupported`（64 位 + win/linux/macOS）；
+- `BridgeSharedMemory` 的 `[SupportedOSPlatform("windows")]` 已放开，残留按 §9.6 处理；
+- `publish-bridges.ps1` 已扩为按 RID 发布（`-Runtime <rid>`；Windows 目标自动补 win-x86 桥），
+  并接进 `build-artifacts.yml`：CI 每个 RID 的产物里都带 `bridge/<rid>/`；
+- `VstBridge.X64.csproj` 的 native 目录选择改为按目标 RID，并删掉 ProjectReference 带错的
+  外来 native（InsertHost 作为 P2P 不带 RID，只看宿主 OS）。
+- **唯一尚缺的是 native 二进制本身**：仓库里只有 `Native/win-x64/`；`Native/linux-x64`、
+  `Native/osx-*` 尚未 vendored，所以 linux/osx 的桥目前只有"能隔离 VST2 之外的空壳" ——
+  要真正隔离 VST3 得先把上游 ownvst3 的对应平台库放进 `Native/<rid>/`（见 §9.9 表）。
 
 ### 9.10 验证清单（每个 OS 各跑一遍）
 
@@ -391,7 +397,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 |---|---|---|
 | P5.1 | ✅ 存活管道 + 看门狗线程 + 进程组（先 Linux x64；**`prctl` 缓做**，见 §9.4/§9.7） | 清单 §9.10 的 1–4，Linux x64 已过 |
 | P5.2 | ✅ 共享段 / UDS 的 owner 化 + 启动清扫（命名事件在 Unix 不存在，见 §9.6） | 强杀宿主、强杀桥后无残留（§9.10 第 3 条） |
-| P5.3 | 每 RID 桥 exe + native 发布接线（含 `FindBridgeExecutable` 按 RID） | linux-x64 / osx-arm64 出包即用 |
+| P5.3 | ✅ 每 RID 桥 exe + native 发布接线（`FindBridgeExecutable` 按 RID + `publish-bridges.ps1 -Runtime` + CI 产物带 `bridge/<rid>/`）。**native 二进制仍缺**（见 §9.9） | linux-x64 / osx-arm64 出包即用（布局就位；VST3 待 native vendored） |
 | P5.4 | macOS（存活管道版，无 PDEATHSIG）+ 其余架构（win-arm64 / linux-arm64 / osx-x64） | 目标矩阵全绿 |
 | P5.5 | 隔离在非 Windows 的默认开关 + 回退提示 + 文档 / 用户手册 | 真机回归；老工程声音不变 |
 
@@ -538,6 +544,24 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 - 测试：`BridgeCanRestartAfterBeingKilled`（同进程同管道名重启）、`ResidueSweepRemovesFilesFromDeadHosts`
   （造死/活两种 PID 的文件，扫后只死者的没了）。真机实测：跑完 `BridgeIsolationTests` 后 `/tmp`
   既无 `CoreFxPipe_*` 也无段文件（旧残骸一并被清扫）。
+
+**P5.3 每 RID 发布接线（已完成，2026-10-31）**
+
+- `tools/publish-bridges.ps1` 扩为按目标 RID 发布：`-Runtime <rid>` 只发该平台需要的桥
+  （64 位桥一份；Windows 目标自动补 `bridge/win-x86` 的 x86 桥）。不传 `-Runtime` 时保持
+  Windows 开发默认（两个位数都发）。
+- `build-artifacts.yml` 增加一步：每个 RID 的 CI 产物里带上 `bridge/<rid>/`（装出来即用）。
+- `VstBridge.X64.csproj`：native 目录按**目标 RID** 选（与 InsertHost 同口径），并新增
+  `DropForeignVst3Native*` 目标 —— InsertHost 作为 ProjectReference 是**不带 RID** 编译的，
+  只看宿主 OS；跨 RID 发布（Windows 上发 linux 包）会顺着引用把 Windows 的 dll 带进来，
+  这里按目标 RID 名删掉外来 native（与 x86 桥既有的 `RemoveUnusedVst3Native` 同路子）。
+- 实测（Windows 上交叉发布）：`-r linux-x64` 产物**无** `ownvst3.tlhost.dll`（布局
+  `bridge/linux-x64/<exe>`），`-r win-x64` 产物**带** `ownvst3.tlhost.dll`；x86 桥（win-x86）
+  照旧无 native。脚本经 `Parser::ParseInput` 校验语法（仓库 .ps1 均为 UTF-8 无 BOM，只供 pwsh 跑）。
+- **未完成**：`Native/linux-x64`、`Native/osx-*` 的 native 二进制尚未 vendored（仓库只有
+  `Native/win-x64/ownvst3.tlhost.dll`）。所以 linux/osx 的桥现在能起、能隔离进程，但装不了
+  VST3 插件（`Vst3PluginHost.IsSupported` 回 false）。这是 **P5.4** 要解决的一块（另加 macOS 实机）。
+- x86 桥仍固定 win-x86，非 Windows 不发（VST2 跨平台不在范围内）。
 
 **已知杂物**
 

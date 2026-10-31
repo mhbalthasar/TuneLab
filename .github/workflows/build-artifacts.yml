@@ -58,6 +58,13 @@ jobs:
         dotnet publish TuneLab.Cli/TuneLab.Cli.csproj --configuration Release -r ${{ matrix.runtime }}
         Copy-Item "TuneLab.Cli/bin/Release/net8.0/${{ matrix.runtime }}/publish/*" -Destination "workspace/" -Recurse -Force
 
+    # [P5.3] 把隔离桥按目标 RID 一并发进包里：桥不在解决方案里（位数/平台与宿主不同），
+    # 不在这里补一手，用户装出来的软件的"插件隔离"就是空的。
+    - name: Publish the isolation bridges into artifacts
+      shell: pwsh
+      working-directory: ${{github.workspace}}
+      run: ./tools/publish-bridges.ps1 -Configuration Release -Runtime ${{ matrix.runtime }} -AppOutput "workspace"
+
     - name: Copy license to artifacts path
       shell: pwsh
       working-directory: ${{github.workspace}}
