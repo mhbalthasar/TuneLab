@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using TuneLab.ExperimentalPatch.InsertHost;
+using TuneLab.ExperimentalPatch.VstBridge;
 using Xunit;
 
 namespace TuneLab.Tests;
@@ -105,6 +106,86 @@ public class BridgeIsolationTests
 
         Assert.True(WaitGone(pid, TimeSpan.FromSeconds(5)),
             "the bridge survived KillBridge");
+    }
+
+    // 4) [P5.2] 桥被杀掉后能在**同一进程、同一管道名**下重启。
+    //    上一轮的 UDS socket 文件若没删掉，新桥 bind 会 EADDRINUSE —— 这条就钉住那件事。
+    [Fact]
+    public void BridgeCanRestartAfterBeingKilled()
+    {
+        if (!RequireBridge())
+            return;
+
+        var client = VstBridgeClient.ForBitness(64);
+
+        try
+        {
+            StartOrFail(client);
+            int first = client.BridgeProcessIdForTest!.Value;
+
+            client.KillBridge();
+            Assert.True(WaitGone(first, TimeSpan.FromSeconds(5)), "the first bridge did not go away");
+
+            StartOrFail(client);
+            int second = client.BridgeProcessIdForTest!.Value;
+            Assert.NotEqual(first, second);
+        }
+        finally
+        {
+            client.KillBridge();
+        }
+    }
+
+    // 5) [P5.2] 启动清扫：属于**已死宿主**的段文件与管道 socket 被删，属于活进程的保留。
+    [Fact]
+    public void ResidueSweepRemovesFilesFromDeadHosts()
+    {
+        if (!PlatformOk)
+            return;
+
+        string dir = SharedAudioRing.UnixSectionDirectory;
+        Directory.CreateDirectory(dir);
+
+        int deadPid = 99999999;          // 远大于典型 pid_max，kill(pid,0) 必 ESRCH
+        int livePid = Environment.ProcessId;
+
+        string deadIn = Path.Combine(dir, BridgeProtocol.PipeName + "-64-" + deadPid + ".in");
+        string deadOut = Path.Combine(dir, BridgeProtocol.PipeName + "-64-" + deadPid + ".out");
+        string liveIn = Path.Combine(dir, BridgeProtocol.PipeName + "-64-" + livePid + ".in");
+
+        string deadSocket = BridgeResidue.PipeSocketPath(BridgeProtocol.PipeName + "-64-" + deadPid);
+        string liveSocket = BridgeResidue.PipeSocketPath(BridgeProtocol.PipeName + "-64-" + livePid);
+
+        File.WriteAllText(deadIn, "");
+        File.WriteAllText(deadOut, "");
+        File.WriteAllText(liveIn, "");
+        File.WriteAllText(deadSocket, "");
+        File.WriteAllText(liveSocket, "");
+
+        try
+        {
+            BridgeResidue.Sweep();
+
+            Assert.False(File.Exists(deadIn), "a dead host's section file should be swept");
+            Assert.False(File.Exists(deadOut), "a dead host's section file should be swept");
+            Assert.False(File.Exists(deadSocket), "a dead host's pipe socket should be swept");
+
+            Assert.True(File.Exists(liveIn), "a live host's section file must be kept");
+            Assert.True(File.Exists(liveSocket), "a live host's pipe socket must be kept");
+        }
+        finally
+        {
+            foreach (string file in new[] { deadIn, deadOut, liveIn, deadSocket, liveSocket })
+            {
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
     }
 
     // ── /proc 小工具 ──

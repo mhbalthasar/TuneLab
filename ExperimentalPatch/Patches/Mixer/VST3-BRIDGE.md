@@ -319,7 +319,13 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
     段名、各自映射到同一路径；创建者（宿主）`Dispose` 时显式删文件。
   - **gate 在 Unix 上先不装**：消费者退化成自旋 + `Thread.Yield()`（`WaitUntil` 既有兜底）——
     正确，只是 b2h 那条实时路多烧一点 CPU。真正的 eventfd / 自管道门铃留待 §9.7 的后续项。
-  - 控制用的 UDS socket 文件、以及上面的段文件，启动清扫兜底（见上一条的后半）。
+- **P5.2 落地（2026-10-31）**：两种情况分别收口，落成 `BridgeResidue`：
+  - **正常路径**：段文件由创建者（宿主）`KillBridge`/`Dispose` 时删；桥的 UDS socket
+    （.NET 建在 `<temp>/CoreFxPipe_<管道名>`）由宿主在 `KillBridge` 时替它删。
+  - **启动前**：同名 socket 若残留（上一轮桥被强杀）会让新桥 `bind` 撞 EADDRINUSE，
+    所以起桥前先按当前管道名删一次。
+  - **强杀路径（宿主或桥）**：文件都带宿主 PID，**每进程启动清扫一次**，把"名字里的宿主 PID
+    已死"的段文件与 socket 删掉；活进程的一律保留（PID 复用最多让该删的没删，不会误删别人的）。
 - **Linux 可选的更干净方案**：`memfd_create` + 通过控制 socket `SCM_RIGHTS` 传 fd —— 匿名内存、
   进程死即回收、零残留、零竞态。但 **macOS 没有 memfd**，所以跨平台保底仍是
   "temp 文件 + 显式 unlink + 启动清扫"。
@@ -371,11 +377,11 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 
 ### 9.10 验证清单（每个 OS 各跑一遍）
 
-| # | 项 | 状态（P5.1，Linux x64） |
+| # | 项 | 状态（P5.1–P5.2，Linux x64） |
 |---|---|---|
 | 1 | 卡死的假插件 / 假后端 → 宿主超时杀桥、标红；断言桥进程与孙进程都没了 | ✅ 宿主侧 `KillBridge` 按进程组 SIGKILL（`BridgeIsolationTests.KillBridgeRemovesTheProcess`）；超时→杀桥机制见 P4 的 `BridgeTimeoutTests`。孙进程随进程组一起走 |
 | 2 | 宿主被 SIGKILL → 桥随之消失 | ✅ `BridgeIsolationTests.BridgeDiesWhenTheLivenessPipeCloses`：关掉存活管道写端 == 宿主死亡的等价事件（内核回收写端正是 SIGKILL 的效果，且实测证明桥没有继承到写端） |
-| 3 | 桥被 SIGKILL → 宿主存活、标红、重建；断言无残留 | ✅ 宿主存活由既有直通/超时兜底；进程组与 `BridgeProcessIdForTest` 已就位。残留清扫归 P5.2 |
+| 3 | 桥被 SIGKILL → 宿主存活、标红、重建；断言无残留 | ✅ 重启见 `BridgeCanRestartAfterBeingKilled`（同进程同管道名，靠启动前删 socket）；无残留见 `ResidueSweepRemovesFilesFromDeadHosts` + 实测（跑完 /tmp 既无 socket 也无段文件） |
 | 4 | 音频正确性回归：`SharedAudioRingTests` 跨平台跑一遍 | ✅ Linux 上全绿（含在 66 条 focused 里） |
 | 5 | ARM64 内存序回归 | ⏳ 待 ARM64 机器 |
 
@@ -384,7 +390,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P5.1 | ✅ 存活管道 + 看门狗线程 + 进程组（先 Linux x64；**`prctl` 缓做**，见 §9.4/§9.7） | 清单 §9.10 的 1–4，Linux x64 已过 |
-| P5.2 | 共享段 / 命名事件 / UDS 的 owner 化 + 启动清扫 | 强杀宿主、强杀桥后无残留 |
+| P5.2 | ✅ 共享段 / UDS 的 owner 化 + 启动清扫（命名事件在 Unix 不存在，见 §9.6） | 强杀宿主、强杀桥后无残留（§9.10 第 3 条） |
 | P5.3 | 每 RID 桥 exe + native 发布接线（含 `FindBridgeExecutable` 按 RID） | linux-x64 / osx-arm64 出包即用 |
 | P5.4 | macOS（存活管道版，无 PDEATHSIG）+ 其余架构（win-arm64 / linux-arm64 / osx-x64） | 目标矩阵全绿 |
 | P5.5 | 隔离在非 Windows 的默认开关 + 回退提示 + 文档 / 用户手册 | 真机回归；老工程声音不变 |
@@ -520,6 +526,18 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
   全量 `TuneLab.Tests` Linux 上与基线同为 16 条既有平台/SKIP 失败、无新增。
 - **尚未做**：A2 `prctl`、Unix gate（eventfd/自管道）、残留启动清扫（P5.2）、
   每 RID 发布接线（P5.3，目前只在验证机上手工 publish）、macOS / 其余架构（P5.4）、非 Windows 默认开（P5.5）。
+
+**P5.2 残留收口（已完成，Linux x64，2026-10-31）**
+
+- 新增 `BridgeResidue`（`ExperimentalPatch/InsertHost/BridgeResidue.cs`）：把两类 Unix 残骸按
+  **"名字里的宿主 PID 已死"** 的口径清掉 —— 段文件（`<temp>/tunelab-vstbridge/`）与命名管道
+  UDS socket（`<temp>/CoreFxPipe_<管道名>`）。每进程 `EnsureStartedAsync` 首次调 `SweepOnce()`。
+- 正常路径也 owner 化：`KillBridge` 删掉桥留下的 socket；**起桥前**先删同名 socket，避免上一轮
+  被强杀后新一轮 `bind` 撞 EADDRINUSE。
+- `UnixProcess.IsAlive(pid)`：`kill(pid, 0)` + `EPERM` 判活。
+- 测试：`BridgeCanRestartAfterBeingKilled`（同进程同管道名重启）、`ResidueSweepRemovesFilesFromDeadHosts`
+  （造死/活两种 PID 的文件，扫后只死者的没了）。真机实测：跑完 `BridgeIsolationTests` 后 `/tmp`
+  既无 `CoreFxPipe_*` 也无段文件（旧残骸一并被清扫）。
 
 **已知杂物**
 

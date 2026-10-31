@@ -59,4 +59,22 @@ public static class UnixProcess
     public static int GetPid() => getpid();
 
     public static int GetParentPid() => getppid();
+
+    const int EPERM = 1;
+
+    /// <summary>
+    /// 宿主调：这个 PID 还活着吗。残留清扫用它判断"名字里那个宿主是不是已经没了"。
+    /// kill(pid, 0) 不发信号，只做存在性/权限检查：0 = 存在；ESRCH = 没了；
+    /// EPERM = 存在但不属于我们（也算活着）。
+    /// </summary>
+    public static bool IsAlive(int pid)
+    {
+        if (pid <= 0)
+            return false;
+
+        if (kill(pid, 0) == 0)
+            return true;
+
+        return Marshal.GetLastPInvokeError() == EPERM;
+    }
 }

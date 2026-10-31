@@ -38,6 +38,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // EOF 并带走自己的进程组。Windows 上为 null（走 JobObject，见 §9.4）。
     AnonymousPipeServerStream? mLiveness;
 
+    // [P5.2] 当前桥的管道名（带宿主 PID）。KillBridge 时据此删掉桥留下的 UDS socket 文件。
+    string? mPipeName;
+
     // 音频数据的通路（与 mPipe 分工：管道只走"指令"，音频走这两段共享内存）。
     SharedAudioRing? mInput;    // 宿主 → 桥
     SharedAudioRing? mOutput;   // 桥 → 宿主
@@ -145,6 +148,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         if (IsRunning)
             return true;
 
+        // [P5.2] 每进程扫一次残留：上一次宿主/桥被强杀可能留下段文件与 UDS socket。
+        BridgeResidue.SweepOnce();
+
         // ── 1. 先建作业：必须在启动子进程**之前**，
         //    否则"我们崩在启动与加入之间"的那一瞬，桥就成孤儿了。
         //    [P5.1] 作业是 Windows 的孤儿防线；Unix 用存活管道 + 进程组（见下），不建作业。
@@ -171,6 +177,11 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         // 名字由管道名派生，两端永远不会对不上。
         string inName = pipeName + ".in";
         string outName = pipeName + ".out";
+
+        // [P5.2] 上一轮桥被强杀会留下同名 UDS socket（桥自己没机会 unlink），同名重绑会
+        // EADDRINUSE。此刻还没起桥（IsRunning 为假），先删掉再起。
+        BridgeResidue.DeletePipeSocket(pipeName);
+        mPipeName = pipeName;
 
         mInput?.Dispose();
         mOutput?.Dispose();
@@ -778,6 +789,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         mOutput?.Dispose();
         mInput = null;
         mOutput = null;
+
+        // [P5.2] 桥被 SIGKILL 没机会 unlink 自己的 UDS socket 文件，宿主替它删掉。
+        BridgeResidue.DeletePipeSocket(mPipeName);
+        mPipeName = null;
 
         // 音频路的失败计数也清零：桥是新的，之前那串"赶不上"不能算到它头上。
         // （不清的话，一次超时杀桥之后停滞态会一直为 true —— 桥重启了、

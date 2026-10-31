@@ -138,10 +138,12 @@ public sealed unsafe class SharedAudioRing : IDisposable
     // 两端只交换段名，各自映射到同一个路径；创建者 Dispose 时删文件（显式清理）。
     static string UnixSectionPath(string sectionName)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "tunelab-vstbridge");
-        Directory.CreateDirectory(dir);
-        return Path.Combine(dir, sectionName);
+        Directory.CreateDirectory(UnixSectionDirectory);
+        return Path.Combine(UnixSectionDirectory, sectionName);
     }
+
+    // [P5.2] 残留清扫要扫的目录。桥与宿主从同一份源码编译，看到的路径一致。
+    public static string UnixSectionDirectory => Path.Combine(Path.GetTempPath(), "tunelab-vstbridge");
 
     /// <summary>创建一段共享内存（生产者所在的那一端）。</summary>
     // [P5.1] 去掉 [SupportedOSPlatform("windows")]：Windows 用命名段，Unix 用文件承载。
