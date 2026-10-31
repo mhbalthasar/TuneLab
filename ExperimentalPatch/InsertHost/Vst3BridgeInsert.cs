@@ -78,7 +78,7 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IDisposable
 
     public int SidechainChannels => mSidechainChannels;
 
-    // P1：桥侧还不开插件 GUI（见 VST3-BRIDGE.md），所以这里是桥回报的值 —— 目前恒 false。
+    // P2：桥侧开插件 GUI（见文件头）。HasEditor 来自插件自报；开不出时宿主会退参数面板。
     public bool HasEditor { get; }
 
     public bool NeedsOpenGl => mNeedsOpenGl;
@@ -214,27 +214,84 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IDisposable
         Process(silence, 0, frames);
     }
 
-    // ── 编辑器（P1 一律不可用；P2 由桥侧开窗 + 回传 HWND）──
+    // ── 编辑器（P2：桥侧开窗 + 回传 HWND）──
+    //
+    // 插件窗口在**桥进程**里，本类只负责把"开 / 关 / 查"翻成桥消息。桥那边带一条 STA 线程
+    // 开窗 + 泵消息（Vst3EditorWindow）；宿主拿回传的 HWND 做置前，并用跨进程的 IsWindow
+    // 判断"用户是不是已经把它关掉了"。
 
-    public bool OpenEditor(IntPtr parent) => false;
+    IntPtr mEditorWindow;
+    volatile bool mEditorOpen;
 
-    public bool IsEditorOpen => false;
+    public bool OpenEditor(IntPtr parent)
+    {
+        if (mDisposed)
+            return false;
 
+        // 已经开着：桥侧新的 OpenEditor 会走"带到前台"分支（不重建，保留窗口里的临时状态）。
+        if (mEditorOpen && (!OperatingSystem.IsWindows() || mEditorWindow == IntPtr.Zero || IsWindow(mEditorWindow)))
+            return true;
+
+        var (ok, _, _, window) = mChannel.OpenEditorBlocking(mSlotId, Name);
+        if (!ok)
+        {
+            mEditorOpen = false;
+            mEditorWindow = IntPtr.Zero;
+            return false;
+        }
+
+        mEditorWindow = window == 0 ? IntPtr.Zero : new IntPtr(window);
+        mEditorOpen = true;
+        return true;
+    }
+
+    public bool IsEditorOpen
+    {
+        get
+        {
+            if (!mEditorOpen)
+                return false;
+
+            // 窗口在桥进程里：跨进程的 IsWindow 能查到它是否还存在。用户点 ✕ 之后窗口销毁
+            // → false，宿主的编辑器壳据此注销自己（"关掉后再点没反应"的根治）。
+            if (OperatingSystem.IsWindows() && mEditorWindow != IntPtr.Zero && !IsWindow(mEditorWindow))
+            {
+                mEditorOpen = false;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    // 桥有自己的 STA 线程在泵插件消息（Vst3EditorWindow），宿主这边不需要泵。
     public void PumpEditorMessages()
     {
     }
 
     public void CloseEditor()
     {
+        if (!mEditorOpen && mEditorWindow == IntPtr.Zero)
+            return;
+
+        mChannel.CloseEditorBlocking(mSlotId);
+        mEditorOpen = false;
+        mEditorWindow = IntPtr.Zero;
     }
 
+    // VST3 的窗口由插件自己管尺寸；宿主不 resize（与进程内那条路一致）。
     public void ResizeEditor(int width, int height)
     {
     }
 
+    // 窗口不在本进程：没有本地顶层窗可枚举。
     public HashSet<IntPtr> SnapshotTopLevelWindows() => [];
 
-    public IntPtr FindEditorWindowSince(HashSet<IntPtr> before) => IntPtr.Zero;
+    // 桥模式下窗口句柄由桥回传，直接交给编辑器壳做置前（壳拿不到本地句柄）。
+    public IntPtr FindEditorWindowSince(HashSet<IntPtr> before) => mEditorWindow;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool IsWindow(IntPtr hWnd);
 
     // 桥进程的 stderr（最近几十行）。加载 / 编辑器失败时带上它。
     public string? BridgeError => mChannel.LastBridgeError;

@@ -38,4 +38,10 @@ internal interface IBridgeChannel
     IReadOnlyList<ParameterInfo>? GetParametersBlocking(int slot);
 
     bool SetParameterBlocking(int slot, long id, double value);
+
+    // [P2] 编辑器。开 = 让桥开（或激活）插件窗口；WindowHandle = 插件窗口的 HWND
+    // （VST2 回 0，VST3 回插件自己那扇顶层窗的句柄）。
+    (bool Ok, string? Reason, int ChildWindows, long WindowHandle) OpenEditorBlocking(int slot, string title);
+
+    bool CloseEditorBlocking(int slot);
 }

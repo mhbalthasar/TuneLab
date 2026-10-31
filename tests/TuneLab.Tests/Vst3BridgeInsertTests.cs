@@ -78,6 +78,23 @@ public class Vst3BridgeInsertTests
             ParameterWrites[id] = value;
             return true;
         }
+
+        // [P2] 编辑器往返：默认"成功且没有真实句柄"（句柄为 0 时 IsEditorOpen 不做 IsWindow 校验）。
+        public long EditorWindow { get; set; }
+        public bool EditorOpened { get; private set; }
+        public bool EditorClosed { get; private set; }
+
+        public (bool Ok, string? Reason, int ChildWindows, long WindowHandle) OpenEditorBlocking(int slot, string title)
+        {
+            EditorOpened = true;
+            return (true, null, 0, EditorWindow);
+        }
+
+        public bool CloseEditorBlocking(int slot)
+        {
+            EditorClosed = true;
+            return true;
+        }
     }
 
     static InsertPluginInfo Plugin() => new()
@@ -88,9 +105,10 @@ public class Vst3BridgeInsertTests
         Locator = @"C:\fake\test.vst3",
     };
 
-    static Vst3BridgeInsert Make(IBridgeChannel channel, int inputChannels = 2, bool bypassed = false)
+    static Vst3BridgeInsert Make(IBridgeChannel channel, int inputChannels = 2, bool bypassed = false,
+        bool hasEditor = false, bool needsOpenGl = false)
         => Vst3BridgeInsert.CreateForTest(Plugin(), channel, slotId: 7, blockSize: 512,
-            latencySamples: 0, hasEditor: false, needsOpenGl: false, bypassed: bypassed,
+            latencySamples: 0, hasEditor: hasEditor, needsOpenGl: needsOpenGl, bypassed: bypassed,
             inputChannels: inputChannels);
 
     [Fact]
@@ -184,6 +202,11 @@ public class Vst3BridgeInsertTests
         public bool SetStateBlocking(int slot, byte[] data) => false;
         public IReadOnlyList<ParameterInfo>? GetParametersBlocking(int slot) => null;
         public bool SetParameterBlocking(int slot, long id, double value) => false;
+
+        public (bool Ok, string? Reason, int ChildWindows, long WindowHandle) OpenEditorBlocking(int slot, string title)
+            => (false, "no editor", 0, 0);
+
+        public bool CloseEditorBlocking(int slot) => false;
     }
 
     [Fact]
@@ -254,15 +277,45 @@ public class Vst3BridgeInsertTests
     }
 
     [Fact]
-    public void Editor_IsUnavailableInP1()
+    public void Editor_OpensAndClosesThroughTheBridge()
     {
-        var insert = Make(new FakeChannel());
+        // 句柄为 0：IsEditorOpen 不做 IsWindow 校验，于是这条测的是"消息往返 + 状态"。
+        var channel = new FakeChannel();
+        var insert = Make(channel, hasEditor: true);
 
-        Assert.False(insert.HasEditor);
+        Assert.True(insert.HasEditor);
         Assert.False(insert.IsEditorOpen);
-        Assert.False(insert.OpenEditor(System.IntPtr.Zero));
+
+        Assert.True(insert.OpenEditor(System.IntPtr.Zero));
+        Assert.True(channel.EditorOpened);
+        Assert.True(insert.IsEditorOpen);
+
+        insert.CloseEditor();
+        Assert.True(channel.EditorClosed);
+        Assert.False(insert.IsEditorOpen);
+    }
+
+    [Fact]
+    public void Editor_ReturnsTheBridgeWindowHandleForRaising()
+    {
+        // 桥回传插件窗口句柄，宿主用 FindEditorWindowSince 拿它做置前（窗口在桥进程里，
+        // 本地枚举不到）。
+        var channel = new FakeChannel { EditorWindow = 0x1234 };
+        var insert = Make(channel, hasEditor: true);
+
+        insert.OpenEditor(System.IntPtr.Zero);
+
+        Assert.Equal(new System.IntPtr(0x1234), insert.FindEditorWindowSince(new HashSet<System.IntPtr>()));
         Assert.Empty(insert.SnapshotTopLevelWindows());
-        Assert.Equal(System.IntPtr.Zero, insert.FindEditorWindowSince(new HashSet<System.IntPtr>()));
+    }
+
+    [Fact]
+    public void Editor_WhenTheBridgeRefuses_DoesNotMarkItOpen()
+    {
+        var insert = Make(new FailingChannel(), hasEditor: true);
+
+        Assert.False(insert.OpenEditor(System.IntPtr.Zero));
+        Assert.False(insert.IsEditorOpen);
     }
 
     [Fact]

@@ -11,9 +11,9 @@ using TuneLab.ExperimentalPatch.VstBridge;
 // （vendored OwnAudioVST3、声道/侧链、NaN 清理、state/参数）。桥这边只是"另一个进程里
 // 的同一段装配"：复用它们，隔离这件事就只剩协议与共享环的搬运，而不是把 VST3 逻辑抄第二遍。
 //
-// 【编辑器】P1 不开插件 GUI：VST3 的窗口由插件自己建，消息泵必须待在**建窗的那条线程**上，
-// 而桥的主线程正阻塞读管道。把它做对需要独立的 STA 线程 + Win32 消息循环（P2）。
-// 在此之前 HasEditor 一律回 false，宿主自然走参数面板，不会给用户一个按下去没反应的按钮。
+// 【编辑器】P2：桥侧开插件 GUI。VST3 的窗口由插件自己建，消息泵必须待在**建窗的那条线程**
+// 上，而桥的主线程正阻塞读管道 —— 所以 Vst3EditorWindow 单起一条 STA 线程：开窗 → 泵消息 →
+// 关窗，并把插件窗口的 HWND 经协议回传宿主（宿主用它置前 / 判"用户是否已经关掉"）。
 //
 // 【格式可用性】只有把 ownvst3.tlhost.dll 发到身边的桥才支持 VST3。x64 桥有，x86 桥没有；
 // Host 通过 HelloAck.Formats 看到这一点，不会把 VST3 发给一个不支持的桥。
@@ -46,7 +46,8 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         mOut = output;
     }
 
-    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth, bool HasEditor) Load(
+    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth,
+        bool HasEditor, bool NeedsOpenGl) Load(
         LoadPluginMessage request, out int inputChannels, out int outputChannels)
     {
         inputChannels = 0;
@@ -56,14 +57,14 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
             Unload(request.Slot);
 
         if (!IsSupported)
-            return (false, "the VST3 host library is missing in this bridge", null, null, 0, false, false);
+            return (false, "the VST3 host library is missing in this bridge", null, null, 0, false, false, false);
 
         if (!File.Exists(request.Path))
-            return (false, "plugin file not found", null, null, 0, false, false);
+            return (false, "plugin file not found", null, null, 0, false, false, false);
 
         mBackend ??= new Vst3Backend();
         if (!mBackend.IsAvailable)
-            return (false, mBackend.UnavailableReason ?? "the VST3 host library is missing", null, null, 0, false, false);
+            return (false, mBackend.UnavailableReason ?? "the VST3 host library is missing", null, null, 0, false, false, false);
 
         // 桥只认路径；名字 / 厂商由插件自己报。用文件名占位，真实名字在 Create 之后从 wrapper 读不到，
         // 但 Vst3Insert.Name 就是插件名（后端把 InsertPluginInfo.Name 带进去）——见下。
@@ -89,13 +90,13 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         try
         {
             if (mBackend.Create(info, settings, out string? reason) is not Vst3Insert created)
-                return (false, reason ?? "the plugin could not be created", null, null, 0, false, false);
+                return (false, reason ?? "the plugin could not be created", null, null, 0, false, false, false);
 
             insert = created;
         }
         catch (Exception ex)
         {
-            return (false, "unexpected error while loading the plugin: " + ex.Message, null, null, 0, false, false);
+            return (false, "unexpected error while loading the plugin: " + ex.Message, null, null, 0, false, false, false);
         }
 
         var slot = new Slot
@@ -116,14 +117,33 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         inputChannels = insert.InputChannels;
         outputChannels = 2;
 
-        // HasEditor 回 false：这个版本不开插件 GUI（见文件头）。宿主据此走参数面板。
-        return (true, null, insert.Name, insert.Vendor, insert.LatencySamples, false, false);
+        // [P2] 桥侧开插件 GUI：HasEditor / NeedsOpenGl 如实回报，宿主据此决定
+        // "开 GUI 还是退回参数面板"（NeedsOpenGl 为真而机器没有 GL 时退面板）。
+        bool hasEditor;
+        bool needsOpenGl;
+        try
+        {
+            hasEditor = insert.HasEditor;
+            needsOpenGl = insert.NeedsOpenGl;
+        }
+        catch (Exception)
+        {
+            hasEditor = false;
+            needsOpenGl = false;
+        }
+
+        return (true, null, insert.Name, insert.Vendor, insert.LatencySamples, false, hasEditor, needsOpenGl);
     }
 
     public bool Unload(int slotNumber)
     {
         if (!mSlots.Remove(slotNumber, out var slot))
             return false;
+
+        // 编辑器窗口挂着插件自己的 view：必须在 insert.Dispose()（FreeLibrary）之前摘掉，
+        // 否则关窗时插件会碰已经释放的组件（与 VST2 那条路同一个顺序纪律）。
+        slot.Editor?.Dispose();
+        slot.Editor = null;
 
         try
         {
@@ -286,15 +306,65 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
             slot.Insert.SetParameter((int)id, value);
     }
 
-    // P1：不开插件 GUI（见文件头）。宿主收到 false 会退回参数面板。
-    public (bool Ok, string? Reason, int ChildWindows) OpenEditor(int slotNumber, string title)
-        => (false, "the isolated VST3 host does not open plugin GUIs yet", 0);
+    // [P2] 开插件 GUI：插件自己开的顶层窗在桥进程里，这里起一条 STA 线程开窗 + 泵消息，
+    // 把 HWND 经协议回传宿主（宿主用它置前 / 判"用户是否已经关掉"）。
+    // 失败原因（没有界面 / 拒绝打开）原样带回去，界面据此退回参数面板。
+    public (bool Ok, string? Reason, int ChildWindows, IntPtr Window) OpenEditor(int slotNumber, string title)
+    {
+        if (!mSlots.TryGetValue(slotNumber, out var slot))
+            return (false, "slot not found", 0, IntPtr.Zero);
 
-    public bool CloseEditor(int slotNumber) => false;
+        bool hasEditor;
+        try
+        {
+            hasEditor = slot.Insert.HasEditor;
+        }
+        catch (Exception)
+        {
+            hasEditor = false;
+        }
+
+        if (!hasEditor)
+            return (false, "the plugin has no editor", 0, IntPtr.Zero);
+
+        // 已经开着：带回前台，不重建（重建会丢插件窗口里的临时状态）。
+        if (slot.Editor != null)
+        {
+            if (slot.Editor.IsAlive)
+            {
+                slot.Editor.BringToFront();
+                return (true, null, slot.Editor.ChildWindowCount, slot.Editor.Handle);
+            }
+
+            // 用户已经点 ✕ 关掉了：窗口与消息泵都没了，当"没开"重来。
+            slot.Editor.Dispose();
+            slot.Editor = null;
+        }
+
+        if (!Vst3EditorWindow.TryOpen(slot.Insert, out var editor) || editor == null)
+            return (false, "the plugin refused to open its editor", 0, IntPtr.Zero);
+
+        slot.Editor = editor;
+        return (true, null, editor.ChildWindowCount, editor.Handle);
+    }
+
+    public bool CloseEditor(int slotNumber)
+    {
+        if (!mSlots.TryGetValue(slotNumber, out var slot))
+            return false;
+
+        slot.Editor?.Dispose();
+        slot.Editor = null;
+        return true;
+    }
 
     sealed class Slot
     {
         public Vst3Insert Insert = null!;
+
+        // [P2] 这个槽位当前开着的编辑器窗口（没开 = null）。
+        public Vst3EditorWindow? Editor;
+
         public int Frames;
         public bool Bypassed;
 

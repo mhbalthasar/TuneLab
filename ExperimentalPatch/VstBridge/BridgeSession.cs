@@ -171,6 +171,7 @@ internal sealed class BridgeSession : IDisposable
             OutputChannels = outputChannels,
             IsSynth = result.IsSynth,
             HasEditor = result.HasEditor,
+            NeedsOpenGl = result.NeedsOpenGl,
         }));
     }
 
@@ -195,8 +196,8 @@ internal sealed class BridgeSession : IDisposable
             Ok = result.Ok,
             Reason = result.Reason,
             ChildWindows = result.ChildWindows,
-            // VST3 侧将来会填真实句柄（P2）；VST2 的窗口归桥自己置前，一直是 0。
-            WindowHandle = 0,
+            // VST3 回插件自己那扇顶层窗的句柄；VST2 的窗口归桥自己置前，一直是 0。
+            WindowHandle = result.Window.ToInt64(),
         }));
     }
 

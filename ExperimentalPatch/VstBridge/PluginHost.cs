@@ -61,7 +61,8 @@ internal sealed class PluginHost : IBridgePluginHost
         mOut = output;
     }
 
-    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth, bool HasEditor) Load(
+    public (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth,
+        bool HasEditor, bool NeedsOpenGl) Load(
         LoadPluginMessage request, out int inputChannels, out int outputChannels)
     {
         inputChannels = 0;
@@ -74,7 +75,7 @@ internal sealed class PluginHost : IBridgePluginHost
 
         if (!File.Exists(request.Path))
         {
-            return (false, "plugin file not found", null, null, 0, false, false);
+            return (false, "plugin file not found", null, null, 0, false, false, false);
         }
 
         IntPtr library;
@@ -86,13 +87,13 @@ internal sealed class PluginHost : IBridgePluginHost
         {
             // 最常见的原因：位数不匹配（桥是 32 位进程，装 64 位 dll 会报
             // ERROR_BAD_EXE_FORMAT），或者缺少依赖 dll。
-            return (false, "cannot load the plugin library: " + ex.Message, null, null, 0, false, false);
+            return (false, "cannot load the plugin library: " + ex.Message, null, null, 0, false, false, false);
         }
 
         if (!NativeLibrary.TryGetExport(library, "VSTPluginMain", out IntPtr entry))
         {
             NativeLibrary.Free(library);
-            return (false, "the file is not a VST2 plugin (no VSTPluginMain export)", null, null, 0, false, false);
+            return (false, "the file is not a VST2 plugin (no VSTPluginMain export)", null, null, 0, false, false, false);
         }
 
         // 插件在 VSTPluginMain 里就会问宿主版本 / 采样率 / 块长（见 HostCallback），
@@ -113,13 +114,13 @@ internal sealed class PluginHost : IBridgePluginHost
         if (effect == IntPtr.Zero)
         {
             NativeLibrary.Free(library);
-            return (false, "the plugin refused to create its AEffect", null, null, 0, false, false);
+            return (false, "the plugin refused to create its AEffect", null, null, 0, false, false, false);
         }
 
         if (Marshal.ReadInt32(effect, 0) != VstMagic)
         {
             NativeLibrary.Free(library);
-            return (false, "the returned pointer is not a VST2 AEffect", null, null, 0, false, false);
+            return (false, "the returned pointer is not a VST2 AEffect", null, null, 0, false, false, false);
         }
 
         // AEffect 的布局随**指针宽度**变化：x86 桥里指针 4 字节，x64 里 8 字节。
@@ -171,7 +172,7 @@ internal sealed class PluginHost : IBridgePluginHost
         {
             ReleaseSlot(slot, closeEffect: true);
             NativeLibrary.Free(library);
-            return (false, "the plugin exposes no audio processing entry point", null, null, 0, false, false);
+            return (false, "the plugin exposes no audio processing entry point", null, null, 0, false, false, false);
         }
 
         slot.ProcessReplacing = (ProcessProc)Marshal.GetDelegateForFunctionPointer(
@@ -209,7 +210,7 @@ internal sealed class PluginHost : IBridgePluginHost
 
         mSlots[request.Slot] = slot;
 
-        return (true, null, name, vendor, latency, isSynth, hasEditor);
+        return (true, null, name, vendor, latency, isSynth, hasEditor, false);
     }
 
     public bool Unload(int slotNumber)
@@ -230,13 +231,13 @@ internal sealed class PluginHost : IBridgePluginHost
     // 宿主只负责发这条消息 + 把结果告诉界面。
     // 返回的 ChildWindows = 宿主窗口里挂了多少个子窗口：0 = 插件返回了却什么也没建
     // （依赖缺失 / GUI 框架初始化失败——用户看到的就是"窗口是空的，但没报错"）。
-    public (bool Ok, string? Reason, int ChildWindows) OpenEditor(int slotNumber, string title)
+    public (bool Ok, string? Reason, int ChildWindows, IntPtr Window) OpenEditor(int slotNumber, string title)
     {
         if (!mSlots.TryGetValue(slotNumber, out var slot))
-            return (false, "slot not found", 0);
+            return (false, "slot not found", 0, IntPtr.Zero);
 
         if (!slot.HasEditor)
-            return (false, "the plugin has no editor", 0);
+            return (false, "the plugin has no editor", 0, IntPtr.Zero);
 
         // 已经开着：带回前台，不重建（重建会丢插件窗口里的临时状态）。
         if (slot.Editor != null)
@@ -246,7 +247,8 @@ internal sealed class PluginHost : IBridgePluginHost
             if (slot.Editor.IsAlive)
             {
                 slot.Editor.BringToFront();
-                return (true, null, slot.Editor.ChildWindowCount);
+                // VST2 的窗口归桥自己置前，句柄不回传（宿主不需要它）。
+                return (true, null, slot.Editor.ChildWindowCount, IntPtr.Zero);
             }
 
             slot.Editor.Dispose();
@@ -254,10 +256,10 @@ internal sealed class PluginHost : IBridgePluginHost
         }
 
         if (!Vst2EditorWindow.TryOpen(slot.Effect, slot.Dispatcher, title, out var editor) || editor == null)
-            return (false, "the plugin refused to open its editor", 0);
+            return (false, "the plugin refused to open its editor", 0, IntPtr.Zero);
 
         slot.Editor = editor;
-        return (true, null, editor.ChildWindowCount);
+        return (true, null, editor.ChildWindowCount, IntPtr.Zero);
     }
 
     public bool CloseEditor(int slotNumber)

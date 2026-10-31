@@ -15,9 +15,10 @@ namespace TuneLab.Audio;
 //   3. 关掉时按正确顺序摘（CloseEditor 早于实例销毁）。
 // 这些原本是给宿主窗口写的，现在窗口归插件，剩下的就是这三件事 —— 一个壳。
 //
-// 【与 VST2 那条路的区别】VST2 的窗口开在**桥进程**里（跨进程），VST3 开在**本进程**。
-// 两条路都"不持有 HWND"，所以对外形状一致，只是 pump 的归属不同：
-// VST3 要我们自己泵（本进程的消息队列），VST2 由桥那条线程自带循环。
+// 【与 VST2 那条路的区别】VST2 的窗口开在**桥进程**里（跨进程），非隔离的 VST3 开在**本进程**，
+// 隔离的 VST3（Vst3BridgeInsert）也开在桥进程、由桥那条 STA 线程自己泵。三种情况对外形状一致：
+// 壳都不持有 HWND，只是 pump 的归属不同 —— 本进程的 VST3 要壳自己泵，过桥的由桥自带循环
+// （PumpEditorMessages 对桥模式是空操作）。
 //
 // 【线程】全部只在 UI 线程调。
 public sealed class Vst3EditorShell : IInsertEditorWindow

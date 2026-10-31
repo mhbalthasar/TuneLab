@@ -84,7 +84,11 @@ public sealed class Vst2Insert : IMixInsert, IDisposable
     // 所以这里只是发一条消息 + 把失败原因带回来。调用会等插件建完 UI。
     // ChildWindows > 0 = 桥确认插件建出了 GUI；0 = 空窗（见 Vst2EditorWindow）。
     public (bool Ok, string? Reason, int ChildWindows) OpenEditor()
-        => mClient.OpenEditorBlocking(mSlotId, Name);
+    {
+        // VST2 的窗口句柄不回传（桥自己置前），这里只把前三个字段给 VST2 的编辑器壳。
+        var (ok, reason, children, _) = mClient.OpenEditorBlocking(mSlotId, Name);
+        return (ok, reason, children);
+    }
 
     // 窗口已经在桥那边开着：把它带到前台。已经没开（插件没界面 / 窗口被关过）时返回 false。
     public bool TryActivateEditor() => mClient.BringEditorToFrontBlocking(mSlotId);

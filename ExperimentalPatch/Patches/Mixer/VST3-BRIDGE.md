@@ -274,10 +274,31 @@ interface IVst3Insert : IMixInsert
 - 验收状态：解决方案 / 两套测试全绿；两个桥重新发布。**尚未**在真机 + 真插件上跑通"经桥出声、
   state 存读"（需要开着 TuneLab 挂一个真 VST3），留待 P3 真机回归一起做。
 
-**P2（未做）**
+**P2 桥侧编辑器（已完成，2026-10-31）**
 
-桥侧编辑器：独立 STA 线程 + Win32 消息循环，`OpenEditorResult.WindowHandle` 回传真实句柄。
-当前 `Vst3PluginHost.OpenEditor` 一律回 false（`HasEditor` 也回 false），宿主走参数面板。
+- 新增 `VstBridge/Vst3EditorWindow.cs`：与 `Vst2EditorWindow` 同构的桥侧编辑器宿主。
+  在一条 **STA 线程**上 `OpenEditor(0)`（vendored 的 ownvst3 只支持"插件自己开顶层窗"
+  这一种模式，见 `Vst3Insert.OpenEditor` 的实测记录）→ 用 `SnapshotTopLevelWindows` /
+  `FindEditorWindowSince` 找到插件那扇窗 → 循环泵消息（`SafeDispatchMessage` +
+  `PeekMessage`/`TranslateMessage`/`DispatchMessage`）→ 关窗时在**同一条线程**上
+  `CloseEditor`（native 约定）。`Dispose` 会 Join 线程后才能让桥 `Unload`（否则卸载时
+  插件代码还在跑，AccessViolation）。
+- 协议回传：`IBridgePluginHost.OpenEditor` 现返回 `Window`（`IntPtr`）；
+  `BridgeSession.HandleOpenEditor` 把它写进 `OpenEditorResultMessage.WindowHandle`
+  （VST2 回 0，VST3 回插件窗口句柄）。`Load` 增加 `NeedsOpenGl`（VST3 如实回报，
+  VST2 恒 false），`HasEditor` 对 VST3 也从桥回报（不再硬编码 false）。
+- 宿主侧：`IBridgeChannel.OpenEditorBlocking` / `CloseEditorBlocking`；
+  `VstBridgeClient` 的编辑器往返带上 `WindowHandle`。`Vst3BridgeInsert` 实现
+  `IVst3Insert` 的编辑器面：`OpenEditor` 翻成桥消息并记住回传的 HWND，
+  `IsEditorOpen` 用跨进程 `IsWindow` 判"用户是否已经关掉"，`PumpEditorMessages` 是空操作
+  （桥自己那条线程在泵），`FindEditorWindowSince` 直接返回回传句柄 —— 于是
+  `Vst3EditorShell` **不用改**：`TryRaise` 照常拿句柄置前，巡查定时器照常判 `IsEditorOpen`。
+- GL 兜底不变：`Vst3EditorShell` 在 `NeedsOpenGl && !HasUsableOpenGl` 时退回参数面板；
+  桥侧开窗失败（插件没界面 / 拒绝）也由壳退回参数面板。
+- 测试：`Vst3BridgeInsertTests` 新增"编辑器经桥开 / 关""回传句柄给置前""桥拒绝则不开"。
+- 验收：解决方案 / 两套测试全绿（932）；两个桥重新发布（x64 带 native，x86 不带）。
+  **仍需真机 + 真 VST3** 才能确认"插件窗口真的画出来、能交互、关窗后再开正常"
+  —— 留在 P3 真机回归一起做。
 
 **已知杂物**
 

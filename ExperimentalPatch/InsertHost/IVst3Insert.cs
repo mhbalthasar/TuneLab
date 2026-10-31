@@ -49,7 +49,8 @@ public interface IVst3Insert : IMixInsert
     // ── 编辑器 ──
     //
     // 进程内：窗口由插件建在**本进程**，实现方自己开、自己泵（宿主用定时器驱动 Pump）。
-    // 桥模式：窗口由插件建在**桥进程**，实现方的这些方法基本是 no-op（P2 才会真开窗）。
+    // 桥模式：窗口由插件建在**桥进程**，桥那边用一条 STA 线程自己泵；宿主这边 Open/Close
+    // 翻成桥消息，FindEditorWindowSince 返回桥回传的 HWND，好让编辑器壳照常置前。
     bool OpenEditor(IntPtr parent);
 
     bool IsEditorOpen { get; }
@@ -60,8 +61,8 @@ public interface IVst3Insert : IMixInsert
 
     void ResizeEditor(int width, int height);
 
-    // 找插件自己那扇顶层窗（本进程内）。桥模式下返回空集 / 0 —— 窗口不在这个进程里，
-    // 宿主改成用桥回传的 HWND 做置前（P2）。
+    // 找插件自己那扇顶层窗（本进程内）。桥模式下返回**桥回传的**句柄（窗口不在这个进程里，
+    // 但置前 / 可见性查询都能跨进程用），SnapshotTopLevelWindows 则回空集。
     HashSet<IntPtr> SnapshotTopLevelWindows();
 
     IntPtr FindEditorWindowSince(HashSet<IntPtr> before);

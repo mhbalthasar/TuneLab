@@ -323,11 +323,11 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 失败原因原样带回去（"no editor" / "refused"），界面可以据此禁用按钮。
     // ChildWindows 是桥那头"宿主窗口里到底挂了几个子窗口"：0 = 插件返回了却没建 GUI
     // （依赖缺失那一类，用户看到的就是空窗口）。
-    public async Task<(bool Ok, string? Reason, int ChildWindows)> TryOpenEditorAsync(int slot, string title,
-        CancellationToken cancellation = default)
+    public async Task<(bool Ok, string? Reason, int ChildWindows, long WindowHandle)> TryOpenEditorAsync(int slot,
+        string title, CancellationToken cancellation = default)
     {
         if (!IsRunning)
-            return (false, "the bridge is not running", 0);
+            return (false, "the bridge is not running", 0, 0);
 
         try
         {
@@ -338,16 +338,16 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             }), cancellation).ConfigureAwait(false);
 
             if (reply == null)
-                return (false, "the bridge did not answer", 0);
+                return (false, "the bridge did not answer", 0, 0);
 
             var result = JsonSerializer.Deserialize<OpenEditorResultMessage>(reply);
             return result == null
-                ? (false, "bad reply", 0)
-                : (result.Ok, result.Reason, result.ChildWindows);
+                ? (false, "bad reply", 0, 0)
+                : (result.Ok, result.Reason, result.ChildWindows, result.WindowHandle);
         }
         catch (Exception)
         {
-            return (false, "the bridge did not answer", 0);
+            return (false, "the bridge did not answer", 0, 0);
         }
     }
 
@@ -488,7 +488,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 【为什么是 3 秒而不是 15 秒】用户点「界面」之后 UI 线程会等在这里。3 秒以上在交互上
     // 就是"软件卡死了"（用户原话）。真需要更久的插件是少数，而"宁可窗口空着、界面活着"
     // 比"界面冻结十几秒"好 —— 超时后窗口留着，用户还是能继续混音的。
-    public (bool Ok, string? Reason, int ChildWindows) OpenEditorBlocking(int slot, string title)
+    public (bool Ok, string? Reason, int ChildWindows, long WindowHandle) OpenEditorBlocking(int slot, string title)
     {
         // 让**桥**有资格把窗口带到前台。Windows 只允许"当前前台进程"或获得它授权的进程
         // 调 SetForegroundWindow；桥是被我们启动的子进程，不授权的话它的 SetForegroundWindow
@@ -511,7 +511,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
             // 杀桥：管道里已经错位的回复留着会答错下一个问题（见 EnsureStartedAsync 的注记）。
             KillBridge();
-            return (false, LastEditorError, 0);
+            return (false, LastEditorError, 0, 0);
         }
 
         return task.Result;

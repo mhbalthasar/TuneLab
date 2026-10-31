@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using TuneLab.ExperimentalPatch.VstBridge;
 
@@ -14,7 +15,8 @@ internal interface IBridgePluginHost
 {
     void Attach(SharedAudioRing input, SharedAudioRing output);
 
-    (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth, bool HasEditor) Load(
+    (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth,
+        bool HasEditor, bool NeedsOpenGl) Load(
         LoadPluginMessage request, out int inputChannels, out int outputChannels);
 
     bool Unload(int slotNumber);
@@ -29,7 +31,9 @@ internal interface IBridgePluginHost
 
     void SetParameter(int slotNumber, long id, double value);
 
-    (bool Ok, string? Reason, int ChildWindows) OpenEditor(int slotNumber, string title);
+    // 开（或激活）插件编辑器。Window = 插件窗口的 HWND（VST2 由桥自己置前，回 0；
+    // VST3 回插件自己那扇顶层窗的句柄，宿主用它置前 / 查可见性）。
+    (bool Ok, string? Reason, int ChildWindows, IntPtr Window) OpenEditor(int slotNumber, string title);
 
     bool CloseEditor(int slotNumber);
 }
