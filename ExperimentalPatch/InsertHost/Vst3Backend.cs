@@ -73,7 +73,6 @@ public sealed class Vst3Backend : IInsertBackend
         }
 
         progress?.Report(0f);
-        onDetail?.Invoke(deep ? "scanning in the isolated host" : "scanning in the isolated host");
 
         var entries = client.ScanPluginsBlocking(deep);
         progress?.Report(1f);

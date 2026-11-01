@@ -82,16 +82,18 @@ public class Vst3IntegrationTests
         var backend = new Vst3Backend();
         Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
 
-        var detail = new List<string>();
-        var entries = backend.ListPluginsDeep(progress: null, onDetail: d =>
+        // 进度由宿主侧报（桥只回一份结果）：这里只需要确认那条路是通的。
+        var reported = new List<float>();
+        var entries = backend.ListPluginsDeep(new SyncProgress(f =>
         {
-            lock (detail)
-                detail.Add(d);
-        });
+            lock (reported)
+                reported.Add(f);
+        }));
 
         // "问插件要描述"这件事现在整段在桥进程里做：宿主只发一条 ListPlugins 消息。
         // 这台机器上确实装了 64 位插件，所以结果不能是空的 —— 空 = 协议/桥那半出了问题。
         Assert.NotEmpty(entries);
+        Assert.Contains(1f, reported);
 
         // Full 扫描的厂商是官方口径（插件描述里读的），不是从路径里猜的。
         Assert.Contains(entries, e => !string.IsNullOrWhiteSpace(e.Vendor));
@@ -101,6 +103,13 @@ public class Vst3IntegrationTests
             Assert.False(string.IsNullOrWhiteSpace(e.Locator));
             Assert.Equal("VST3", e.Format);
         });
+    }
+
+    // Progress<T> 在没有同步上下文的线程上会异步投递，断言要在回调之后马上看到值，
+    // 所以这里用同步实现。
+    sealed class SyncProgress(Action<float> report) : IProgress<float>
+    {
+        public void Report(float value) => report(value);
     }
 
     [Fact]
