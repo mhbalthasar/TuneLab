@@ -92,9 +92,10 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
     // [VST3-BRIDGE] 隔离开关（本机设置）。读写都落进 insert-plugins.json。
     //
-    // 【默认开（P5.5）】没有显式设置过时 = 这台机器能隔离就隔离（见 IInsertPluginSettings）。
-    // "能不能"只查文件、不起桥，所以这里可以直接问。
-    public bool IsolateVst3 => Load().IsolateVst3 ?? IsolateVst3Available;
+    // 【默认开（P5.5）】**所有平台一律开**：没有显式设置过就隔离。不做平台特例、也不跟"本机
+    // 桥在不在"走 —— 跨平台一致的含义就是同一条规则。桥不在 / 32 位宿主时由 Vst3Backend 的
+    // 回退路径接管（如实记原因 + 写日志），设置页状态行会把"现在其实在进程内"写出来。
+    public bool IsolateVst3 => Load().IsolateVst3 ?? true;
 
     public void SetIsolateVst3(bool value)
     {

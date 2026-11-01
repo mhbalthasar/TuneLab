@@ -85,14 +85,15 @@ public class InsertPluginSettingsTests
     }
 
     [Fact]
-    public void IsolationIsOffByDefaultWhenTheBridgeIsMissing()
+    public void IsolationIsOnByDefaultEvenWithoutTheBridge()
     {
+        // 默认值**不跟"本机有没有桥"走**：所有平台一律开，桥不在就交给后端的回退路径
+        // （Vst3Backend 记 IsolationFallbackReason、宿主写日志、状态行写"现在在进程内"）。
+        // 默认值要是跟着可用性变，同一台机器在不同部署上就有两种默认 —— 那不叫跨平台一致。
         WithIsolation(null, bridgeAvailable: false, settings =>
         {
             Assert.False(settings.IsolateVst3Available);
-
-            // 桥不在就按进程内走：不去每次加载都先白试一遍桥再回退。
-            Assert.False(settings.IsolateVst3);
+            Assert.True(settings.IsolateVst3);
             Assert.False(string.IsNullOrEmpty(settings.IsolateVst3UnavailableReason));
         });
     }

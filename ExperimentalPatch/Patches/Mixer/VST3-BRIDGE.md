@@ -178,9 +178,10 @@ interface IVst3Insert : IMixInsert
 
 `Vst3Backend.Create`：
 
-- 设置 `Settings.IsolateVst3`（本机设置）。**P5.5 起默认开**：没显式设置过 =
-  「这台机器能隔离就隔离」（`IInsertPluginSettings.IsolateVst3Available`，三个平台同一条规则，
-  没有 Windows 特例）；用户显式关掉就按关走。详见 §6 的那段与 §10 的 P5.5；
+- 设置 `Settings.IsolateVst3`（本机设置）。**P5.5 起所有平台一律默认开**：没显式设置过就隔离，
+  既不按平台、也不按"本机桥在不在"分叉（同一条规则才叫跨平台一致）；用户显式关掉就按关走。
+  桥不在 / 32 位宿主时后端照常回退进程内并记原因，设置页状态行写"现在其实在进程内"。
+  详见 §6 的那段与 §10 的 P5.5；
 - 选桥模式：`VstBridgeClient.ForBitness(64)` → `EnsureStartedBlocking` →
   `LoadBlocking(..., format: "vst3")` → `Vst3BridgeInsert`；
 - 桥不可用 / 启动失败：回退进程内 `Vst3Insert`，把原因写日志、记进
@@ -203,14 +204,15 @@ interface IVst3Insert : IMixInsert
 |---|---|---|
 | P1 | 协议 format / 版本 3、`IBridgePluginHost` 路由、x64 桥的 `Vst3PluginHost`（音频 + state + 参数，**不含编辑器**）、`IVst3Insert` + `Vst3BridgeInsert`、设置开关（当时默认关，P5.5 改为默认开） | 真插件：出声、state 存读、参数读写、latency 正确；桥被杀后宿主存活、插入 bypass |
 | P2 | 桥侧编辑器线程 + HWND 回传 + GL 判据；宿主 `Vst3EditorShell` 适配 | 打开/关闭插件 GUI；杀掉编辑器线程不带走宿主 |
-| P3 | 默认打开（Windows x64）；桥不可用时回退进程内并提示；文档更新 | 真机回归；老工程（进程内挂的 VST3）打开后仍是同样声音 |
+| P3 | 默认打开（**P5.5 起改为所有平台一律开**）；桥不可用时回退进程内并提示；文档更新 | 真机回归；老工程（进程内挂的 VST3）打开后仍是同样声音 |
 | P4 | 挂起测试：造一个会卡住的假后端 / 插件，验证 load 20s 超时后杀桥、宿主恢复（超时机制已在 P1 落地，剩端到端验证） | 宿主不冻结 |
 | P5 | 跨平台隔离（linux / macOS）+ 架构扩展；VST3 锁 64 位、放弃 32 位 VST3（VST2 维持 Windows-only）。设计见 §9 | §9.10 的隔离验证清单在目标矩阵上全过 |
 
-- **默认开（P3 / P5.5）**：三个平台一条规则，不做 Windows 特殊化 ——
-  「没设置过 = 这台机器能隔离就隔离」。能不能隔离只看静态条件（64 位 + 支持的平台 +
-  64 位桥可执行文件就位），**不起进程**；桥究竟带不带 VST3 要握手后才确定，
-  那条信息以「上一次回退原因」的形式显示在设置页状态行（见 §5.2 / §10 P5.5）。
+- **默认开（P3 / P5.5）**：所有平台一条规则，不做 Windows 特殊化、也不看"本机桥在不在" ——
+  「没设置过 = 开」。能不能隔离是**运行期的事**：静态条件（64 位 + 支持的平台 + 64 位桥可执行
+  文件就位）只用来画设置页那行状态，**不参与默认值**（同一台机器在不同部署上就不会有两种默认）；
+  桥究竟带不带 VST3 要握手后才确定，那条信息以「上一次回退原因」的形式显示在状态行
+  （见 §5.2 / §10 P5.5）。桥不在 / 32 位宿主时后端照常回退进程内并如实记原因。
   老版本写下的 `IsolateVst3: false` 不算用户选择（那一版默认就是关），
   由 `SettingsVersion` 一次性迁移成「未设置」。
 
@@ -410,7 +412,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 | P5.2 | ✅ 共享段 / UDS 的 owner 化 + 启动清扫（命名事件在 Unix 不存在，见 §9.6） | 强杀宿主、强杀桥后无残留（§9.10 第 3 条） |
 | P5.3 | ✅ 每 RID 桥 exe + native 发布接线（`FindBridgeExecutable` 按 RID + `publish-bridges.ps1 -Runtime` + CI 产物带 `bridge/<rid>/`）。**native 二进制仍缺**（见 §9.9） | linux-x64 / osx-arm64 出包即用（布局就位；VST3 待 native vendored） |
 | P5.4 | ✅ macOS（存活管道版，无 PDEATHSIG）+ 其余架构（win-arm64 / linux-arm64 / osx-x64）。验证台 `ipc` 流水线六档全绿（含真 VST3），见 §10 | 目标矩阵全绿（win-x64 / win-arm64 / linux-x64 / linux-arm64 / osx-x64 / osx-arm64） |
-| P5.5 | ✅ 默认开（三个平台同一条规则，不做 Windows 特殊化）+ 回退提示（设置页状态行）+ 文档；`SettingsVersion` 一次性迁移旧文件里的 `false` | 单测钉住默认值 / 显式选择 / 迁移 / 状态行；老工程声音不变（进程内路径一条不删） |
+| P5.5 | ✅ **所有平台一律默认开**（同一条规则：不按平台、不按本机桥在不在）+ 回退提示（设置页状态行）+ 文档；`SettingsVersion` 一次性迁移旧文件里的 `false` | 单测钉住默认值 / 显式选择 / 迁移 / 状态行；老工程声音不变（进程内路径一条不删） |
 
 > 编辑器 GUI 的跨平台 pump 不在 P5，另立一项（macOS Cocoa / Linux X11-Wayland）。
 
@@ -421,7 +423,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 | loongarch64 | .NET 8 无官方 `linux-loongarch64` RID，需社区运行时；且 `Vst3Backend.NativeRid` 的 `else` 分支会把它错判成 `linux-x64`。本轮暂缓，恢复前须先补 RID 映射与运行时可行性论证 |
 | macOS 无 PDEATHSIG | 只有存活管道；看门狗线程必须可靠（`read()` 不能被信号打断成假唤醒） |
 | 编辑器 | 非 Windows 的 GUI pump 是另一条独立工作；在它落地前，桥在非 Windows 一律退参数面板 |
-| 32 位宿主 | 若将来出 win-x86 host：VST3 应显式**禁用并可见提示**，而不是静默找不到 x86 native |
+| 32 位宿主 | VST3 隔离锁 64 位。若将来出 win-x86 host：默认值仍是开，但 `Vst3BridgeInsert.PlatformSupported` 为 false，后端回退进程内并记 `IsolationFallbackReason` → 日志 + 设置页状态行写"不可用（需要 64 位宿主）"，不是静默找不到 x86 native |
 | 回退语义 | 与 Windows 一致：桥**起不来** → 回退进程内并可见标示；桥**是好的但插件把桥弄没** → 如实报失败，不回退 |
 
 ## 10. 实现进度（随提交更新）
@@ -638,15 +640,14 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 
 **P5.5 默认开 + 回退提示（已完成，2026-11-01）**
 
-- **默认开，三个平台同一条规则**：`InsertPluginSettings.IsolateVst3` 从 `bool` 变成三态
-  （`State.IsolateVst3` 为 `bool?`）—— 没有显式设置过时 = 「这台机器能隔离就隔离」，
-  `null` → `IsolateVst3Available`。没有 Windows 特例：跨平台一致靠的是**同一条判断**，
-  而不是三份 if。
+- **默认开，所有平台同一条规则**：`InsertPluginSettings.IsolateVst3` 从 `bool` 变成三态
+  （`State.IsolateVst3` 为 `bool?`）—— 没有显式设置过时 = **开**（`null` → `true`）。
+  不按平台分叉、**也不按"本机桥在不在"分叉**：可用性是运行期的事，同一台机器在不同部署上
+  不该有两种默认值。桥不在 / 32 位宿主时由 `Vst3Backend` 的回退路径接管并如实记原因。
 - **「能不能隔离」只查文件、不起进程**：`Vst3BridgeInsert.IsolationAvailable`
   = `PlatformSupported && VstBridgeClient.BridgeExecutableExists`
-  （`FindBridgeExecutable(64)` 的静态子集）。设置页渲染时会调它，不能为了画一行状态去起桥；
-  桥究竟带不带 VST3（native 是否挨着桥）要握手后才确定，那条信息走状态行的第二行。
-  桥不在时默认**关**：否则每次加载都先白试一遍桥再回退，白付一次超时。
+  （`FindBridgeExecutable(64)` 的静态子集）。它**只用来画设置页状态行**，不参与默认值；
+  桥究竟带不带 VST3（native 是否挨着桥）要握手后才确定，那条信息也走状态行。
 - **迁移（`SettingsVersion`）**：P5.5 之前的默认就是关，任何一次扫描 / 保存都会写出
   `IsolateVst3: false` —— 那不是用户的选择。`Load()` 把 `SettingsVersion < 2` 的
   `IsolateVst3` 归零成 `null`（= 未设置），此后用户在界面上的选择写 `SettingsVersion = 2`，
@@ -668,7 +669,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
   桥 `BridgeSession.Write` 超上限时改回一条合法的 `ErrorMessage`。实际天花板 ≈ 12 MB 原始
   state（base64 之后），`BridgeProtocolFormatTests` 钉住这个边界；常见的 VST3 state 只有几十 KB。
 - 测试：`tests/TuneLab.Tests/InsertPluginSettingsTests.cs`（原 `InsertPluginCacheTests`，扩成
-  设置整文件）：默认开（桥在）/ 默认关（桥不在）/ 显式选择优先（两个方向）/ 旧 `false`
+  设置整文件）：默认开（桥在）/ 默认开（桥不在 —— 默认值不跟可用性走）/ 显式选择优先（两个方向）/ 旧 `false`
   不算选择 + 迁移后不写 `IsolateVst3` 键 / 回退原因可见直到恢复正常。探针经
   `InsertPluginSettings.IsolationAvailableProbe` 注入，不碰真文件系统。
 - 验收：Windows `TuneLab.Tests` **952/0**（946 + 5 条设置用例 + 1 条帧边界）、

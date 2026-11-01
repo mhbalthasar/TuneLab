@@ -421,21 +421,30 @@ public sealed class Vst3Backend : IInsertBackend
         //   桥是好的、插件自己拒绝 / 把桥弄没了 → 如实报失败，**不回退**（回退等于把刚炸完的
         //   插件又拉进宿主进程，正是隔离要避免的事）。
         // [P5.1] 平台闸门从"仅 Windows"放开到所有 64 位（Windows / Linux / macOS）。
-        if (settings.IsolateVst3 && Vst3BridgeInsert.PlatformSupported)
+        // [P5.5] 默认开（所有平台一致）。32 位宿主 / 未知平台上没有桥可用，也**如实记原因**，
+        //   让宿主那条"要求隔离却回了进程内"的日志与设置页状态行同样成立。
+        if (settings.IsolateVst3)
         {
-            var bridged = Vst3BridgeInsert.Create(plugin, settings, out string? bridgeReason, out bool bridgeUnavailable);
-
-            if (bridged != null)
-                return bridged;
-
-            if (!bridgeUnavailable)
+            if (!Vst3BridgeInsert.PlatformSupported)
             {
-                reason = bridgeReason;
-                return null;
+                IsolationFallbackReason = Vst3BridgeInsert.IsolationUnavailableReason;
             }
+            else
+            {
+                var bridged = Vst3BridgeInsert.Create(plugin, settings, out string? bridgeReason, out bool bridgeUnavailable);
 
-            IsolationFallbackReason = bridgeReason;
-            // 落到下面走进程内。
+                if (bridged != null)
+                    return bridged;
+
+                if (!bridgeUnavailable)
+                {
+                    reason = bridgeReason;
+                    return null;
+                }
+
+                IsolationFallbackReason = bridgeReason;
+                // 落到下面走进程内。
+            }
         }
 
         string? dll = NativePath;
