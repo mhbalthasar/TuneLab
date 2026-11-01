@@ -93,10 +93,12 @@ public sealed class InsertSettings
 
     public int MaxBlockSize { get; init; }
 
-    // [VST3-BRIDGE] 把 VST3 放进桥进程（隔离崩溃 / 挂起）。默认 false = 进程内。
+    // [VST3-BRIDGE] 把 VST3 放进桥进程（隔离崩溃 / 挂起）。
     //
-    // 这是**本机设置**（宿主从 insert-plugins.json 读进来）：默认关，P3 才会在
-    // Windows x64 上默认打开。打开后若 x64 桥不可用，Vst3Backend 回退进程内
-    // 并把原因记进 IsolationFallbackReason（宿主据此记日志 / 标示"未隔离"）。
+    // 这是**本机设置**（宿主从 insert-plugins.json 读进来，见 IInsertPluginSettings）：
+    // P5.5 起默认开 —— 三平台同一条规则，没显式设置过 = 「这台机器能隔离就隔离」。
+    // 打开后若桥不可用，Vst3Backend 回退进程内并把原因记进 IsolationFallbackReason
+    // （宿主据此记日志 + 在插件扫描设置页写一行"已回退"）。
+    // 这里的 DTO 默认值仍是 false：它只是"宿主没给值时的零值"，默认值由宿主决定。
     public bool IsolateVst3 { get; init; }
 }

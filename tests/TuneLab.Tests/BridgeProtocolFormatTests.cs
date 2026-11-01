@@ -120,4 +120,27 @@ public class BridgeProtocolFormatTests
         Assert.NotNull(back);
         Assert.Equal(0x1234_5678, back!.WindowHandle);
     }
+
+    // 一帧 state 的实际上限（P5.5：隔离默认开后，state 一律走这条帧）。
+    //
+    // 帧 = 4 字节长度 + UTF-8 JSON + base64 的 state，两端都会拿 MaxFrameBytes 判非法。
+    // 超上限的帧**不能写**：对端只读走那 4 个字节就返回，剩下的字节留在管道里，
+    // 之后每一帧都对不上 —— 等于把桥废掉。所以两端都改成"回一条错误、这一次操作失败"。
+    // 这里钉住"多大数据起过不去"，免得哪天有人调小 MaxFrameBytes 却不知道代价。
+    [Fact]
+    public void StateFrameLimitIsSixteenMegabytesOfJson()
+    {
+        static int FrameBytes(int stateBytes)
+            => System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(new SetStateMessage
+            {
+                Slot = 0,
+                Base64 = Convert.ToBase64String(new byte[stateBytes]),
+            }));
+
+        // 一兆的 state（远比常见 VST3 大：多数只有几十 KB）轻松过。
+        Assert.True(FrameBytes(1_000_000) < BridgeProtocol.MaxFrameBytes);
+
+        // 十三兆的 state 过不去 —— 这就是实际天花板（16 MB 帧 ≈ 12 MB 原始数据）。
+        Assert.True(FrameBytes(13_000_000) > BridgeProtocol.MaxFrameBytes);
+    }
 }

@@ -68,6 +68,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
                 if (LastTimeoutError is { Length: > 0 })
                     parts.Add(LastTimeoutError);
 
+                if (LastFrameError is { Length: > 0 })
+                    parts.Add(LastFrameError);
+
                 parts.AddRange(mErrorLines);
 
                 return parts.Count == 0 ? null : string.Join(" | ", parts);
@@ -83,10 +86,18 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         LastStartError = null;
         LastEditorError = null;
         LastTimeoutError = null;
+        LastFrameError = null;
     }
 
     // 启动阶段失败的原因（beyond the bridge's own stderr）。
     public string? LastStartError { get; private set; }
+
+    // 最近一次"消息本身超过协议帧上限"的原因（只有 state 可能这么大）。
+    //
+    // 【为什么要拦】超上限的帧**根本不能写**：对端读长度时会判非法、只读走那 4 个字节
+    // 就返回，剩下的字节全留在管道里 —— 之后每一帧都对不上，等于把桥废掉。
+    // 拦下来只是"这一次操作失败"，桥还能继续用。
+    public string? LastFrameError { get; private set; }
 
     // 编辑器最近一次失败的原因（超时 / 插件拒绝）。界面可以直接显示给用户。
     public string? LastEditorError { get; private set; }
@@ -875,6 +886,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         return OperatingSystem.IsWindows() ? stem + ".exe" : stem;
     }
 
+    // [P5.5] 只查文件、不起进程：设置页的"能不能隔离"与"默认是否开隔离"都用它。
+    // 正式布局是 bridge/<rid>/<exe>（见 FindBridgeExecutable）。
+    public static bool BridgeExecutableExists => FindBridgeExecutable(64) != null;
+
     static string? FindBridgeExecutable(int bitness)
     {
         string? rid = BridgeRid(bitness);
@@ -939,6 +954,17 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 所有"发一条、收一条"都走这里：拿到往返锁，保证回复不会被别的线程读走。
     async Task<string?> ExchangeAsync(string json, CancellationToken cancellation)
     {
+        // 超上限的帧不能写（见 LastFrameError 的注释）。真实的触发点只有一处：
+        // 工程里存着一份超过 16 MB 帧的 VST3 state（base64 后约 12 MB 原始数据）。
+        // 判不过就当场失败，让那一次操作如实报错，而不是把整座桥撞死。
+        if (!FitsFrame(json, out int frameBytes))
+        {
+            LastFrameError =
+                $"a {frameBytes}-byte message exceeds the bridge frame limit of {BridgeProtocol.MaxFrameBytes} bytes";
+
+            return null;
+        }
+
         await mRoundTrip.WaitAsync(cancellation).ConfigureAwait(false);
         try
         {
@@ -1059,6 +1085,13 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             return null;
 
         return DecodeFrame(frame);
+    }
+
+    // 一帧控制消息放不放得下（协议上限同时是两端的"可信长度"闸）。
+    static bool FitsFrame(string json, out int bytes)
+    {
+        bytes = Encoding.UTF8.GetByteCount(json);
+        return bytes <= BridgeProtocol.MaxFrameBytes;
     }
 
     static string? DecodeFrame(byte[] frame)

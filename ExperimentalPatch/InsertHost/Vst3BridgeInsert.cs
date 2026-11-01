@@ -328,6 +328,22 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
         Environment.Is64BitProcess &&
         (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS());
 
+    // [P5.5] 本机**静态**上能不能隔离：平台 + 64 位 + 64 位桥的可执行文件就位。
+    //
+    // 【为什么只查文件】设置页渲染时会调它，不能为了画一行状态去起一个进程。桥到底带不带
+    // VST3（native 是否挨着桥）要握手后才确定，那条信息走「最近一次回退原因」
+    // （见 Vst3Backend.IsolationFallbackReason / IInsertPluginSettings.IsolateVst3FallbackReason）。
+    //
+    // 【为什么它是默认值的依据】隔离默认开，但只在"这台机器上真能用"时开：桥没随包发出来
+    // （或用户删了）就老实走进程内，而不是每次加载都先白试一遍桥再回退。
+    public static bool IsolationAvailable =>
+        PlatformSupported && VstBridgeClient.BridgeExecutableExists;
+
+    /// <summary>IsolationAvailable 为 false 时的短原因（进设置页状态行与日志）。</summary>
+    public static string? IsolationUnavailableReason => PlatformSupported
+        ? "the 64-bit bridge executable is not installed beside the application"
+        : "the isolated VST3 host requires a 64-bit Windows, Linux or macOS host";
+
     /// <summary>
     /// 把 VST3 装进 64 位桥。失败返回 null 并写 reason。
     /// bridgeUnavailable = 失败在"桥这一侧"（没起来 / 不带 vst3）—— 这时调用方应回退进程内；

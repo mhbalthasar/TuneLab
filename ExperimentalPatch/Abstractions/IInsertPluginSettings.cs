@@ -39,7 +39,11 @@ public interface IInsertPluginSettings
     // 上次扫描时间（本地时间）；null = 还没扫过。
     string? LastScanText { get; }
 
-    // [VST3-BRIDGE] 是否把 VST3 插件放进桥进程（崩溃 / 挂起隔离）。默认关。
+    // [VST3-BRIDGE] 是否把 VST3 插件放进桥进程（崩溃 / 挂起隔离）。
+    //
+    // 【默认】没有显式设置过时 = "这台机器真能用就开"（见 IsolateVst3Available）：
+    // 隔离是安全网，用户没表过态就不该默认裸奔；但这台机器上桥没就位时也没必要
+    // 每次加载都先白试一遍再回退，所以默认值跟着可用性走。用户显式关掉会被记住。
     //
     // 【为什么是本机设置】它跟"这台机器上插件装在哪儿"是一类东西：取决于本机的
     // 桥是否可用、用户愿不愿意付一次共享内存往返。与工程内容无关，所以不进工程文件。
@@ -49,6 +53,21 @@ public interface IInsertPluginSettings
     void SetIsolateVst3(bool value)
     {
     }
+
+    /// <summary>
+    /// 这台机器上隔离**能不能真的用**：64 位 + 支持的平台 + 64 位桥已随包就位。
+    /// 只做静态判断（查文件），不起桥 —— 设置页会直接拿它画状态行。
+    /// </summary>
+    bool IsolateVst3Available => false;
+
+    /// <summary>IsolateVst3Available 为 false 时的短原因（英文，进日志与状态行）。</summary>
+    string? IsolateVst3UnavailableReason => null;
+
+    /// <summary>
+    /// 最近一次"要求隔离、却回落进程内"的原因；null = 没有回落过（或已经恢复正常）。
+    /// 内存态、不落盘：桥是能修好的东西（重装 / 重启后自愈），不该把一次失败永久写进设置。
+    /// </summary>
+    string? IsolateVst3FallbackReason => null;
 }
 
 // 扫描进度。宿主**按目录**推进（一个目录报一次），界面据此画进度条。

@@ -156,7 +156,11 @@ public sealed class InsertPluginPathsPage : UserControl
         return grid;
     }
 
-    // [VST3-BRIDGE] 隔离开关：把 VST3 放进 64 位桥进程。默认关（P1）。
+    // [VST3-BRIDGE] 隔离开关：把 VST3 放进 64 位桥进程。
+    //
+    // [P5.5] 默认开：没有显式设置过时跟"这台机器能不能隔离"走（见 IInsertPluginSettings）。
+    // 这里因此要画一行**真实状态** —— 开关是"用户想要什么"，状态行是"现在实际怎么跑"：
+    // 桥没随包就位、或要求了隔离却回退进程内，都只能从这一行看出来。
     Control BuildIsolationSection()
     {
         var header = new TextBlock
@@ -170,13 +174,13 @@ public sealed class InsertPluginPathsPage : UserControl
         var hint = new TextBlock
         {
             Text = L(
-                "默认关闭：VST3 在 TuneLab 进程内加载。打开后 VST3 改由 64 位桥进程加载 —— "
-                + "插件崩溃或卡死只会拖垮桥，TuneLab 与工程不受影响（该插入会旁通）。"
-                + "桥缺失或启动失败时自动回退进程内，并写一条日志。",
-                "Off by default: VST3 loads inside TuneLab. When on, VST3 is loaded by a 64-bit "
-                + "bridge process — a plugin crash or hang only takes down the bridge, not TuneLab "
-                + "(the insert is bypassed instead). If the bridge is missing or fails to start, "
-                + "the plugin falls back in process and a log line is written."),
+                "默认开启：VST3 由 64 位桥进程加载 —— 插件崩溃或卡死只会拖垮桥，"
+                + "TuneLab 与工程不受影响（该插入会旁通）。"
+                + "桥没有随包就位时会自动按进程内加载，下面这一行会如实写出来。",
+                "On by default: VST3 is loaded by a 64-bit bridge process — a plugin crash or hang "
+                + "only takes down the bridge, not TuneLab (the insert is bypassed instead). "
+                + "If the bridge is not installed, the plugin loads in process instead and the line "
+                + "below says so."),
             FontSize = 10,
             Foreground = Palette.Brush(Palette.TextLabel, 0.8),
             Margin = new Thickness(0, 1, 0, 0),
@@ -192,12 +196,82 @@ public sealed class InsertPluginPathsPage : UserControl
             IsEnabled = mHost.InsertPlugins != null,
         };
 
-        toggle.Click += (_, _) => mHost.InsertPlugins?.SetIsolateVst3(toggle.IsChecked == true);
+        var status = new TextBlock
+        {
+            FontSize = 10,
+            Foreground = Palette.Brush(Palette.TextLabel, 0.8),
+            Margin = new Thickness(0, 4, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        void RefreshStatus()
+        {
+            var settings = mHost.InsertPlugins;
+
+            if (settings == null)
+            {
+                status.Text = string.Empty;
+                return;
+            }
+
+            // 开关 = 用户想要的；下面四种情况 = 现在实际怎么跑。
+            if (!settings.IsolateVst3Available)
+            {
+                // 原因可能为空（没有桥能力的实现）：那就别摆一对空括号。
+                string? reason = settings.IsolateVst3UnavailableReason;
+
+                status.Text = string.IsNullOrEmpty(reason)
+                    ? L("当前：进程内加载 —— 隔离在这台机器上不可用。",
+                        "Current: in process — isolation is unavailable on this machine.")
+                    : L("当前：进程内加载 —— 隔离在这台机器上不可用（" + reason + "）。",
+                        "Current: in process — isolation is unavailable on this machine (" + reason + ").");
+                status.Foreground = Palette.Brush(Palette.AmpWarn);
+                return;
+            }
+
+            if (!settings.IsolateVst3)
+            {
+                status.Text = L(
+                    "当前：进程内加载（隔离已关闭）。",
+                    "Current: in process (isolation is off).");
+                status.Foreground = Palette.Brush(Palette.TextLabel, 0.8);
+                return;
+            }
+
+            if (settings.IsolateVst3FallbackReason is { Length: > 0 } fallback)
+            {
+                // 桥在、开关也开着，却没隔离成：说明桥起来了但这次加载回了进程内
+                // （桥不带 vst3 / 启动失败）。下次成功隔离后这一行会自己恢复正常。
+                status.Text = L(
+                    "当前：进程内加载 —— 上一次回退到进程内的原因：" + fallback,
+                    "Current: in process — last fallback reason: " + fallback);
+                status.Foreground = Palette.Brush(Palette.AmpWarn);
+                return;
+            }
+
+            status.Text = L(
+                "当前：经桥进程隔离。",
+                "Current: isolated in the bridge process.");
+            status.Foreground = Palette.Brush(Palette.TextLabel, 0.8);
+        }
+
+        toggle.Click += (_, _) =>
+        {
+            mHost.InsertPlugins?.SetIsolateVst3(toggle.IsChecked == true);
+            RefreshStatus();
+        };
+
+        // 页面每次打开都重新算一遍：状态行里的"上一次回退原因"是进程内实时状态，
+        // 混音台重建插入时可能已经变了。
+        status.AttachedToVisualTree += (_, _) => RefreshStatus();
+
+        RefreshStatus();
 
         var body = new StackPanel();
         body.Children.Add(header);
         body.Children.Add(hint);
         body.Children.Add(toggle);
+        body.Children.Add(status);
         return body;
     }
 

@@ -141,11 +141,19 @@ internal sealed class InsertInstanceFactory
             return Fail(slot.Id, reason, out reason);
 
         // [VST3-BRIDGE] 要求了隔离却回了进程内：原因是桥这一侧不可用（没起来 / 不带 vst3）。
-        // 不静默 —— 记日志（P3 会在界面上也标"未隔离"）。
-        if (settings.IsolateVst3 && backend is Vst3Backend vst3Backend
-            && vst3Backend.IsolationFallbackReason is { Length: > 0 } fallback)
+        // 不静默 —— 记日志，并且把原因记到设置层：插件扫描设置页的状态行会显示
+        // "已回退进程内：<原因>"（P5.5）。真的隔离成功就把上一次的回落记录清掉。
+        if (settings.IsolateVst3 && backend is Vst3Backend vst3Backend)
         {
-            HostLog.Warning($"insert: VST3 isolation for '{slot.Name.Value}' fell back to in-process: {fallback}");
+            if (vst3Backend.IsolationFallbackReason is { Length: > 0 } fallback)
+            {
+                HostLog.Warning($"insert: VST3 isolation for '{slot.Name.Value}' fell back to in-process: {fallback}");
+                InsertPluginSettings.NoteIsolationFallback(fallback);
+            }
+            else if (insert is IVst3Insert { IsIsolated: true })
+            {
+                InsertPluginSettings.NoteIsolationFallback(null);
+            }
         }
 
         // 落盘的插件状态在这里灌回去。灌失败（版本不兼容、插件换了）不致命：

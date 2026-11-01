@@ -356,6 +356,27 @@ internal sealed class BridgeSession : IDisposable
     void Write(string json, byte[]? payload = null)
     {
         byte[] head = Encoding.UTF8.GetBytes(json);
+        int total = head.Length + (payload?.Length ?? 0);
+
+        // 超上限的帧**不能写**：宿主读长度时会判它非法、只读走那 4 个字节就返回，
+        // 剩下的字节全留在管道里，之后每一帧都对不上 —— 等于把整座桥废掉。
+        // 真实的触发点只有一处：插件的 state 太大（16 MB 帧 ≈ 12 MB 原始数据 base64 后）。
+        // 改成回一条合法的 ErrorMessage：宿主那边就是"这一次操作失败"，桥还能继续用。
+        if (total > BridgeProtocol.MaxFrameBytes)
+        {
+            WriteCore(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new ErrorMessage
+            {
+                Message = $"a {total}-byte reply exceeds the bridge frame limit of {BridgeProtocol.MaxFrameBytes} bytes",
+            })), null);
+
+            return;
+        }
+
+        WriteCore(head, payload);
+    }
+
+    void WriteCore(byte[] head, byte[]? payload)
+    {
         byte[] length = BitConverter.GetBytes(head.Length + (payload?.Length ?? 0));
 
         mPipe.Write(length);
