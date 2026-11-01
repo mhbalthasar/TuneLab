@@ -159,8 +159,19 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         if (mDisposed)
             return false;
 
+        // [P4 补] 桥进程已经没了、管道却可能还报"连着"（Windows 的 IsConnected 是缓存的标志）。
+        // 插件崩溃、或用户在任务管理器里结束子进程，走的就是这条路：必须按"桥已死"处理。
+        if (mProcess is { HasExited: true })
+            KillBridge();
+
         if (IsRunning)
             return true;
+
+        // [P4 补] 走到这里说明要起一个新桥：先把上一轮彻底收掉（含音频路的停滞标记，
+        // 见 KillBridgeCore 末尾）。插件崩溃时管道自己断开、**没有任何代码调 KillBridge**，
+        // 于是 50 块失败把停滞标记打上；不在这里复位的话，新桥起来后每块都被当成
+        // "桥赶不上"直接直通 —— 界面显示已隔离，用户却永远听不到这个插入的效果。
+        KillBridge();
 
         // [P5.2] 每进程扫一次残留：上一次宿主/桥被强杀可能留下段文件与 UDS socket。
         BridgeResidue.SweepOnce();
@@ -747,6 +758,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
     /// <summary>桥的音频路是否已停用（连续失败过多）。宿主据此把这一个插入标红。</summary>
     public bool AudioStalled => mAudioStall.Stalled;
+
+    // [测试] 直接给停滞计数喂一次失败：这一条不需要真插件，也能钉住
+    // "换一个新桥之后停滞标记必须清掉"（见 EnsureStartedAsync 里的 KillBridge）。
+    internal void ReportAudioFailureForTest() => mAudioStall.ReportFailure();
 
     // 两处会同时杀桥：超时线程（BridgeTimeout.Run 的 onTimeout），和被打断的那条交换任务
     // （管道被 Dispose 之后它读到 EOF / 抛 IOException，也会走 KillBridge）。
