@@ -677,6 +677,21 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 - **仍未做**：真机 + 真 VST3 的界面回归（P2 插件 GUI、P4 运行期挂起标红）；
   macOS / Linux 的编辑器 GUI pump（不在 P5 范围，落地前一律退参数面板）。
 
+**P5.5 验证台回归（已完成，2026-11-01）**
+
+默认开之后 state 一律走桥，于是顺手在验证台（`mhbalthasar/project_debugger`）跑了一轮，
+两件事：
+
+- **帧上限那道闸两端补齐**：`MaxFrameBytes = 16 MB` 原来只有读的一端判，写的一端照样写出去 ——
+  对端读长度时判非法、只读走 4 字节就返回，剩下的字节留在管道里，之后每一帧都对不上，
+  等于把整座桥废掉。现在宿主 `ExchangeAsync` 先量字节数（`LastFrameError`，拼进
+  `LastBridgeError`），桥 `BridgeSession.Write` 超上限改回一条合法的 `ErrorMessage`。
+  验证台的两份副本已同步（提交 `74a466c`），本仓库提交见下。
+- **macOS x64 上的偶发"丢一块"是测试口径问题，不是机制问题**：`SendProcess` 的实时纪律是
+  "20 ms 内没赶上就直通"，共享 runner 上一块偶尔超 20 ms 本来就是产品允许的结果，而测试
+  原来按零容忍写（2000 块那条尤其脆）。验证台改成 `Harness.SendBlock` 重试一次 + 2000 块
+  按丢块率 ≤0.5% 判（`51e4829`），此后六平台全绿。
+
 **已知杂物**
 
 （暂无：引用 `InsertHost` 会让 x86 桥输出多一份 x64 的 `ownvst3.tlhost.dll`，
