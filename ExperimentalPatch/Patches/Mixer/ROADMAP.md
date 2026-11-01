@@ -138,7 +138,7 @@ FX 浮窗的侧链图标（⛓）与源菜单、`InsertDto.SidechainId` 落盘�
 
 | 优先 | 项 | 一句话 |
 |---|---|---|
-| 1 | VST3 崩溃隔离 | **方案已写：[VST3-BRIDGE.md](VST3-BRIDGE.md)**。把 VST3 也走桥；实测插件既可能崩、也可能挂，进程内兜不住。收益最高，工作量最大 |
+| 1 | VST3 崩溃隔离 | **已落地（P1–P5.5）**：[VST3-BRIDGE.md](VST3-BRIDGE.md) §10 有每阶段记录；三平台一条规则、P5.5 起默认开。剩：真机界面回归（P2 插件 GUI / P4 运行期挂起）、macOS/Linux 的编辑器 GUI pump（另立一项） |
 | 2 | JSFX（M9） | 先 spike `ysfx` 的 P/Invoke、`@gfx`、许可 |
 | 3 | 多设备输出 / 监听耳返 | v2 用途；每设备一个 sink + 漂移补偿 |
 | 4 | 插入参数自动化 | 与正规 DAW 差距最大；要单独设计一轮 |
