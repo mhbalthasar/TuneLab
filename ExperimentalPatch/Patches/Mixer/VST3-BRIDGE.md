@@ -178,12 +178,14 @@ interface IVst3Insert : IMixInsert
 
 `Vst3Backend.Create`：
 
-- 新增设置 `Settings.IsolateVst3`（本机设置）。**P1 默认 false**（进程内，线上行为不变）；
-  P3 才改成"Windows 且 x64 桥可用时 true"，其它平台继续进程内；
+- 设置 `Settings.IsolateVst3`（本机设置）。**P5.5 起默认开**：没显式设置过 =
+  「这台机器能隔离就隔离」（`IInsertPluginSettings.IsolateVst3Available`，三个平台同一条规则，
+  没有 Windows 特例）；用户显式关掉就按关走。详见 §6 的那段与 §10 的 P5.5；
 - 选桥模式：`VstBridgeClient.ForBitness(64)` → `EnsureStartedBlocking` →
   `LoadBlocking(..., format: "vst3")` → `Vst3BridgeInsert`；
-- 桥不可用 / 启动失败：回退进程内 `Vst3Insert`，并把原因写日志（不静默）。
-  注意：回退意味着失去隔离，界面上要能看出"这个实例没被隔离"。
+- 桥不可用 / 启动失败：回退进程内 `Vst3Insert`，把原因写日志、记进
+  `IsolationFallbackReason`（不静默）。注意：回退意味着失去隔离，界面上要能看出
+  "这个实例没被隔离" —— 设置页状态行显示"进程内（上一次回退原因）"。
 
 ### 5.3 编辑器壳
 
