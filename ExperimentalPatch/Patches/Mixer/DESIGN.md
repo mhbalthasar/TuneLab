@@ -254,7 +254,7 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 | 格式 | 范围 | 库 | 现实评估 |
 |---|---|---|---|
 | VST2.4 | **仅 Windows** | VST.NET2（托管封装）+ **桥进程**（§5.3） | 可行。VST2 SDK 早已停止发放许可，VST.NET2 自带头文件；我们只做运行时加载、不分发 SDK。**x86 老插件必须走 32 位桥进程** |
-| VST3 | 全平台 | OwnAudioVST3（**托管层源码降级 vendor 到 net8**，见 §5.4.1） | 可行，**已落地**：`InsertHost/Vendored/` + `Vst3Backend` / `Vst3Insert`。原生 dll 改名 `.tlhost` 防撞车。⚠️ 真插件验证未做（开发机无 64 位 VST3） |
+| VST3 | 全平台 | OwnAudioVST3（**托管层源码降级 vendor 到 net8**，见 §5.4.1） | 可行，**已落地**：一律经 64 位桥进程（`VstBridge/InProcess/` 是桥侧的进程内实现，宿主只有 `Vst3BridgeInsert`）。原生 dll 改名 `.tlhost` 防撞车。patch 本体不再含插件加载代码（VST3-BRIDGE.md §11） |
 | JSFX | 全平台 | 需要 EEL2 解释器 | **最大风险**：没有现成 .NET 实现。要么包 `ysfx`（C++ 解释器，P/Invoke），要么自己写（数月）。见 §12 Q4 |
 
 - 三条路线共用一层**中间契约** `IInsertHost`：`Process(block)`、`LatencySamples`、`OpenEditor()`、
@@ -438,12 +438,17 @@ out[t] = source[(t + X) − X] = source[t]
 采用的办法：**上游托管层源码降级 vendor 进来，原生 dll 单独分发**。
 
 ```
-ExperimentalPatch/InsertHost/
-  ├── Vendored/          OwnAudioVST3 的托管层（MIT，降级到 net8.0，来历与升级步骤见 README.md）
-  ├── Native/win-x64/    ownvst3.tlhost.dll
-  ├── Vst3Backend.cs     装配（UI 线程）：扫描、加载、Initialize、拒绝乐器
-  ├── Vst3Insert.cs      运行期（音频线程）：平面↔交织、参数、state、bypass
+ExperimentalPatch/InsertHost/            ← 宿主侧（跑在 TuneLab 进程里）
+  ├── Native/<rid>/      ownvst3.tlhost.dll（只由桥工程拷到桥 exe 旁边，宿主不再加载它）
+  ├── Vst3Backend.cs     扫描（目录枚举 / 过桥的完整扫描）+ 只造 Vst3BridgeInsert
+  ├── Vst3BridgeInsert.cs 运行期（音频线程）：平面↔交织、过桥的音频/参数/state/界面
   └── VstBridgeClient.cs 桥客户端（JobObject + 共享内存环）
+
+ExperimentalPatch/VstBridge/             ← 桥进程（另一个进程，崩溃不带走宿主）
+  └── InProcess/
+      ├── Vendored/      OwnAudioVST3 的托管层（MIT，降级到 net8.0，来历见其中 README.md）
+      ├── Vst3InProcessFactory.cs  装配：加载、Initialize、拒绝乐器、完整扫描
+      └── Vst3Insert.cs  插件实例：平面↔交织、参数、state、bypass、编辑器
 ```
 
 三个要点：
@@ -1215,13 +1220,13 @@ master 节点就没有插入链，槽位永远没有实例。两条日常路径�
 
 `OwnVST3.cs` 的三平台文件名常量现在**都**带 `.tlhost` 后缀：Windows
 `ownvst3.tlhost.dll`、Linux `libownvst3.tlhost.so`、macOS `libownvst3.tlhost.dylib`。
-`Vst3Backend.NativeFileName` 与它**逐字一致**。
+`Vst3InProcessFactory.NativeFileName`（桥侧）与它**逐字一致**。
 
 （历史：最初只给 Windows 改名，理由是 Linux 的 soname / macOS 的 install name
 "与文件名强绑定"。后来确认我们**从不按 soname 找它** —— `OwnVst3Wrapper` 收的是
 显式路径，`NativeLibrary.Load` 走 `dlopen(绝对路径)`，没有别的库 `DT_NEEDED` 指向它
 —— 于是三平台统一加后缀，免得别的扩展带的 `libownvst3.*` 与我们撞车。见 §5.4 与
-Vendored/README.md。）
+`VstBridge/InProcess/Vendored/README.md`。）
 
 查找顺序（都在 `AppContext.BaseDirectory` 下）：同目录 → `runtimes/<rid>/native/`
 （NuGet 惯例）→ `native/<rid>/` → 环境变量 `TL_VST3_NATIVE`。

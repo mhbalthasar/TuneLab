@@ -2,9 +2,10 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using OwnVST3Host;
+using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.MixerEngine;
 
-namespace TuneLab.ExperimentalPatch.InsertHost;
+namespace TuneLab.ExperimentalPatch.VstBridge.InProcess;
 
 // 一个已装好的 VST3 插件实例：**音频线程**上跑的那一半。
 //
@@ -61,9 +62,6 @@ public sealed unsafe class Vst3Insert : IMixInsert, IVst3Insert, IDisposable
     public string Name { get; }
 
     public InsertPluginInfo Plugin { get; }
-
-    // 这个实例跑在**宿主进程内**（vendored wrapper 直载）—— 隔离关闭或退避时就是这样。
-    public bool IsIsolated => false;
 
     public bool IsBypassed => mBypassed;
 
@@ -208,7 +206,7 @@ public sealed unsafe class Vst3Insert : IMixInsert, IVst3Insert, IDisposable
             {
                 try
                 {
-                    mNeedsOpenGl = Vst3Backend.ContainsMarker(Plugin.Locator, "NanoVG");
+                    mNeedsOpenGl = BinaryMarker.Contains(Plugin.Locator, "NanoVG");
                 }
                 catch (Exception)
                 {
@@ -385,16 +383,8 @@ public sealed unsafe class Vst3Insert : IMixInsert, IVst3Insert, IDisposable
 
     // 把插件那扇窗带到前台并置顶。置顶是用户的明确要求（"editor 应该能置顶"），
     // 也是"打开后藏在别的窗口下面"这个问题的根治办法。
-    public static void BringToFront(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero || !OperatingSystem.IsWindows())
-            return;
-
-        ShowWindow(hwnd, SwRestore);
-        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0,
-            SwpNoMove | SwpNoSize | SwpShowWindow);
-        SetForegroundWindow(hwnd);
-    }
+    // 实现放在宿主侧的 WindowFocus（同一段 Win32 调用，宿主侧的编辑器壳也要用）。
+    public static void BringToFront(IntPtr hwnd) => WindowFocus.BringToFront(hwnd);
 
     [DllImport("user32.dll")]
     static extern IntPtr GetTopWindow(IntPtr hwnd);
@@ -408,24 +398,10 @@ public sealed unsafe class Vst3Insert : IMixInsert, IVst3Insert, IDisposable
     [DllImport("user32.dll")]
     static extern bool IsWindowVisible(IntPtr hwnd);
 
-    [DllImport("user32.dll")]
-    static extern bool ShowWindow(IntPtr hwnd, int cmd);
-
-    [DllImport("user32.dll")]
-    static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
-
-    [DllImport("user32.dll")]
-    static extern bool SetForegroundWindow(IntPtr hwnd);
-
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int capacity);
 
     const uint GwHwndNext = 2;
-    const int SwRestore = 9;
-    static readonly IntPtr HwndTopmost = new(-1);
-    const uint SwpNoSize = 0x0001;
-    const uint SwpNoMove = 0x0002;
-    const uint SwpShowWindow = 0x0040;
 
     // 插件自己那扇窗是否还开着。**native 库自己的判断**，比数我们的窗口可靠 ——
     // 实测数窗口那条恒为 0 且会误导（GUI 一直是有的，只是不挂在我们给的 HWND 上）。
@@ -528,7 +504,31 @@ public sealed unsafe class Vst3Insert : IMixInsert, IVst3Insert, IDisposable
         }
     }
 
-    public IReadOnlyList<VST3Parameter> Parameters => mWrapper.GetAllParameters();
+    // 桥进程里拿到的是 vendored 的参数类型；跨进程回给宿主前换成纯数据的 InsertParameter
+    // （宿主进程里没有 OwnVST3Host 这一套类型了）。
+    public IReadOnlyList<InsertParameter> Parameters
+    {
+        get
+        {
+            var raw = mWrapper.GetAllParameters();
+            var list = new List<InsertParameter>(raw.Count);
+
+            foreach (var parameter in raw)
+            {
+                list.Add(new InsertParameter
+                {
+                    Id = parameter.Id,
+                    Name = parameter.Name ?? string.Empty,
+                    MinValue = parameter.MinValue,
+                    MaxValue = parameter.MaxValue,
+                    DefaultValue = parameter.DefaultValue,
+                    CurrentValue = parameter.CurrentValue,
+                });
+            }
+
+            return list;
+        }
+    }
 
     public double GetParameter(int id) => mWrapper.GetParameter(id);
 

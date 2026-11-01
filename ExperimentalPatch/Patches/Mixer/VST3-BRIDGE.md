@@ -697,3 +697,89 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
 
 （暂无：引用 `InsertHost` 会让 x86 桥输出多一份 x64 的 `ownvst3.tlhost.dll`，
 已在 `VstBridge.csproj` 用 `AfterTargets=Build/Publish` 删掉。）
+
+## 11. 收口：patch 本体不再有进程内 VST3
+
+**背景**：P1–P5.5 留下的形态是"默认隔离 + 可开关 + 桥不可用就回退进程内"。
+回退路径把整份进程内实现（vendored `OwnVST3Host` + `Vst3Insert` + native dll）留在
+`InsertHost` 里 —— 那是**跑在 TuneLab 进程里**的程序集。于是"隔离"这件事只由一个布尔值守着，
+任何人改一行就能把插件拉回宿主，而且不会有任何编译期阻力。本轮把它改成**结构保证**。
+
+### 11.1 搬走的部分（现在只属于桥）
+
+| 原位置 | 现位置 | 说明 |
+|---|---|---|
+| `InsertHost/Vst3Insert.cs` | `VstBridge/InProcess/Vst3Insert.cs` | 进程内 `IVst3Insert` 实现，命名空间改为 `TuneLab.ExperimentalPatch.VstBridge.InProcess` |
+| `InsertHost/Vendored/*`（7 个 .cs + README） | `VstBridge/InProcess/Vendored/*` | vendored OwnAudioVST3 1.7.0 托管层，命名空间仍是 `OwnVST3Host`（第三方代码不改名） |
+| `Vst3Backend.Create` 的进程内分支、`NativeFileName` / `NativeRid` / `FindNativeLibrary` / `ResolveNative` | `VstBridge/InProcess/Vst3InProcessFactory.cs` | 加载 + 初始化 + 拒绝乐器 + `sKnownInstruments`，都只在桥里跑 |
+| `Vst3Backend.ListPluginsDeep` / `ListFromNativeScanner`（native `PluginScanner`） | 同上，`ScanDeep` / `ScanStandard` | 宿主发 `ListPlugins` 消息，桥里问 native 要描述 |
+
+`VstBridge.X64.csproj` 用 `EnableDefaultCompileItems=false`，所以 `InProcess/*.cs` 与
+`InProcess/Vendored/*.cs` 要显式 `Compile Include`（`*.cs` 的 glob 不递归）。x86 桥也编译
+这两组文件，但 `Vst3InProcessFactory.FindNativeLibrary` 在 32 位进程里直接返回 null，
+`Vst3PluginHost.IsSupported` 因此为 false，`HelloAck.Formats` 不会声明 `vst3`。
+
+**native 的归属**：`InsertHost.csproj` 不再把 `Native/<rid>/ownvst3.tlhost.*` 拷到宿主输出
+（patch 本体里没有能加载它的代码）；只有 `VstBridge.X64.csproj` 按目标 RID 把它放到桥 exe
+旁边。`tests/TuneLab.Tests.csproj` 也不再拷一份 —— 真插件测试改走桥。
+
+### 11.2 宿主侧的变化（`InsertHost`）
+
+- `Vst3Backend.Create` **只**造 `Vst3BridgeInsert`。桥不可用（没随包发 / 起不来 / 不带 VST3）
+  → 返回 null + 原因（`VST3 runs only in the isolated host process: …`），**没有回退**。
+- `IsAvailable` = `Vst3BridgeInsert.IsolationAvailable`（平台 + 64 位 + 桥 exe 就位）。
+  FX 菜单里 VST3 那一栏的灰/可用就按它，`UnavailableReason` 即为原因。
+- `ListPlugins(directories)` 有目录时仍是**纯文件枚举**（`.vst3` 包、`moduleinfo.json`、
+  二进制里的类别标记）—— 不加载插件，放宿主里是安全的。
+- `ListPlugins(directories: null)` 与 `ListPluginsDeep()` 走桥（见 11.3）。
+- 新增 `InsertHost/BinaryMarker.cs`：分块读二进制找 ASCII / UTF-16LE 字面量
+  （`Instrument|`、`NanoVG`）。桥侧的 `Vst3Insert.NeedsOpenGl` 也用它。
+- 新增 `InsertHost/InsertParameter.cs`：宿主侧的纯数据参数类型，替代 vendored 的
+  `VST3Parameter`（`IVst3Insert.Parameters` 因此不再依赖 `OwnVST3Host`）。
+- 新增 `InsertHost/WindowFocus.cs`：把编辑器窗口叫到前台的那几个 Win32 调用
+  （宿主编辑器壳与桥侧 VST3 编辑器共用，`Vst3Insert.BringToFront` 变成一行转发）。
+- **删掉的开关**：`InsertSettings.IsolateVst3`、`InsertInstanceFactory.IsolateVst3Provider`、
+  `IInsertPluginSettings.IsolateVst3 / SetIsolateVst3 / IsolateVst3Available /
+  IsolateVst3UnavailableReason / IsolateVst3FallbackReason`、`InsertPluginSettings.NoteIsolationFallback`、
+  `Vst3Backend.IsolationFallbackReason`、`IVst3Insert.IsIsolated`。
+  设置文件 `SettingsVersion` 抬到 3，旧文件里的 `IsolateVst3` 键按未知字段忽略
+  （`JsonSerializer` 默认行为），扫描路径不受影响。
+- `IInsertPluginSettings` 换成两个只读 DIM：`Vst3IsolationAvailable` /
+  `Vst3IsolationUnavailableReason`。`InsertPluginPathsPage` 的「崩溃隔离」一节因此
+  **没有开关了**，只有一行状态：隔离可用 / VST3 不可用 + 原因。
+
+### 11.3 扫描也过桥（协议追加）
+
+"问插件要一份描述"实际上是**把插件 dll 加载进本进程**（`findAllTypesForFile` 里的
+`DllMain` / factory 代码都会跑）。坏插件在这一步就能 abort 掉整个宿主 —— 真机上 66 个
+一起扫时复现过。所以扫描与加载同一条纪律：只在桥里做。
+
+- 协议（`BridgeProtocol.cs`，两端各编译一份）：请求复用已有的
+  `BridgeMessageKind.ListPlugins`（`ScanPluginsMessage { Deep }`），回执是新追加的
+  `BridgeMessageKind.PluginList`（`PluginListMessage { Deep, Reason, Entries[] }`），
+  条目 DTO 是 `ScannedPluginInfo`（与 `InsertPluginInfo` 同形，但刻意不复用类型）。
+  **协议版本仍为 2**：新枚举值追加在末尾，旧桥收到 `ListPlugins` 会回 `ErrorMessage`
+  （宿主当作"扫不出来"），不影响 VST2 的既有消息。
+- 客户端：`VstBridgeClient.TryScanPluginsAsync` / `ScanPluginsBlocking`，超时 `90 s`
+  （完整扫描是"几十个插件逐个问描述"，十几秒是常态）；超时按既有规则**杀桥**。
+- 桥侧：`BridgeSession.HandleScan` → `Vst3PluginHost.Scan(deep)` →
+  `Vst3InProcessFactory.ScanDeep`（`ScanMode.Full`）/ `ScanStandard`。
+- 宿主侧：`Vst3Backend.ListFromBridgeScan`。桥不在 / 起不来 / 超时 → **空表 + 一句原因**
+  （进 `onDetail`，设置页显示），绝不回退到进程内扫描。
+- 完整扫描的合并逻辑不变：`InsertPluginSettings.MergeVst3Scan(桥结果, 目录枚举)`
+  —— 桥给官方厂商/类别，目录枚举负责用户自定义路径（EP-MIXER-12）。
+  桥不可用时完整扫描退化成"只有目录枚举"（厂商为空），设置页的扫描说明会写出原因。
+
+### 11.4 验收
+
+- 新增 `tests/TuneLab.Tests/Vst3IsolationBoundaryTests.cs` 两条：宿主程序集里
+  **没有** `OwnVST3Host.*` 类型、**没有** `Vst3Insert`，唯一的 VST3 实现是 `Vst3BridgeInsert`。
+  这是把"搬走了"钉住的哨兵（以后谁把文件又编回宿主，测试立刻红）。
+- `Vst3IntegrationTests` 现在整组经桥跑，并新增 `DeepScan_RunsInTheBridgeAndReturnsVendorData`：
+  真机上完整扫描返回 45 条、带厂商，证明 `ListPlugins` 消息端到端可用。
+  测试进程旁边没有桥时会去应用输出找（`TUNELAB_BRIDGE_DIR`），找不到才按 `SKIP:` 报出来。
+- 结果：Windows `TuneLab.Tests` **962/0**（原来 964，删掉 6 条隔离开关/回退测试、
+  新增 4 条边界与设置测试）、legacy compat **13/0**；两个桥重新发布（x64 带 native、x86 不带）。
+- 仍未做：真机 + 真插件上通过**应用界面**加载 VST3（桥侧编辑器 GUI、P4 挂起标红的
+  真机回归），以及 CLAP 走同一套隔离（下一阶段）。
+

@@ -320,14 +320,15 @@ public class InsertChainTests
     }
 
     [Fact]
-    public void Vst3Backend_WithoutNativeLibrary_IsUnavailable()
+    public void Vst3Backend_IsUnavailableWithoutTheIsolatedHost()
     {
-        // 直接 new：native dll 若不在 exe 同目录（测试进程里就是不在），
-        // 后端必须退化到"不可用 + 有原因"，而不是崩。
+        // 直接 new：测试进程旁边没有桥可执行文件，后端必须退化到"不可用 + 有原因"，
+        // 而不是偷偷把插件加载进本进程 —— 那条旧路径已经从 patch 本体删掉了。
         var backend = new Vst3Backend();
 
-        if (File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, Vst3Backend.NativeFileName)))
+        if (VstBridgeClient.BridgeExecutableExists)
         {
+            // 开发机上把桥发布到了测试输出就会走到这里：那也只要求"可用"。
             Assert.True(backend.IsAvailable);
             return;
         }
@@ -351,8 +352,8 @@ public class InsertChainTests
     [Fact]
     public void Vst3Backend_RefusesInstruments()
     {
-        // 乐器不该进插入链（它要收 MIDI）。这里用"没有 native"来跳过执行：
-        // 真正的拒绝逻辑在 Vst3Backend.Create 里，那段要等机器上有 64 位插件才跑得到。
+        // 乐器不该进插入链（它要收 MIDI）。拒绝逻辑现在在桥里的 Vst3InProcessFactory.Create：
+        // 要先有桥 + 64 位插件才跑得到，这里只能钉住后端的基本面。
         var backend = new Vst3Backend();
         Assert.Equal("VST3", ((IInsertBackend)backend).FormatName);
     }

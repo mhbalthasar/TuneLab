@@ -545,6 +545,40 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         }
     }
 
+    // ── 扫描（在桥进程里跑）──
+
+    // 让桥去扫它的标准位置（deep = 完整扫描：问每个插件的 factory 要描述）。
+    // 返回 null = 桥不可用 / 超时 / 协议错 —— 调用方按"这次扫不出来"处理。
+    public async Task<IReadOnlyList<ScannedPluginInfo>?> TryScanPluginsAsync(bool deep,
+        CancellationToken cancellation = default)
+    {
+        if (!IsRunning)
+            return null;
+
+        try
+        {
+            string? reply = await ExchangeAsync(
+                JsonSerializer.Serialize(new ScanPluginsMessage { Deep = deep }),
+                cancellation).ConfigureAwait(false);
+
+            if (reply == null)
+                return null;
+
+            var message = JsonSerializer.Deserialize<PluginListMessage>(reply);
+            return message?.Entries;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // UI 线程用的同步包装。这里给的时间比加载长得多：完整扫描是"逐个问插件要描述"，
+    // 几十个插件跑十几秒很正常；给太短会把正常扫描误判成卡死。
+    public IReadOnlyList<ScannedPluginInfo>? ScanPluginsBlocking(bool deep)
+        => RunTimed(deep ? "the deep plugin scan" : "the plugin scan",
+            () => TryScanPluginsAsync(deep), ScanTimeout, (IReadOnlyList<ScannedPluginInfo>?)null);
+
     // ── UI 线程用的同步包装 ──
     //
     // 【为什么套一层 Task.Run】上面的 await 一旦直接 .GetAwaiter().GetResult() 在 UI 线程上，
@@ -650,6 +684,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     static readonly TimeSpan TeardownTimeout = TimeSpan.FromSeconds(5);
     static readonly TimeSpan StateTimeout = TimeSpan.FromSeconds(15);
     static readonly TimeSpan ParameterTimeout = TimeSpan.FromSeconds(5);
+
+    // 扫描的上限：完整扫描 = 几十个插件逐个问描述，十几秒是常态（真机 66 个约 10–20 秒）。
+    // 只有"桥卡死在插件里"才会撞到它 —— 那时杀掉桥比让设置页永远转圈好。
+    static readonly TimeSpan ScanTimeout = TimeSpan.FromSeconds(90);
 
     public byte[]? GetStateBlocking(int slot)
         => RunTimed("reading the plugin state", () => TryGetStateAsync(slot), StateTimeout, (byte[]?)null);
@@ -930,6 +968,25 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         {
             if (File.Exists(candidate))
                 return candidate;
+        }
+
+        // 环境变量指定的桥目录：给测试、便携布局、排查用
+        // （TUNELAB_BRIDGE_DIR 可以指到"含各 rid 子目录"的那一层，也可以直接指到某个 rid 目录）。
+        // 放在最后：正常安装下永远走上面的固定布局，不会被环境里的残留值带偏。
+        string? fromEnv = Environment.GetEnvironmentVariable("TUNELAB_BRIDGE_DIR");
+        if (!string.IsNullOrEmpty(fromEnv))
+        {
+            string[] envCandidates =
+            [
+                Path.Combine(fromEnv, rid, name),
+                Path.Combine(fromEnv, name),
+            ];
+
+            foreach (string candidate in envCandidates)
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
         }
 
         return null;

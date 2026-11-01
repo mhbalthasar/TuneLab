@@ -1,26 +1,21 @@
 using System;
 using System.Collections.Generic;
-using OwnVST3Host;
 using TuneLab.ExperimentalPatch.MixerEngine;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
 
-// 一个 VST3 插入的**宿主侧统一面**：进程内的 Vst3Insert 与过桥的 Vst3BridgeInsert
-// 都实现它。宿主（混音台那一行、参数面板、编辑器壳）只认这个接口。
+// 一个 VST3 插入的**宿主侧统一面**。宿主（混音台那一行、参数面板、编辑器壳）只认这个接口。
 //
-// 【为什么要抽出来】VST3 以前只有进程内一种活法，宿主里到处 `is Vst3Insert`。
-// 隔离来了之后多了"插件跑在桥进程里"这一种，宿主不该在每处都分叉成两段。
-// 抽出接口后，宿主的分叉点只剩一个：谁来建实例（Vst3Backend.Create）。
+// 【现在只有一种活法】VST3 一律在桥进程里跑（VST3-BRIDGE.md）。实现方只有
+// Vst3BridgeInsert 一个 —— 插件代码不再进宿主进程，所以"进程内 / 进程外"的分叉消失了。
+// 桥进程里有它自己的那份实现（VstBridge/InProcess/Vst3Insert），那是**另一个进程**里的事，
+// 宿主看不到也不需要看。
 //
 // 【哪些成员是 VST3 专有】VST3 的参数是一个"编辑控制器"的模型（id + 归一化值 +
 // 默认值 + flush），VST2 的 getParameter 没有这些，所以不进 IMixInsert。
 // 编辑器也一样：VST3 的窗口由插件自己建，VST2 的由桥建，形状不同，各自成面。
 public interface IVst3Insert : IMixInsert
 {
-    // 这个实例是不是真的跑在桥进程里。false = 进程内（含"要求隔离但回退了"的情况）。
-    // 宿主据此记日志 / 在界面上标示"未隔离"（P3）。
-    bool IsIsolated { get; }
-
     bool HasEditor { get; }
 
     // 界面是否必须 OpenGL 1.3+（DPF / NanoVG）。桥模式由桥侧判，宿主据此决定是否退参数面板。
@@ -30,7 +25,7 @@ public interface IVst3Insert : IMixInsert
     (int Width, int Height)? EditorSize { get; }
 
     /// <summary>编辑控制器暴露的全部参数。</summary>
-    IReadOnlyList<VST3Parameter> Parameters { get; }
+    IReadOnlyList<InsertParameter> Parameters { get; }
 
     double GetParameter(int id);
 
@@ -48,8 +43,7 @@ public interface IVst3Insert : IMixInsert
 
     // ── 编辑器 ──
     //
-    // 进程内：窗口由插件建在**本进程**，实现方自己开、自己泵（宿主用定时器驱动 Pump）。
-    // 桥模式：窗口由插件建在**桥进程**，桥那边用一条 STA 线程自己泵；宿主这边 Open/Close
+    // 窗口由插件建在**桥进程**里，桥那边用一条 STA 线程自己泵；宿主这边 Open/Close
     // 翻成桥消息，FindEditorWindowSince 返回桥回传的 HWND，好让编辑器壳照常置前。
     bool OpenEditor(IntPtr parent);
 
@@ -61,7 +55,7 @@ public interface IVst3Insert : IMixInsert
 
     void ResizeEditor(int width, int height);
 
-    // 找插件自己那扇顶层窗（本进程内）。桥模式下返回**桥回传的**句柄（窗口不在这个进程里，
+    // 桥模式下返回**桥回传的**句柄（窗口不在这个进程里，
     // 但置前 / 可见性查询都能跨进程用），SnapshotTopLevelWindows 则回空集。
     HashSet<IntPtr> SnapshotTopLevelWindows();
 

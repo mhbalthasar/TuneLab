@@ -128,12 +128,6 @@ public class Vst3BridgeInsertTests
             inputChannels: inputChannels);
 
     [Fact]
-    public void IsIsolated_IsTrue()
-    {
-        Assert.True(Make(new FakeChannel()).IsIsolated);
-    }
-
-    [Fact]
     public void Process_SendsPlanarInputAndReadsPlanarOutput()
     {
         var channel = new FakeChannel();

@@ -39,35 +39,17 @@ public interface IInsertPluginSettings
     // 上次扫描时间（本地时间）；null = 还没扫过。
     string? LastScanText { get; }
 
-    // [VST3-BRIDGE] 是否把 VST3 插件放进桥进程（崩溃 / 挂起隔离）。
-    //
-    // 【默认】没有显式设置过时 = **开**，所有平台一律如此（不做平台特例，也不跟"本机桥在不在"
-    // 走 —— 跨平台一致的含义就是同一条规则）。桥不在 / 32 位宿主时由后端的回退路径接管，
-    // 并把原因写进 IsolateVst3FallbackReason，设置页状态行据此显示"现在其实在进程内"。
-    //
-    // 【为什么是本机设置】它跟"这台机器上插件装在哪儿"是一类东西：取决于用户愿不愿意付一次
-    // 共享内存往返。与工程内容无关，所以不进工程文件。
-    // 默认实现 = false（补丁/测试里没有这个能力时按进程内走，行为不变）。
-    bool IsolateVst3 => false;
-
-    void SetIsolateVst3(bool value)
-    {
-    }
-
     /// <summary>
-    /// 这台机器上隔离**能不能真的用**：64 位 + 支持的平台 + 64 位桥已随包就位。
-    /// 只做静态判断（查文件），不起桥 —— 设置页会直接拿它画状态行。
+    /// VST3 在这台机器上能不能用：隔离宿主（64 位桥）是否就位。
+    ///
+    /// VST3 **一律**在桥进程里跑（宿主进程里不再有加载插件的代码），所以没有"进程内"
+    /// 这个替代方案 —— 这一条同时是"FX 菜单里 VST3 那一栏是不是灰的"和设置页状态行的依据。
+    /// 默认实现 = false（补丁/测试里没有这个能力时按"不可用"处理）。
     /// </summary>
-    bool IsolateVst3Available => false;
+    bool Vst3IsolationAvailable => false;
 
-    /// <summary>IsolateVst3Available 为 false 时的短原因（英文，进日志与状态行）。</summary>
-    string? IsolateVst3UnavailableReason => null;
-
-    /// <summary>
-    /// 最近一次"要求隔离、却回落进程内"的原因；null = 没有回落过（或已经恢复正常）。
-    /// 内存态、不落盘：桥是能修好的东西（重装 / 重启后自愈），不该把一次失败永久写进设置。
-    /// </summary>
-    string? IsolateVst3FallbackReason => null;
+    /// <summary>Vst3IsolationAvailable 为 false 时的短原因（英文，进日志与状态行）。</summary>
+    string? Vst3IsolationUnavailableReason => null;
 }
 
 // 扫描进度。宿主**按目录**推进（一个目录报一次），界面据此画进度条。

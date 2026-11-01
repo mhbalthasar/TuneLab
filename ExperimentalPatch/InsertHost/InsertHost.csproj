@@ -45,25 +45,9 @@
     <Compile Include="..\VstBridge\OpenGlAvailability.cs" Link="Bridge\OpenGlAvailability.cs" />
   </ItemGroup>
 
-  <!-- 原生 VST3 host（ownvst3）。三个平台各一份，运行时按 RID 选。
-       文件名带 .tlhost 后缀，避免与别的扩展带的那一份撞车（见 Vendored/README）。 -->
-  <!-- native 库按**运行时标识**分目录放：Native/<rid>/ownvst3.tlhost.<ext>。
-       目前仓库里只有 win-x64 一份；把别的平台的二进制丢进对应目录即可，不用改代码。
-       （ownvst3 上游支持 win/linux/osx 的 x64 与 arm64，见 Vendored/README.md） -->
-  <PropertyGroup>
-    <!-- 优先用显式 RID；否则用 SDK 给的"构建机 RID"（win-x64 / win-arm64 / linux-arm64 /
-         osx-arm64 … 全都覆盖，不再写死 x64）。 -->
-    <Vst3NativeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</Vst3NativeRid>
-    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and '$(NETCoreSdkPortableRuntimeIdentifier)' != ''">$(NETCoreSdkPortableRuntimeIdentifier)</Vst3NativeRid>
-    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</Vst3NativeRid>
-    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</Vst3NativeRid>
-    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == ''">linux-x64</Vst3NativeRid>
-  </PropertyGroup>
-
-  <ItemGroup Condition="Exists('Native/$(Vst3NativeRid)')">
-    <None Include="Native/$(Vst3NativeRid)/*" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
-  </ItemGroup>
-
+  <!-- 原生 VST3 宿主库（ownvst3）**不再随宿主程序集分发**：进程内实现已经搬到桥工程
+       （VstBridge/InProcess/），native 由 VstBridge.X64.csproj 拷到桥 exe 旁边。
+       patch 本体里没有能加载插件的代码，也就不该带着这份 dll。 -->
 </Project>
 
 

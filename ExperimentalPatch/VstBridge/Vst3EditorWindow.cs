@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using TuneLab.ExperimentalPatch.InsertHost;
+using TuneLab.ExperimentalPatch.VstBridge.InProcess;
 
 namespace TuneLab.ExperimentalPatch.VstBridge;
 

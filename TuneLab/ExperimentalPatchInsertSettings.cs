@@ -90,54 +90,16 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         Save(state);
     }
 
-    // [VST3-BRIDGE] 隔离开关（本机设置）。读写都落进 insert-plugins.json。
-    //
-    // 【默认开（P5.5）】**所有平台一律开**：没有显式设置过就隔离。不做平台特例、也不跟"本机
-    // 桥在不在"走 —— 跨平台一致的含义就是同一条规则。桥不在 / 32 位宿主时由 Vst3Backend 的
-    // 回退路径接管（如实记原因 + 写日志），设置页状态行会把"现在其实在进程内"写出来。
-    public bool IsolateVst3 => Load().IsolateVst3 ?? true;
+    // VST3 一律走隔离：这条只回答"这台机器上隔离宿主在不在"（桥在不在 + 平台对不对）。
+    // 设置页的状态行与 FX 菜单据此判断 VST3 能不能用。只查文件，不起进程。
+    public bool Vst3IsolationAvailable => IsolationAvailableProbe();
 
-    public void SetIsolateVst3(bool value)
-    {
-        var state = Load();
-        state.IsolateVst3 = value;
-        state.SettingsVersion = CurrentSettingsVersion;
-        Save(state);
+    public string? Vst3IsolationUnavailableReason =>
+        Vst3IsolationAvailable ? null : Vst3BridgeInsert.IsolationUnavailableReason;
 
-        // 改了开关 = 换了一套配置：上一次回退的原因不再代表"现在会怎么跑"。
-        // 打开时清掉（等下一次真实加载重新判定），关掉时也清（免得下次打开先亮一条旧账）。
-        NoteIsolationFallback(null);
-    }
-
-    public bool IsolateVst3Available => IsolationAvailableProbe();
-
-    public string? IsolateVst3UnavailableReason =>
-        IsolateVst3Available ? null : Vst3BridgeInsert.IsolationUnavailableReason;
-
-    public string? IsolateVst3FallbackReason
-    {
-        get
-        {
-            lock (sFallbackLock)
-                return sIsolationFallbackReason;
-        }
-    }
-
-    // "本机能不能隔离"的探针。默认问 InsertHost（64 位 + 支持的平台 + 桥 exe 就位）。
-    // 测试可替换：默认值本身要能脱离"这台机器上有没有桥"来断言。
+    // "本机能不能跑隔离宿主"的探针。测试可替换：默认值本身要能脱离"这台机器上有没有桥"来断言。
     internal static Func<bool> IsolationAvailableProbe { get; set; } =
         () => Vst3BridgeInsert.IsolationAvailable;
-
-    static string? sIsolationFallbackReason;
-    static readonly object sFallbackLock = new();
-
-    // 建实例时发现"要求隔离却回了进程内" → 记一笔给设置页显示；真的隔离成功 → 清掉。
-    // 只放内存：桥是能修好的东西（重装 / 重启后自愈），不该把一次失败永久写进设置。
-    public static void NoteIsolationFallback(string? reason)
-    {
-        lock (sFallbackLock)
-            sIsolationFallbackReason = string.IsNullOrEmpty(reason) ? null : reason;
-    }
 
     public IReadOnlyList<InsertPluginEntry> CachedPlugins
     {
@@ -426,14 +388,11 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         state.Vst3Paths ??= DefaultVst3Paths.ToList();
         state.Vst2Paths ??= DefaultVst2Paths.ToList();
 
-        // 迁移：旧版本里的 IsolateVst3 = false 不是用户的选择（那一版默认就是关，
-        // 任何一次扫描 / 保存都会写出来）。按"未设置"处理，让 P5.5 的默认值生效；
-        // 之后用户在界面上做的选择会写 SettingsVersion = 2，从此不再被改写。
+        // 迁移：旧文件里可能还留着 IsolateVst3（那个开关已经删了 —— VST3 一律走隔离）。
+        // 反序列化会把这个未知键忽略掉；这里只是把版本号抬到当前值，
+        // 以后真的需要迁移时它还有意义。
         if (state.SettingsVersion < CurrentSettingsVersion)
-        {
-            state.IsolateVst3 = null;
             state.SettingsVersion = CurrentSettingsVersion;
-        }
 
         return state;
     }
@@ -459,10 +418,10 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     const int CurrentCacheVersion = 4;
 
     // 设置文件版本。只记"必须迁移的语义变化"，与缓存格式无关。
+    // 3 = 删掉 IsolateVst3（VST3 一律隔离，不再有开关）。
     // 2 = 隔离开关有了"没设置过"这个状态（P5.5 默认开）。
-    //     1 / 0 = 那一版默认就是关，任何一次扫描 / 保存都会写出 IsolateVst3: false ——
-    //     那个 false 不是用户的选择，所以读到旧版本时按"未设置"处理，让新默认生效。
-    const int CurrentSettingsVersion = 2;
+    //     1 / 0 = 那一版默认就是关，任何一次扫描 / 保存都会写出 IsolateVst3: false。
+    const int CurrentSettingsVersion = 3;
 
     static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -481,11 +440,6 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         public List<string>? Vst2Paths { get; set; }
         public List<CachedPlugin> Cache { get; set; } = [];
         public string? LastScanUtc { get; set; }
-
-        // [VST3-BRIDGE] 把 VST3 放进桥进程（隔离崩溃 / 挂起）。
-        // null = 没设置过 → 跟"这台机器能不能隔离"走（P5.5 起默认开）；
-        // true / false = 用户显式选的，一直按它来。
-        public bool? IsolateVst3 { get; set; }
 
         // 设置文件自身的格式版本（与 CacheVersion 是两条独立的轴，见 CurrentSettingsVersion）。
         public int SettingsVersion { get; set; }

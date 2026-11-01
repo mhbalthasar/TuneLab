@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using OwnVST3Host;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.ExperimentalPatch.VstBridge;
 
@@ -66,9 +65,6 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
     public string Name { get; }
 
     public InsertPluginInfo Plugin { get; }
-
-    // 桥模式 = 真的隔离了。
-    public bool IsIsolated => true;
 
     public bool IsBypassed => mBypassed;
 
@@ -183,7 +179,7 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
 
     public bool LoadState(byte[] data) => data.Length > 0 && mChannel.SetStateBlocking(mSlotId, data);
 
-    public IReadOnlyList<VST3Parameter> Parameters
+    public IReadOnlyList<InsertParameter> Parameters
     {
         get
         {
@@ -191,7 +187,7 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
             if (raw == null)
                 return [];
 
-            return raw.Select(p => new VST3Parameter
+            return raw.Select(p => new InsertParameter
             {
                 Id = (int)p.Id,
                 Name = p.Name,
@@ -321,33 +317,31 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
 
     // ── 建实例 ──
 
-    // [P5.1] 隔离在当前平台是否**原则上**被支持：64 位 + Windows / Linux / macOS。
+    // 隔离在当前平台是否**原则上**被支持：64 位 + Windows / Linux / macOS。
     // 具体能不能真用，还要看桥 exe 与 native 是否就位 —— EnsureStartedBlocking / BridgeFormats
-    // 会如实回报，缺了就报 bridgeUnavailable 让调用方回退进程内。
+    // 会如实回报（缺了就报 bridgeUnavailable，调用方原样报错，不再有进程内可选）。
     public static bool PlatformSupported =>
         Environment.Is64BitProcess &&
         (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS());
 
-    // [P5.5] 本机**静态**上能不能隔离：平台 + 64 位 + 64 位桥的可执行文件就位。
+    // 本机**静态**上能不能跑 VST3：平台 + 64 位 + 64 位桥的可执行文件就位。
     //
-    // 【为什么只查文件】设置页渲染时会调它，不能为了画一行状态去起一个进程。桥到底带不带
-    // VST3（native 是否挨着桥）要握手后才确定，那条信息走「最近一次回退原因」
-    // （见 Vst3Backend.IsolationFallbackReason / IInsertPluginSettings.IsolateVst3FallbackReason）。
+    // 【为什么只查文件】设置页渲染时会调它，不能为了画一行状态去起一个进程。
     //
-    // 【为什么它是默认值的依据】隔离默认开，但只在"这台机器上真能用"时开：桥没随包发出来
-    // （或用户删了）就老实走进程内，而不是每次加载都先白试一遍桥再回退。
+    // 【它现在就是"VST3 能不能用"】进程内那条路已经删掉了（VST3 一律隔离），
+    // 所以这个判断直接决定 FX 菜单里 VST3 那一栏是不是灰的。
     public static bool IsolationAvailable =>
         PlatformSupported && VstBridgeClient.BridgeExecutableExists;
 
-    /// <summary>IsolationAvailable 为 false 时的短原因（进设置页状态行与日志）。</summary>
+    /// <summary>IsolationAvailable 为 false 时的短原因（进设置页状态行与菜单）。</summary>
     public static string? IsolationUnavailableReason => PlatformSupported
         ? "the 64-bit bridge executable is not installed beside the application"
         : "the isolated VST3 host requires a 64-bit Windows, Linux or macOS host";
 
     /// <summary>
     /// 把 VST3 装进 64 位桥。失败返回 null 并写 reason。
-    /// bridgeUnavailable = 失败在"桥这一侧"（没起来 / 不带 vst3）—— 这时调用方应回退进程内；
-    /// false 表示桥是好的、是插件自己拒绝 / 加载时把桥弄没了，调用方应如实报失败（别回退）。
+    /// bridgeUnavailable = 失败在"桥这一侧"（没起来 / 不带 vst3）；false = 桥是好的，
+    /// 是插件自己拒绝 / 加载时把桥弄没了。两种都只是"这个插入装不进来"，不再有回退。
     /// 只在 UI 线程调（会同步等桥的回复）。
     /// </summary>
     public static Vst3BridgeInsert? Create(InsertPluginInfo plugin, InsertSettings settings,

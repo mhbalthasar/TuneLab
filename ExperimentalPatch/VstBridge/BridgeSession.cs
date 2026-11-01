@@ -95,6 +95,10 @@ internal sealed class BridgeSession : IDisposable
                     HandleCloseEditor(json);
                     break;
 
+                case BridgeMessageKind.ListPlugins:
+                    HandleScan(json);
+                    break;
+
                 case BridgeMessageKind.Shutdown:
                     Write(JsonSerializer.Serialize(new ShutdownAck()));
                     mRunning = false;
@@ -178,6 +182,51 @@ internal sealed class BridgeSession : IDisposable
     // 按槽位找当前承载它的宿主。找不到时用 VST2 的（对未知槽位统一回"失败"）。
     IBridgePluginHost OwnerOf(int slotNumber)
         => mOwner.TryGetValue(slotNumber, out var host) ? host : mVst2;
+
+    // 扫描：把"问插件要描述"关在桥进程里（那条路会把插件 dll 加载进本进程，
+    // 坏插件在扫描阶段就能 abort 整个宿主）。宿主侧只做**纯文件**枚举。
+    void HandleScan(string? json)
+    {
+        ScanPluginsMessage? message = Deserialize<ScanPluginsMessage>(json);
+        if (message == null)
+        {
+            WriteError("bad ListPlugins message");
+            return;
+        }
+
+        if (!Vst3PluginHost.IsSupported)
+        {
+            Write(JsonSerializer.Serialize(new PluginListMessage
+            {
+                Deep = message.Deep,
+                Reason = "the VST3 host library is missing in this bridge",
+            }));
+            return;
+        }
+
+        var entries = Vst3PluginHost.Scan(message.Deep);
+        var list = new List<ScannedPluginInfo>(entries.Count);
+
+        foreach (var entry in entries)
+        {
+            list.Add(new ScannedPluginInfo
+            {
+                Format = entry.Format,
+                PluginId = entry.PluginId,
+                Name = entry.Name,
+                Vendor = entry.Vendor,
+                Category = entry.Category,
+                Locator = entry.Locator,
+                IsInstrument = entry.IsInstrument,
+            });
+        }
+
+        Write(JsonSerializer.Serialize(new PluginListMessage
+        {
+            Deep = message.Deep,
+            Entries = list,
+        }));
+    }
 
     void HandleOpenEditor(string? json)
     {

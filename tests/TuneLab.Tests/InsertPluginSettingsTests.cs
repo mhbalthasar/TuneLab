@@ -70,97 +70,40 @@ public class InsertPluginSettingsTests
         });
     }
 
-    // ── [VST3-BRIDGE P5.5] 隔离开关的默认值 / 迁移 / 状态行 ──
+    // ── [VST3-BRIDGE] VST3 一律隔离：这一节只剩"状态行读什么" ──
 
     [Fact]
-    public void IsolationIsOnByDefaultWhenTheBridgeIsThere()
+    public void Vst3IsolationAvailabilityFollowsTheProbe()
     {
-        WithIsolation(null, bridgeAvailable: true, settings =>
+        WithSettings(null, bridgeAvailable: true, settings =>
         {
-            Assert.True(settings.IsolateVst3Available);
-            Assert.True(settings.IsolateVst3);
-            Assert.Null(settings.IsolateVst3UnavailableReason);
-            Assert.Null(settings.IsolateVst3FallbackReason);
+            Assert.True(settings.Vst3IsolationAvailable);
+            Assert.Null(settings.Vst3IsolationUnavailableReason);
+        });
+
+        WithSettings(null, bridgeAvailable: false, settings =>
+        {
+            Assert.False(settings.Vst3IsolationAvailable);
+            Assert.False(string.IsNullOrEmpty(settings.Vst3IsolationUnavailableReason));
         });
     }
 
     [Fact]
-    public void IsolationIsOnByDefaultEvenWithoutTheBridge()
+    public void AnOldFileWithTheRemovedIsolationSwitchStillLoadsItsPaths()
     {
-        // 默认值**不跟"本机有没有桥"走**：所有平台一律开，桥不在就交给后端的回退路径
-        // （Vst3Backend 记 IsolationFallbackReason、宿主写日志、状态行写"现在在进程内"）。
-        // 默认值要是跟着可用性变，同一台机器在不同部署上就有两种默认 —— 那不叫跨平台一致。
-        WithIsolation(null, bridgeAvailable: false, settings =>
-        {
-            Assert.False(settings.IsolateVst3Available);
-            Assert.True(settings.IsolateVst3);
-            Assert.False(string.IsNullOrEmpty(settings.IsolateVst3UnavailableReason));
-        });
-    }
-
-    [Fact]
-    public void AnExplicitChoiceBeatsTheDefault()
-    {
-        WithIsolation(null, bridgeAvailable: true, settings =>
-        {
-            settings.SetIsolateVst3(false);
-
-            // 新实例 = 重新读盘：用户的"关"必须留着。
-            Assert.False(new InsertPluginSettings().IsolateVst3);
-        });
-
-        // 反过来也一样：桥不在时用户要开，就开（加载时会回退，但那是他要的）。
-        WithIsolation(null, bridgeAvailable: false, settings =>
-        {
-            settings.SetIsolateVst3(true);
-            Assert.True(new InsertPluginSettings().IsolateVst3);
-        });
-    }
-
-    [Fact]
-    public void TheOldDefaultIsNotMistakenForAChoice()
-    {
-        // P5.5 之前的默认就是关，任何一次扫描 / 保存都会写出 IsolateVst3: false ——
-        // 那个 false 不是用户的选择，迁移后要按"没设置过"处理，让新默认生效。
-        WithIsolation("""
+        // 旧版本写下的 IsolateVst3 键现在没有对应属性了：反序列化要当成"没这个键"，
+        // 绝不能因此把整份清单（用户的扫描路径）一起丢掉。
+        WithSettings("""
         {
           "CacheVersion": 4,
           "IsolateVst3": false,
+          "Vst3Paths": [ "C:\\VST3" ],
           "Cache": []
         }
         """, bridgeAvailable: true, settings =>
         {
-            Assert.True(settings.IsolateVst3);
-
-            // 迁移完写成带版本号的新文件；没设置的开关干脆不写键 ——
-            // 老版本程序读到 "IsolateVst3": null 会当反序列化失败，把整份扫描路径一起丢掉。
-            InsertPluginSettings.Save(InsertPluginSettings.Load());
-
-            string text = File.ReadAllText(InsertPluginSettings.SettingsPath);
-            Assert.Contains("\"SettingsVersion\": 2", text);
-            Assert.DoesNotContain("IsolateVst3", text);
+            Assert.Equal(["C:\\VST3"], settings.Paths["VST3"]);
         });
-    }
-
-    [Fact]
-    public void TheLastFallbackReasonIsVisibleUntilIsolationWorksAgain()
-    {
-        lock (sLock)
-        {
-            try
-            {
-                InsertPluginSettings.NoteIsolationFallback("the bridge does not carry vst3");
-                Assert.Equal("the bridge does not carry vst3", new InsertPluginSettings().IsolateVst3FallbackReason);
-
-                // 成功隔离一次（或用户重新选了开关）后要清掉：状态行不该永远挂着一次旧失败。
-                InsertPluginSettings.NoteIsolationFallback(null);
-                Assert.Null(new InsertPluginSettings().IsolateVst3FallbackReason);
-            }
-            finally
-            {
-                InsertPluginSettings.NoteIsolationFallback(null);
-            }
-        }
     }
 
     // VST2 目录里"其实不是 VST2"的 dll（真机上就有人把 LV2 的二进制丢进去了）：
@@ -205,12 +148,12 @@ public class InsertPluginSettingsTests
 
     static void WithCache(string json, Action<InsertPluginSettings> assert)
     {
-        WithIsolation(json, bridgeAvailable: false, assert);
+        WithSettings(json, bridgeAvailable: false, assert);
     }
 
-    // 隔离的默认值 / 迁移 / 状态行：把"本机有没有桥"的探针换掉，才可能脱离这台机器断言。
+    // 设置层的读写：把"本机能不能跑隔离宿主"的探针换掉，才可能脱离这台机器断言。
     // 探针是进程级静态，和 TUNELAB_DATA_DIR 一样用 sLock 串行化。
-    static void WithIsolation(string? json, bool bridgeAvailable, Action<InsertPluginSettings> assert)
+    static void WithSettings(string? json, bool bridgeAvailable, Action<InsertPluginSettings> assert)
     {
         lock (sLock)
         {

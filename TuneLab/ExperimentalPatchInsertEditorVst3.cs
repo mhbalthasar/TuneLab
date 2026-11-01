@@ -129,7 +129,7 @@ public sealed class Vst3EditorShell : IInsertEditorWindow
         if (hwnd == IntPtr.Zero)
             return;
 
-        Vst3Insert.BringToFront(hwnd);
+        WindowFocus.BringToFront(hwnd);
         mRaised = true;
 
         HostLog.Info($"insert: raised the editor window of '{mPluginName}' (0x{hwnd:x})");

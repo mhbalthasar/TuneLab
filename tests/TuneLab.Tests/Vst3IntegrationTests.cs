@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -12,6 +12,10 @@ namespace TuneLab.Tests;
 // 【为什么单独一组】这之前的所有插入测试都跑假后端（GainInsert）：它们验证"链被接进图、
 // 旁通真的跳、latency 真的补 PDC"，但**一次都没让真插件出声**。本组补上那一半：
 // 加载 .vst3 → Initialize → 一块音频穿过它 → state 存取 → 延迟上报被 PDC 用上。
+//
+// 【现在全部过桥】VST3 一律在 64 位桥进程里跑（进程内实现已从宿主程序集删除），
+// 所以这组测试同时是"隔离链路真的能加载真插件"的验收：需要桥已发布到测试输出旁边
+// （tools/publish-bridges.ps1 发到应用输出；测试输出需要同样的一份）。桥不在就跳过。
 //
 // 【为什么默认跳过】要机器上真装有 64 位 VST3。用 TL_VST3_DIR 环境变量指定目录，
 // 每个 .vst3 各跑一次；没设就跳过（CI / 别人的机器上不一定有）。
@@ -31,6 +35,26 @@ public class Vst3IntegrationTests
             .Concat(FallbackDirectories)
             .Where(d => !string.IsNullOrWhiteSpace(d) && Directory.Exists(d));
 
+    // 桥由 tools/publish-bridges.ps1 发布到**应用输出**（TuneLab/bin/<config>/net8.0/bridge/），
+    // 而测试进程旁边是测试输出，通常没有它。找一下应用的桥并指过去（VstBridgeClient 认
+    // TUNELAB_BRIDGE_DIR），这样这组测试在开发机上仍然**真跑隔离链路**，而不是退化成跳过。
+    //
+    // 找不到就让测试按既有的 SKIP 约定报出来（这台机器上没发布过桥）。
+    static Vst3IntegrationTests()
+    {
+        if (VstBridgeClient.BridgeExecutableExists)
+            return;
+
+        string baseDirectory = AppContext.BaseDirectory;   // ...\tests\TuneLab.Tests\bin\<Config>\net8.0\
+        string configuration = new DirectoryInfo(baseDirectory).Parent?.Name ?? "Debug";
+        string repo = Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", ".."));
+
+        string candidate = Path.Combine(repo, "TuneLab", "bin", configuration, "net8.0", "bridge");
+
+        if (Directory.Exists(candidate))
+            Environment.SetEnvironmentVariable("TUNELAB_BRIDGE_DIR", candidate);
+    }
+
     static IEnumerable<string> Vst3Bundles()
         => Vst3Directories()
             .SelectMany(dir => Directory.EnumerateFiles(dir, "*.vst3", SearchOption.AllDirectories))
@@ -39,15 +63,44 @@ public class Vst3IntegrationTests
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
 
     [Fact]
-    public void Backend_SeesTheNativeLibrary()
+    public void Backend_SeesTheIsolatedHost()
     {
         Skip.Unless(Vst3Bundles().Any(), "no 64-bit VST3 bundle on this machine");
 
         var backend = new Vst3Backend();
 
-        // native dll 由 InsertHost.csproj 拷到输出目录（名为 ownvst3.tlhost.dll）。
-        // 不在就说明部署漏了它 —— 那是个真错误，不是"这台机器没插件"。
-        Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
+        // VST3 只能经隔离宿主跑：桥可执行文件不在 = 这个功能在这台机器上不可用。
+        // 不在就跳过（不是失败）：测试输出旁边没发布桥属于部署差异。
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
+    }
+
+    [Fact]
+    public void DeepScan_RunsInTheBridgeAndReturnsVendorData()
+    {
+        Skip.If(!Vst3Bundles().Any(), "no 64-bit VST3 bundle on this machine");
+
+        var backend = new Vst3Backend();
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
+
+        var detail = new List<string>();
+        var entries = backend.ListPluginsDeep(progress: null, onDetail: d =>
+        {
+            lock (detail)
+                detail.Add(d);
+        });
+
+        // "问插件要描述"这件事现在整段在桥进程里做：宿主只发一条 ListPlugins 消息。
+        // 这台机器上确实装了 64 位插件，所以结果不能是空的 —— 空 = 协议/桥那半出了问题。
+        Assert.NotEmpty(entries);
+
+        // Full 扫描的厂商是官方口径（插件描述里读的），不是从路径里猜的。
+        Assert.Contains(entries, e => !string.IsNullOrWhiteSpace(e.Vendor));
+
+        Assert.All(entries, e =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(e.Locator));
+            Assert.Equal("VST3", e.Format);
+        });
     }
 
     [Fact]
@@ -56,7 +109,7 @@ public class Vst3IntegrationTests
         Skip.If(!Vst3Bundles().Any(), "no 64-bit VST3 bundle on this machine");
 
         var backend = new Vst3Backend();
-        Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
 
         List<InsertPluginInfo> found = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false).ToList();
 
@@ -77,7 +130,7 @@ public class Vst3IntegrationTests
         Skip.If(!Vst3Bundles().Any(), "no 64-bit VST3 bundle on this machine");
 
         var backend = new Vst3Backend();
-        Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
 
         var plugins = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false);
         var plugin = plugins.FirstOrDefault(p => p.Name.Contains(nameFragment, StringComparison.OrdinalIgnoreCase));
@@ -127,7 +180,7 @@ public class Vst3IntegrationTests
         insert!.Process(buffer, 0, block);
 
         // ── state 存取 ──
-        if (insert is Vst3Insert vst)
+        if (insert is IVst3Insert vst)
         {
             byte[]? state = vst.SaveState();
 
@@ -145,7 +198,7 @@ public class Vst3IntegrationTests
         Skip.If(!Vst3Bundles().Any(), "no 64-bit VST3 bundle on this machine");
 
         var backend = new Vst3Backend();
-        Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
 
         var plugin = backend.ListPlugins(Vst3Directories().ToList(), probeInstruments: false)
             .FirstOrDefault(p => p.Name.Contains("Latency Delay", StringComparison.OrdinalIgnoreCase));
@@ -166,7 +219,7 @@ public class Vst3IntegrationTests
         Skip.If(!Vst3Bundles().Any(), "no 64-bit VST3 bundle on this machine");
 
         var backend = new Vst3Backend();
-        Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
 
         // Cardinal Synth：isInstrument=True、0 进 2 出（实测）。挂在插入链上毫无意义 ——
         // 它要收 MIDI、自己产声音。
@@ -190,7 +243,7 @@ public class Vst3IntegrationTests
     public void AMissingPlugin_IsRefusedWithAReason()
     {
         var backend = new Vst3Backend();
-        Skip.If(!backend.IsAvailable, $"VST3 host library is missing: {backend.UnavailableReason}");
+        Skip.If(!backend.IsAvailable, $"the isolated host is missing: {backend.UnavailableReason}");
 
         var ghost = new InsertPluginInfo
         {

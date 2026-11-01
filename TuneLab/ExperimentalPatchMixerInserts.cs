@@ -59,12 +59,7 @@ internal sealed class InsertInstanceFactory
     // 用户配的 VST2 扫描路径（与 VST3 分开：老插件目录常常是另一棵树）。
     public IReadOnlyList<string> Vst2Paths { get; set; } = InsertPluginSettings.DefaultVst2Paths;
 
-    // [VST3-BRIDGE] "把 VST3 放进桥进程"的本机设置。宿主启动时注入
-    // （读 insert-plugins.json）；null / false = 进程内。工厂只拿现成的值，不自己读文件——
-    // 与 Vst3Paths 同一套纪律，单测能固定输入。
-    public static Func<bool>? IsolateVst3Provider { get; set; }
-
-    // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于原生库在不在，
+    // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于隔离宿主（64 位桥）在不在，
     // VST2 取决于桥可执行文件在不在（Windows-only）。
     public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3, mVst2 };
 
@@ -133,28 +128,11 @@ internal sealed class InsertInstanceFactory
             Bypass = slot.IsBypassed.Value,
             SampleRate = SampleRate,
             MaxBlockSize = MaxBlockSize,
-            IsolateVst3 = IsolateVst3Provider?.Invoke() ?? false,
         };
 
         var insert = backend.Create(plugin, settings, out reason);
         if (insert == null)
             return Fail(slot.Id, reason, out reason);
-
-        // [VST3-BRIDGE] 要求了隔离却回了进程内：原因是桥这一侧不可用（没起来 / 不带 vst3）。
-        // 不静默 —— 记日志，并且把原因记到设置层：插件扫描设置页的状态行会显示
-        // "已回退进程内：<原因>"（P5.5）。真的隔离成功就把上一次的回落记录清掉。
-        if (settings.IsolateVst3 && backend is Vst3Backend vst3Backend)
-        {
-            if (vst3Backend.IsolationFallbackReason is { Length: > 0 } fallback)
-            {
-                HostLog.Warning($"insert: VST3 isolation for '{slot.Name.Value}' fell back to in-process: {fallback}");
-                InsertPluginSettings.NoteIsolationFallback(fallback);
-            }
-            else if (insert is IVst3Insert { IsIsolated: true })
-            {
-                InsertPluginSettings.NoteIsolationFallback(null);
-            }
-        }
 
         // 落盘的插件状态在这里灌回去。灌失败（版本不兼容、插件换了）不致命：
         // 插件照常用它的默认参数，只记一条日志。

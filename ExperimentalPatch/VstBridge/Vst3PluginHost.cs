@@ -3,13 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.VstBridge;
+using TuneLab.ExperimentalPatch.VstBridge.InProcess;
 
-// 桥进程里的 VST3 宿主：把 VST3 的加载 / 处理 / 状态 / 参数搬进桥进程，
+// 桥进程里的 VST3 宿主：把 VST3 的加载 / 处理 / 状态 / 参数 / 界面全部关在这个进程里，
 // 插件崩或挂都只死桥（VST3-BRIDGE.md）。
 //
-// 【为什么不自己写一遍 wrapper】InsertHost 里已经有完整的 Vst3Backend + Vst3Insert
-// （vendored OwnAudioVST3、声道/侧链、NaN 清理、state/参数）。桥这边只是"另一个进程里
-// 的同一段装配"：复用它们，隔离这件事就只剩协议与共享环的搬运，而不是把 VST3 逻辑抄第二遍。
+// 【为什么在这里装配】进程内实现（vendored OwnAudioVST3 + Vst3Insert）曾经在 InsertHost 里
+// —— 那是 TuneLab 自己的进程。现在它搬到 InProcess/，只有桥会引用；宿主侧只剩过桥的
+// Vst3BridgeInsert。于是"插件代码在哪个进程里跑"这件事由程序集边界保证，而不是靠开关。
 //
 // 【编辑器】P2：桥侧开插件 GUI。VST3 的窗口由插件自己建，消息泵必须待在**建窗的那条线程**
 // 上，而桥的主线程正阻塞读管道 —— 所以 Vst3EditorWindow 单起一条 STA 线程：开窗 → 泵消息 →
@@ -19,26 +20,23 @@ using TuneLab.ExperimentalPatch.VstBridge;
 // Host 通过 HelloAck.Formats 看到这一点，不会把 VST3 发给一个不支持的桥。
 internal sealed class Vst3PluginHost : IBridgePluginHost
 {
-    static readonly string? sNativePath = FindNativeLibrary();
-
     // 这个桥能不能承载 VST3。x86 桥里为 false（没有 win-x64 的 native）。
-    public static bool IsSupported => sNativePath != null;
+    public static bool IsSupported => Vst3InProcessFactory.IsSupported;
 
     readonly Dictionary<int, Slot> mSlots = [];
+    readonly Vst3InProcessFactory mFactory = new();
     SharedAudioRing? mIn;
     SharedAudioRing? mOut;
-    Vst3Backend? mBackend;
 
-    // native 库与 Vst3Backend 的查找规则一致：exe 同目录的 native 文件（Vst3Backend.NativeFileName
-    // 按平台给 .dll / .so / .dylib）。只读文件是否存在，不加载 —— 探测本身不该有任何副作用。
-    // [P5.1] 平台闸门放开到所有 64 位：非 Windows 的桥同样能承载 VST3（native 就位时）。
-    static string? FindNativeLibrary()
+    // 扫描请求（宿主不再自己加载插件：这条消息让桥去问 native 的要描述）。
+    public static IReadOnlyList<InsertPluginInfo> Scan(bool deep, Action<float>? progress = null,
+        Action<string>? detail = null)
     {
-        if (!Environment.Is64BitProcess)
-            return null;
+        var factory = new Vst3InProcessFactory();
 
-        string beside = Path.Combine(AppContext.BaseDirectory, Vst3Backend.NativeFileName);
-        return File.Exists(beside) ? beside : null;
+        return deep
+            ? factory.ScanDeep(progress == null ? null : new Progress<float>(progress), detail)
+            : factory.ScanStandard();
     }
 
     public void Attach(SharedAudioRing input, SharedAudioRing output)
@@ -66,10 +64,6 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         if (!File.Exists(request.Path) && !Directory.Exists(request.Path))
             return (false, "plugin file not found", null, null, 0, false, false, false);
 
-        mBackend ??= new Vst3Backend();
-        if (!mBackend.IsAvailable)
-            return (false, mBackend.UnavailableReason ?? "the VST3 host library is missing", null, null, 0, false, false, false);
-
         // 桥只认路径；名字 / 厂商由插件自己报。用文件名占位，真实名字在 Create 之后从 wrapper 读不到，
         // 但 Vst3Insert.Name 就是插件名（后端把 InsertPluginInfo.Name 带进去）——见下。
         var info = new InsertPluginInfo
@@ -93,7 +87,8 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         Vst3Insert insert;
         try
         {
-            if (mBackend.Create(info, settings, out string? reason) is not Vst3Insert created)
+            var created = mFactory.Create(info, settings, out string? reason);
+            if (created == null)
                 return (false, reason ?? "the plugin could not be created", null, null, 0, false, false, false);
 
             insert = created;

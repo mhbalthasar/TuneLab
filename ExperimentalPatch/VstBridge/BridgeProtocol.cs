@@ -82,6 +82,10 @@ public enum BridgeMessageKind
     OpenEditorResult,
     CloseEditor,
     CloseEditorResult,
+
+    // ── 扫描（跑在桥进程里）──
+    // 请求复用已有的 ListPlugins；回复单独一个值（同样追加在末尾）。
+    PluginList,
 }
 
 // 握手。桥起来的头一件事：告诉宿主"我是什么、我能干什么"。
@@ -516,5 +520,66 @@ public sealed class CloseEditorResultMessage
 
     [JsonPropertyName("ok")]
     public bool Ok { get; init; }
+}
+
+// ── 扫描 ──
+//
+// 【为什么扫描也要过桥】"问插件要一份描述"听起来无害，实际是把插件的 dll 加载进
+// 本进程 —— 坏插件在这一步就能 abort 掉整个宿主（真机 66 个一起扫时复现过）。
+// 所以扫描（尤其完整扫描）同样只能在桥里做：崩了、卡死了都只是桥没了。
+//
+// 【为什么不带目录清单】带目录的扫描是**纯文件枚举**（.vst3 包、moduleinfo.json、
+// 二进制里的类别标记），宿主自己做，不需要加载插件。过桥的这条只负责 native
+// 扫描器认得的标准位置（也就是"完整扫描"那半）。
+public sealed class ScanPluginsMessage
+{
+    [JsonPropertyName("kind")]
+    public BridgeMessageKind Kind => BridgeMessageKind.ListPlugins;
+
+    // true = 完整扫描（ScanMode.Full，问描述）；false = 快速扫描（标准位置）。
+    [JsonPropertyName("deep")]
+    public bool Deep { get; init; }
+}
+
+// 一条扫描结果。刻意与 InsertPluginInfo 同形，但**不复用**它：
+// 这份文件要能被两端各自独立编译，不应该依赖 InsertHost 的类型。
+public sealed class ScannedPluginInfo
+{
+    [JsonPropertyName("format")]
+    public string Format { get; init; } = PluginFormats.Vst3;
+
+    [JsonPropertyName("pluginId")]
+    public string PluginId { get; init; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+
+    [JsonPropertyName("vendor")]
+    public string Vendor { get; init; } = string.Empty;
+
+    [JsonPropertyName("category")]
+    public string Category { get; init; } = string.Empty;
+
+    [JsonPropertyName("locator")]
+    public string Locator { get; init; } = string.Empty;
+
+    [JsonPropertyName("isInstrument")]
+    public bool IsInstrument { get; init; }
+}
+
+public sealed class PluginListMessage
+{
+    [JsonPropertyName("kind")]
+    public BridgeMessageKind Kind => BridgeMessageKind.PluginList;
+
+    [JsonPropertyName("deep")]
+    public bool Deep { get; init; }
+
+    // 桥这一侧失败时的原因（native 缺失 / 扫描器版本不对）。空 = 结果可信。
+    [JsonPropertyName("reason")]
+    public string? Reason { get; init; }
+
+    [JsonPropertyName("entries")]
+    public List<ScannedPluginInfo> Entries { get; init; } = [];
 }
 

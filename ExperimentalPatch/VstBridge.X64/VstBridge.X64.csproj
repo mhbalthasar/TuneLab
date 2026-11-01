@@ -38,6 +38,10 @@
 
   <ItemGroup>
     <Compile Include="..\VstBridge\*.cs" />
+    <!-- 进程内的 VST3 实现在 InProcess/ 子目录（宿主程序集不再编译它们）：
+         *.cs 的 glob 不递归，所以两条都要写。 -->
+    <Compile Include="..\VstBridge\InProcess\*.cs" />
+    <Compile Include="..\VstBridge\InProcess\Vendored\*.cs" />
   </ItemGroup>
 
   <!-- [VST3-BRIDGE] x64 桥承载 VST3：引用 InsertHost 复用 Vst3Backend / Vst3Insert。 -->

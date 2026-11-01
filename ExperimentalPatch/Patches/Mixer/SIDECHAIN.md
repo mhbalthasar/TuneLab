@@ -100,7 +100,7 @@ VST2 没有侧链标准，但有一个**既成惯例**：需要外部键的插�
 - 在 `OwnVST3Juce` 里加 `VST3Plugin_GetAudioBusCount` / `GetAudioBusInfo` /
   `SetBusActive` / `ProcessAudioEx`（两个 `AudioBufferC`）；
 - 重新构建 win-x64 原生库并替换 `Native/win-x64/ownvst3.tlhost.dll`；
-- 维护一个上游 fork，每次升级按 `Vendored/README.md` 的步骤重打补丁。
+- 维护一个上游 fork，每次升级按 `VstBridge/InProcess/Vendored/README.md` 的步骤重打补丁。
 
 这不是"再写点 C#"，是一个独立的原生交付物。**本轮不做**，等有明确的第三方侧链插件需求再议。
 

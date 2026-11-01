@@ -98,13 +98,4 @@ public sealed class InsertSettings
     public double SampleRate { get; init; }
 
     public int MaxBlockSize { get; init; }
-
-    // [VST3-BRIDGE] 把 VST3 放进桥进程（隔离崩溃 / 挂起）。
-    //
-    // 这是**本机设置**（宿主从 insert-plugins.json 读进来，见 IInsertPluginSettings）：
-    // P5.5 起**所有平台一律默认开** —— 没显式设置过就隔离，不做平台特例。
-    // 桥不在 / 32 位宿主时，Vst3Backend 回退进程内并把原因记进 IsolationFallbackReason
-    // （宿主据此记日志 + 在插件扫描设置页写一行"已回退"）。
-    // 这里的 DTO 默认值仍是 false：它只是"宿主没给值时的零值"，默认值由宿主决定。
-    public bool IsolateVst3 { get; init; }
 }

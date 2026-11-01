@@ -24,11 +24,7 @@
     <ProjectReference Include="..\..\TuneLab.Setup\TuneLab.Setup.csproj" />
   </ItemGroup>
 
-  <!-- 真 VST3 集成测试（Vst3IntegrationTests）要进程内加载原生宿主。
-       Windows 上显式拷一份到测试输出（Linux/macOS 的那份由 InsertHost 的 RID 化 None 引用带过来）。 -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <None Include="..\..\ExperimentalPatch\InsertHost\Native\win-x64\ownvst3.tlhost.dll"
-          CopyToOutputDirectory="PreserveNewest" Link="ownvst3.tlhost.dll" />
-  </ItemGroup>
+  <!-- 真 VST3 集成测试（Vst3IntegrationTests）现在**经隔离宿主**加载插件，测试输出旁边
+       没有桥时那组测试会自动跳过。native 库不再需要（宿主程序集已经不加载它）。 -->
 
 </Project>
