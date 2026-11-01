@@ -227,7 +227,21 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name));
             });
 
-            vst3 = sVst3Backend.ListPluginsDeep(deepProgress, deepDetail).ToList();
+            var fromScanner = sVst3Backend.ListPluginsDeep(deepProgress, deepDetail).ToList();
+
+            // 完整扫描 = native 问描述（厂商/版本准），但它**只认标准 VST3 目录**。
+            // 以前这里直接把它当全部结果，于是用户配的自定义目录（EP-MIXER-12）整片消失 ——
+            // "点一下完整扫描，一半插件从菜单里没了"。这里把配置目录补回来：
+            // 同一个 bundle 以 native 那份为准（它带厂商），其余的用目录扫描的结果顶上。
+            var fromDirectories = sVst3Backend.ListPlugins(vst3Paths, (index, _, directory) =>
+                {
+                    currentDirectory = directory;
+                    currentDone = index;
+                    progress?.Report(new InsertScanProgress(index, total, directory));
+                },
+                onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)));
+
+            vst3 = MergeVst3Scan(fromScanner, fromDirectories);
         }
         else
         {
@@ -249,6 +263,8 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
             Vendor = p.Vendor,
             Category = p.Category,
             IsInstrument = p.IsInstrument,
+            IsAvailable = p.IsAvailable,
+            UnavailableReason = p.UnavailableReason,
             Locator = p.Locator,
         }));
 
@@ -272,6 +288,8 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 Vendor = p.Vendor,
                 Category = p.Category,
                 IsInstrument = p.IsInstrument,
+                IsAvailable = p.IsAvailable,
+                UnavailableReason = p.UnavailableReason,
                 Locator = p.Locator,
             }));
 
@@ -311,6 +329,41 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         }
 
         return unique;
+    }
+
+    // 两个 locator 是不是同一个 VST3 bundle。native 扫描器与自己的目录枚举给的路径
+    // 可能不同形（一个给包目录、一个给包内二进制），所以按"bundle 根"比：
+    // 路径里第一段以 .vst3 结尾的组件为止。单文件 bundle 没有 \Contents，就比整条路径。
+    static bool SameBundle(string a, string b)
+        => string.Equals(BundleRoot(a), BundleRoot(b), StringComparison.OrdinalIgnoreCase);
+
+    static string BundleRoot(string locator)
+    {
+        string path = locator.Replace('/', '\\');
+
+        int at = path.IndexOf(".vst3\\", StringComparison.OrdinalIgnoreCase);
+
+        return at < 0 ? path : path[..(at + ".vst3".Length)];
+    }
+
+    // 完整扫描的 VST3 合并：native 那份（标准位置，带厂商）+ 配置目录那份
+    // （自带 moduleinfo 厂商）。同一个 bundle 只留一条，优先 native ——
+    // 它问过插件的 factory，厂商/类别比读文件猜的准。
+    internal static List<InsertPluginInfo> MergeVst3Scan(IReadOnlyList<InsertPluginInfo> fromScanner,
+        IReadOnlyList<InsertPluginInfo> fromDirectories)
+    {
+        var merged = new List<InsertPluginInfo>(fromScanner.Count + fromDirectories.Count);
+        merged.AddRange(fromScanner);
+
+        foreach (var plugin in fromDirectories)
+        {
+            if (fromScanner.Any(native => SameBundle(native.Locator, plugin.Locator)))
+                continue;
+
+            merged.Add(plugin);
+        }
+
+        return merged;
     }
 
     static readonly Vst3Backend sVst3Backend = new();

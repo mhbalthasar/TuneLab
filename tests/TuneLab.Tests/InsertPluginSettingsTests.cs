@@ -163,6 +163,46 @@ public class InsertPluginSettingsTests
         }
     }
 
+    // VST2 目录里"其实不是 VST2"的 dll（真机上就有人把 LV2 的二进制丢进去了）：
+    // 扫描要把它标成不可用 + 原因，并且**落进缓存**，重启后菜单里仍然是灰的。
+    // 以前它带着"可用"的招牌列出来，用户插进去才看到 "the file is not a VST2 plugin"。
+    [Fact]
+    public void ScanningMarksAFileThatIsNotVst2AsUnavailable()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "TuneLab.Tests.vst2-scan." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            PeFixtures.Write(directory, "realvst2.dll", PeFixtures.Build(exportName: "VSTPluginMain"));
+            PeFixtures.Write(directory, "lv2inside.dll", PeFixtures.Build(exportName: "lv2_descriptor"));
+
+            WithCache(null, settings =>
+            {
+                settings.SetPaths("VST2", [directory]);
+                settings.SetPaths("VST3", []);
+
+                var scanned = settings.Scan();
+
+                var lv2 = Assert.Single(scanned, p => p.Name == "lv2inside");
+                Assert.False(lv2.IsAvailable);
+                Assert.Contains("not a VST2 plugin", lv2.UnavailableReason ?? string.Empty);
+
+                var real = Assert.Single(scanned, p => p.Name == "realvst2");
+                Assert.True(real.IsAvailable);
+                Assert.Null(real.UnavailableReason);
+
+                // 菜单读的是缓存：重启之后标记不能丢。
+                var cached = Assert.Single(new InsertPluginSettings().CachedPlugins, p => p.Name == "lv2inside");
+                Assert.False(cached.IsAvailable);
+            });
+        }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); } catch (Exception) { }
+        }
+    }
+
     static void WithCache(string json, Action<InsertPluginSettings> assert)
     {
         WithIsolation(json, bridgeAvailable: false, assert);

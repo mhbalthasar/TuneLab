@@ -116,6 +116,38 @@ public class Vst2BackendTests
     }
 
     [Fact]
+    public void AFileThatIsNotAVst2IsListedButMarkedUnavailable()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "tunelab-vst2-entry-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            PeFixtures.Write(directory, "realvst2.dll", PeFixtures.Build(exportName: "VSTPluginMain"));
+            PeFixtures.Write(directory, "lv2inside.dll", PeFixtures.Build(exportName: "lv2_descriptor"));
+
+            var plugins = new Vst2Backend().ListPlugins([directory], probeInstruments: false);
+
+            var byName = new Dictionary<string, InsertPluginInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var plugin in plugins)
+                byName[plugin.Name] = plugin;
+
+            Assert.Equal(2, plugins.Count);
+
+            Assert.True(byName["realvst2"].IsAvailable);
+            Assert.Null(byName["realvst2"].UnavailableReason);
+
+            // 列出来（用户得看得见它在那儿），但标明装不进来。
+            Assert.False(byName["lv2inside"].IsAvailable);
+            Assert.Contains("not a VST2 plugin", byName["lv2inside"].UnavailableReason ?? string.Empty);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ScanningWithoutDirectoriesReturnsNothing()
     {
         var backend = new Vst2Backend();

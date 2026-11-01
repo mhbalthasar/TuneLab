@@ -67,11 +67,17 @@ public sealed class Vst2Backend : IInsertBackend
                 if (bitness == 0)
                     continue;
 
+                // 扩展名是 .dll 不等于它是 VST2。实测有人把 LV2 的二进制放进 VST2 目录：
+                // 它只导出 lv2_descriptor，插进混音台只会得到 "not a VST2 plugin"。
+                // 这里静态看一眼导出表（不加载 dll），把这种条目列出来但标成不可用 ——
+                // 用户仍然看得见"它就在那儿"，但不会点进去才发现用不了。
+                bool? looksLikeVst2 = PeExports.HasAny(file, "VSTPluginMain", "main");
+
                 string name = Path.GetFileNameWithoutExtension(file);
                 string vendor = string.Empty;
                 bool isInstrument = false;
 
-                if (probeInstruments)
+                if (probeInstruments && looksLikeVst2 != false)
                 {
                     onDetail?.Invoke(name);
 
@@ -103,6 +109,13 @@ public sealed class Vst2Backend : IInsertBackend
                     Category = bitness + "-bit",
                     Locator = file,
                     IsInstrument = isInstrument,
+
+                    // null（读不出导出表）= 照旧当可用：宁可多列一条坏插件，
+                    // 也不要把能用的插件藏起来。
+                    IsAvailable = looksLikeVst2 ?? true,
+                    UnavailableReason = looksLikeVst2 == false
+                        ? "not a VST2 plugin (no VSTPluginMain export)"
+                        : null,
                 });
             }
         }

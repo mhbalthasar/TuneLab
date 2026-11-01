@@ -80,6 +80,12 @@ public sealed class InsertPluginInfo
     // 后端私有的定位信息：VST3 的 bundle 路径（LoadPlugin 要的）。
     // 不进落盘载荷：工程可能换机器，路径会变；按 PluginId 重新扫。
     public string Locator { get; init; } = string.Empty;
+
+    // 扫描时就能确定"这个条目装不进来"（目前只有一种：VST2 目录里其实不是 VST2 的 dll，
+    // 例如把 LV2 的二进制丢进了 VST2 目录）。菜单据此把它灰掉并写出原因，
+    // 而不是让用户点了、桥跑一趟、才看到"没有 VSTPluginMain"。
+    public bool IsAvailable { get; init; } = true;
+    public string? UnavailableReason { get; init; }
 }
 
 // 创建插入时要的东西。都是"装配参数"，不是音频参数。
