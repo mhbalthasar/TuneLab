@@ -4,17 +4,21 @@ using TuneLab.ExperimentalPatch.MixerEngine;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
 
-// 一个 VST3 插入的**宿主侧统一面**。宿主（混音台那一行、参数面板、编辑器壳）只认这个接口。
+// 一个"带参数面板 / 编辑器"的插入在**宿主侧的统一面**。宿主（混音台那一行、参数面板、
+// 编辑器壳）只认这个接口，不认格式。
 //
-// 【现在只有一种活法】VST3 一律在桥进程里跑（VST3-BRIDGE.md）。实现方只有
-// Vst3BridgeInsert 一个 —— 插件代码不再进宿主进程，所以"进程内 / 进程外"的分叉消失了。
-// 桥进程里有它自己的那份实现（VstBridge/InProcess/Vst3Insert），那是**另一个进程**里的事，
+// 【为什么叫 IParameterInsert 而不是 IVst3Insert】这个名字是 VST3 起的（当初只有它有
+// 参数模型与编辑器）。CLAP 是同一套模型 —— id + 值 + 默认值，改动等到下一次 process ——
+// 所以两份实现共用这一个接口。格式相关的东西（窗口怎么建、桥怎么搭）留在各自的实现里。
+//
+// 【现在有谁实现】Vst3BridgeInsert、ClapBridgeInsert（都在宿主侧，插件代码在桥进程里）；
+// 桥进程里另有一份 Vst3Insert（VstBridge/InProcess/），那是**另一个进程**里的事，
 // 宿主看不到也不需要看。
 //
-// 【哪些成员是 VST3 专有】VST3 的参数是一个"编辑控制器"的模型（id + 归一化值 +
-// 默认值 + flush），VST2 的 getParameter 没有这些，所以不进 IMixInsert。
-// 编辑器也一样：VST3 的窗口由插件自己建，VST2 的由桥建，形状不同，各自成面。
-public interface IVst3Insert : IMixInsert
+// 【为什么不进 IMixInsert】VST2 的 getParameter 没有"默认值 / flush"这些概念，硬塞进
+// IMixInsert 会让 VST2 实现一堆空方法。编辑器同理：VST2 的窗口由桥建，VST3/CLAP 的
+// 由插件自己建，形状不同，各自成面。
+public interface IParameterInsert : IMixInsert
 {
     bool HasEditor { get; }
 

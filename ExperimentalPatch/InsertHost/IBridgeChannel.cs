@@ -3,14 +3,15 @@ using TuneLab.ExperimentalPatch.VstBridge;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
 
-// Vst3BridgeInsert 需要的桥通道面（VstBridgeClient 的子集）。
+// 桥插入需要的桥通道面（VstBridgeClient 的子集）。Vst3BridgeInsert 与 ClapBridgeInsert
+// 用的是同一份 —— 两者在宿主侧的形状是一样的，区别全在桥那边。
 //
-// 【为什么要抽】Vst3BridgeInsert 的职责是"把 IVst3Insert 的调用翻成桥消息"，
+// 【为什么要抽】Vst3BridgeInsert 的职责是"把 IParameterInsert 的调用翻成桥消息"，
 // 不该绑死在一个会起真实进程的 VstBridgeClient 上 —— 否则单测要么起真桥、
 // 要么根本没有。抽成接口后，测试给一个记账用的假通道就能覆盖
 // "load 失败 / 桥崩 / state 回灌 / 参数往返"这些分支，不碰任何原生代码。
 //
-// 只在 InsertHost 内部用（internal）：宿主看不到它，看到的是 IVst3Insert。
+// 只在 InsertHost 内部用（internal）：宿主看不到它，看到的是 IParameterInsert。
 internal interface IBridgeChannel
 {
     string? LastBridgeError { get; }

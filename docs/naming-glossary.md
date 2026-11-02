@@ -43,7 +43,8 @@
 | 右侧那条可开合的容器 + 它的页签 | `sidebar`（动作 id `sidebar.*` / `editor status` 的 `sidebars` 字段 / `SideTabBar`、`SideBarTab`） | 侧栏 | 「侧边栏」「抽屉」；容器叫**侧栏**，里面显示的那一块叫**面板**（`Part Panel`…），两个词别互换 |
 | 从一组固定候选里挑若干个值（有序、不重复）的字段及其候选 | `TagConfig` / `TagItem`（SDK）；`TagController`（GUI） | 标签 | `MultiSelect*`（「多选」在本仓指同时选中多个音符/片段，撞词）；`ChipConfig`（描述的是界面形态不是语义）；候选别复用 `ComboBoxItem`（两者各自演进） |
 | 接收其他通道的音频、混合后再往下送的通道 | `Aux`（`AuxChannel` / `AuxNode`） | AUX | `Bus`（Audition 的叫法；口语里可以说"总线"，**符号面一律 Aux**）；`Submix` |
-| 实时跑在通道上的插件（VST2 / VST3 / JSFX） | `Insert`（`IInsert` / `InsertSlot` / `InsertChain` / `InsertFormat`） | 插入效果 | `Effect`（那个词归**离线整段变换**：`IEffectEngine`、挂 `MidiPart`）；`FX` 只作界面短标签 |
+| 实时跑在通道上的插件（VST2 / VST3 / CLAP / JSFX） | `Insert`（`IInsert` / `InsertSlot` / `InsertChain` / `InsertFormat`） | 插入效果 | `Effect`（那个词归**离线整段变换**：`IEffectEngine`、挂 `MidiPart`）；`FX` 只作界面短标签 |
+| 带参数面板 / 编辑器的插入在**宿主侧**的统一面（id + 值 + 默认值 + 状态 + 编辑器） | `IParameterInsert`（`InsertHost`） | 参数插入 | `IVst3Insert`（按格式起名，而 CLAP 也实现同一份，已改名） |
 
 ### 三条边界的说明
 

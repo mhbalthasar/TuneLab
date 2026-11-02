@@ -6,7 +6,7 @@ using TuneLab.ExperimentalPatch.VstBridge;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
 
-// 一个跑在**桥进程**里的 VST3 插件实例：宿主侧的 IVst3Insert 实现。
+// 一个跑在**桥进程**里的 VST3 插件实例：宿主侧的 IParameterInsert 实现。
 //
 // 【它在整条链里的位置】与 Vst2BridgeInsert 完全同构：宿主音频线程把交织块翻成平面、
 // 用共享环发一条 process 指令；桥那边真正的插件崩 / 挂只死桥，宿主继续跑。
@@ -18,7 +18,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 过桥之后，超时（P4）一杀桥，宿主只是"这个插入旁通了"。
 //
 // 【实时纪律】与 Vst2BridgeInsert 相同：Process 里不分配、不加锁、不抛异常。
-public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFailure, IDisposable
+public sealed class Vst3BridgeInsert : IMixInsert, IParameterInsert, IRuntimeInsertFailure, IDisposable
 {
     readonly IBridgeChannel mChannel;
     readonly int mSlotId;

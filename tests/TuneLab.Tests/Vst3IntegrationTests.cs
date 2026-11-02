@@ -190,7 +190,7 @@ public class Vst3IntegrationTests
         insert!.Process(buffer, 0, block);
 
         // ── state 存取 ──
-        if (insert is IVst3Insert vst)
+        if (insert is IParameterInsert vst)
         {
             byte[]? state = vst.SaveState();
 

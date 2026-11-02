@@ -6,7 +6,7 @@ using TuneLab.ExperimentalPatch.VstBridge;
 
 namespace TuneLab.ExperimentalPatch.InsertHost;
 
-// 一个跑在**桥进程**里的 CLAP 插件实例：宿主侧的 IMixInsert / IVst3Insert 实现（P-C2）。
+// 一个跑在**桥进程**里的 CLAP 插件实例：宿主侧的 IMixInsert / IParameterInsert 实现（P-C2）。
 //
 // 【与 Vst3BridgeInsert 的关系】两者同构：音频线程把交织块翻成平面、用共享环发一条
 // process 指令；插件崩 / 挂只死桥，宿主继续跑。区别全在桥侧（ClapPluginHost 走 C ABI，
@@ -16,13 +16,12 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 把进程带走（chowdsp 那几个在 VST3 下真机复现过）。扫描已经因此过桥；播放同理，
 // 没有进程内回退。
 //
-// 【IVst3Insert 这个名字】那是"带参数面板 + 编辑器"的宿主侧契约（VST3 起的名），
-// CLAP 复用同一份 —— 参数面板只认能力，不认格式。改名成与格式无关的名字是后续的
-// 独立提交（改签名会波及 VST3 那条链路，不塞进 P-C2）。
+// 【为什么要实现 IParameterInsert】桥只负责"插件那边"；旁通、参数面板、编辑器壳认的都是
+// 宿主侧契约 IParameterInsert（与 Vst3BridgeInsert 同一份）。参数面板只认能力，不认格式。
 //
 // 【实时纪律】与 Vst2BridgeInsert / Vst3BridgeInsert 相同：Process 里不分配、不加锁、
 // 不抛异常。
-public sealed class ClapBridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFailure, IDisposable
+public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeInsertFailure, IDisposable
 {
     readonly IBridgeChannel mChannel;
     readonly int mSlotId;
