@@ -29,10 +29,12 @@ public sealed class InsertPluginPathsPage : UserControl
 {
     const string Vst3Format = "VST3";
     const string Vst2Format = "VST2";
+    const string ClapFormat = "CLAP";
 
     readonly IHostServices mHost;
     readonly ObservableCollection<PathEntry> mVst3 = [];
     readonly ObservableCollection<PathEntry> mVst2 = [];
+    readonly ObservableCollection<PathEntry> mClap = [];
     readonly TextBlock mStatus = new();
     readonly ScanProgressBar mProgress = new();
     ChromeButton mScan = new();
@@ -53,9 +55,9 @@ public sealed class InsertPluginPathsPage : UserControl
         {
             Text = L(
                 "混音台的插入效果从这里找插件。改完路径点「立即扫描」，扫描结果会缓存下来供「添加效果」菜单使用。"
-                + "VST2 / VST3 一律由独立的桥进程加载：插件崩溃或卡死只会让那个插入旁通，不会带走 TuneLab。",
+                + "VST2 / VST3 / CLAP 一律由独立的桥进程加载：插件崩溃或卡死只会让那个插入旁通，不会带走 TuneLab。",
                 "The mixer finds insert plugins here. After editing paths, click Scan now — results are cached for the Add effect menu. "
-                + "VST2 and VST3 always load in a separate bridge process: a plugin crash or hang only bypasses that insert, never takes down TuneLab."),
+                + "VST2, VST3 and CLAP always load in a separate bridge process: a plugin crash or hang only bypasses that insert, never takes down TuneLab."),
             FontSize = 10.5,
             Foreground = Palette.Brush(Palette.TextLabel, 0.9),
             TextWrapping = TextWrapping.Wrap,
@@ -76,6 +78,16 @@ public sealed class InsertPluginPathsPage : UserControl
               "Loaded through a bridge process (a plugin crash cannot take down TuneLab); both 32- and 64-bit plugins work."),
             Vst2Format,
             mVst2);
+
+        var clapSection = BuildSection(
+            L("CLAP 路径", "CLAP paths"),
+            L("经桥进程加载。扫描要逐个加载 .clap 问描述（CLAP 没有可静态读取的元数据），比另外两种格式慢。"
+              + "当前版本只做到扫描：插件能列出来、能看厂商，但还不能插进混音台。",
+              "Loaded through a bridge process. Scanning loads every .clap to ask for its description "
+              + "(CLAP has no statically readable metadata), so it is slower than the other formats. "
+              + "This build can only scan: plugins are listed with their vendor but cannot be inserted yet."),
+            ClapFormat,
+            mClap);
 
         var scan = new ChromeButton
         {
@@ -141,7 +153,7 @@ public sealed class InsertPluginPathsPage : UserControl
             Content = new StackPanel
             {
                 Spacing = 18,
-                Children = { intro, vst3Section, isolationSection, vst2Section },
+                Children = { intro, vst3Section, isolationSection, vst2Section, clapSection },
             },
             Padding = new Thickness(14),
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
@@ -174,9 +186,9 @@ public sealed class InsertPluginPathsPage : UserControl
         var hint = new TextBlock
         {
             Text = L(
-                "VST3 与 VST2 一样，一律由独立的 64 位桥进程加载 —— 插件崩溃或卡死只会拖垮桥，"
+                "VST3 / VST2 / CLAP 一样，一律由独立的 64 位桥进程加载 —— 插件崩溃或卡死只会拖垮桥，"
                 + "TuneLab 与工程不受影响（该插入会旁通）。",
-                "Like VST2, VST3 always loads in a separate 64-bit bridge process — a plugin crash "
+                "Like VST2, VST3 and CLAP always load in a separate 64-bit bridge process — a plugin crash "
                 + "or hang only takes down the bridge, not TuneLab (the insert is bypassed instead)."),
             FontSize = 10,
             Foreground = Palette.Brush(Palette.TextLabel, 0.8),
@@ -336,6 +348,10 @@ public sealed class InsertPluginPathsPage : UserControl
         foreach (string path in settings.Paths.TryGetValue(Vst2Format, out var vst2) ? vst2 : [])
             mVst2.Add(new PathEntry(path));
 
+        mClap.Clear();
+        foreach (string path in settings.Paths.TryGetValue(ClapFormat, out var clap) ? clap : [])
+            mClap.Add(new PathEntry(path));
+
         mStatus.Text = settings.LastScanText == null
             ? L("尚未扫描", "Not scanned yet")
             : L($"上次扫描：{settings.LastScanText}", $"Last scan: {settings.LastScanText}");
@@ -382,8 +398,12 @@ public sealed class InsertPluginPathsPage : UserControl
         var input = new TextBox
         {
             Watermark = OperatingSystem.IsWindows()
-                ? (format == Vst3Format ? @"C:\Program Files\Common Files\VST3" : @"C:\Program Files\VstPlugins")
-                : (format == Vst3Format ? "/usr/lib/vst3" : "/usr/lib/vst"),
+                ? (format == Vst3Format ? @"C:\Program Files\Common Files\VST3"
+                    : format == ClapFormat ? @"C:\Program Files\Common Files\CLAP"
+                    : @"C:\Program Files\VstPlugins")
+                : (format == Vst3Format ? "/usr/lib/vst3"
+                    : format == ClapFormat ? "/usr/lib/clap"
+                    : "/usr/lib/vst"),
             FontSize = 10.5,
             Width = 380,
         };
@@ -456,6 +476,7 @@ public sealed class InsertPluginPathsPage : UserControl
         // 先把两个清单落盘：扫描读的是文件里那份，内存里的改动不写就不会生效。
         Save(Vst3Format, mVst3);
         Save(Vst2Format, mVst2);
+        Save(ClapFormat, mClap);
 
         var settings = mHost.InsertPlugins;
         if (settings == null)

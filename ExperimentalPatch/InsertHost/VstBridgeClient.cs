@@ -71,6 +71,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
                 if (LastFrameError is { Length: > 0 })
                     parts.Add(LastFrameError);
 
+                if (LastProtocolError is { Length: > 0 })
+                    parts.Add(LastProtocolError);
+
                 parts.AddRange(mErrorLines);
 
                 return parts.Count == 0 ? null : string.Join(" | ", parts);
@@ -87,7 +90,12 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         LastEditorError = null;
         LastTimeoutError = null;
         LastFrameError = null;
+        LastProtocolError = null;
     }
+
+    // 最近一次"桥回了对不上的结果"（例如要 clap 的扫描，回来的是 vst3 的条目）。
+    // 只有版本错配（旧桥不认识新字段）会走到这里；它不是崩溃，但那份结果不能信。
+    public string? LastProtocolError { get; private set; }
 
     // 启动阶段失败的原因（beyond the bridge's own stderr）。
     public string? LastStartError { get; private set; }
@@ -547,10 +555,15 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
     // ── 扫描（在桥进程里跑）──
 
-    // 让桥去扫它的标准位置（deep = 完整扫描：问每个插件的 factory 要描述）。
+    // 让桥去扫（deep = 完整扫描：问每个插件的 factory 要描述）。
     // 返回 null = 桥不可用 / 超时 / 协议错 —— 调用方按"这次扫不出来"处理。
+    //
+    // format：`vst3`（默认，扫 native 认得的标准位置）或 `clap`（files 是宿主枚举好的
+    // .clap 文件清单）。**结果要按 Format 核对**：老桥不认识 format 字段时会照着扫 VST3，
+    // 结果会以 vst3 回上来 —— 调用方不核对就会把 VST3 插件当 CLAP 缓存下来。
     public async Task<IReadOnlyList<ScannedPluginInfo>?> TryScanPluginsAsync(bool deep,
-        CancellationToken cancellation = default)
+        CancellationToken cancellation = default, string format = PluginFormats.Vst3,
+        IReadOnlyList<string>? files = null)
     {
         if (!IsRunning)
             return null;
@@ -558,13 +571,27 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         try
         {
             string? reply = await ExchangeAsync(
-                JsonSerializer.Serialize(new ScanPluginsMessage { Deep = deep }),
+                JsonSerializer.Serialize(new ScanPluginsMessage
+                {
+                    Deep = deep,
+                    Format = format,
+                    Paths = files == null ? null : new List<string>(files),
+                }),
                 cancellation).ConfigureAwait(false);
 
             if (reply == null)
                 return null;
 
             var message = JsonSerializer.Deserialize<PluginListMessage>(reply);
+
+            // 桥没按请求的格式回 = 这一份结果不能信（见上面的说明）。
+            if (message != null && format != PluginFormats.Vst3
+                && !string.Equals(message.Format, format, StringComparison.OrdinalIgnoreCase))
+            {
+                LastProtocolError = $"the bridge answered a {format} scan with {message.Format} entries";
+                return null;
+            }
+
             return message?.Entries;
         }
         catch (Exception)
@@ -575,9 +602,14 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
     // UI 线程用的同步包装。这里给的时间比加载长得多：完整扫描是"逐个问插件要描述"，
     // 几十个插件跑十几秒很正常；给太短会把正常扫描误判成卡死。
-    public IReadOnlyList<ScannedPluginInfo>? ScanPluginsBlocking(bool deep)
+    //
+    // timeout 可覆盖默认的 ScanTimeout：CLAP 是按文件分批问的（见 ClapBackend），
+    // 每一批只装一个插件，卡死一个文件不该让整轮扫描等 90 秒。
+    public IReadOnlyList<ScannedPluginInfo>? ScanPluginsBlocking(bool deep, string format = PluginFormats.Vst3,
+        IReadOnlyList<string>? files = null, TimeSpan? timeout = null)
         => RunTimed(deep ? "the deep plugin scan" : "the plugin scan",
-            () => TryScanPluginsAsync(deep), ScanTimeout, (IReadOnlyList<ScannedPluginInfo>?)null);
+            () => TryScanPluginsAsync(deep, default, format, files), timeout ?? ScanTimeout,
+            (IReadOnlyList<ScannedPluginInfo>?)null);
 
     // ── UI 线程用的同步包装 ──
     //

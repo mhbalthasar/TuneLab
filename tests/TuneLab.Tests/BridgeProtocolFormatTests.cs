@@ -121,6 +121,74 @@ public class BridgeProtocolFormatTests
         Assert.Equal(0x1234_5678, back!.WindowHandle);
     }
 
+    // ── CLAP 扫描（P-C1）──
+    //
+    // 这三条钉住"加格式不能动老语义"：
+    //   · 旧宿主发的 ScanPlugins 没有 format / paths → 必须还是扫 VST3；
+    //   · 新字段能往返（否则桥会收到一条不带清单的 CLAP 扫描，扫出空结果）；
+    //   · 结果的可用性缺省为 true（旧桥不会带这两个字段）。
+
+    [Fact]
+    public void ScanPlugins_WithoutFormat_DefaultsToVst3WithoutPaths()
+    {
+        var message = JsonSerializer.Deserialize<ScanPluginsMessage>("""{"deep":true}""");
+
+        Assert.NotNull(message);
+        Assert.True(message!.Deep);
+        Assert.Equal(PluginFormats.Vst3, message.Format);
+        Assert.Null(message.Paths);
+    }
+
+    [Fact]
+    public void ScanPlugins_ClapFormatAndPaths_RoundTrip()
+    {
+        string json = JsonSerializer.Serialize(new ScanPluginsMessage
+        {
+            Deep = false,
+            Format = PluginFormats.Clap,
+            Paths = [@"C:\Program Files\Common Files\CLAP\surge.clap"],
+        });
+
+        var back = JsonSerializer.Deserialize<ScanPluginsMessage>(json);
+
+        Assert.NotNull(back);
+        Assert.Equal(PluginFormats.Clap, back!.Format);
+        Assert.Single(back.Paths!);
+        Assert.EndsWith("surge.clap", back.Paths![0]);
+    }
+
+    [Fact]
+    public void ScannedPlugin_AvailabilityDefaultsToAvailable()
+    {
+        var entry = JsonSerializer.Deserialize<ScannedPluginInfo>(
+            """{"format":"clap","pluginId":"clap:com.x.y","name":"Y"}""");
+
+        Assert.NotNull(entry);
+        Assert.True(entry!.IsAvailable);
+        Assert.Null(entry.UnavailableReason);
+    }
+
+    [Fact]
+    public void PluginList_Format_DefaultsToVst3AndRoundTrips()
+    {
+        var old = JsonSerializer.Deserialize<PluginListMessage>("""{"deep":true}""");
+
+        Assert.NotNull(old);
+        Assert.Equal(PluginFormats.Vst3, old!.Format);
+
+        var back = JsonSerializer.Deserialize<PluginListMessage>(
+            JsonSerializer.Serialize(new PluginListMessage
+            {
+                Format = PluginFormats.Clap,
+                Entries = [new ScannedPluginInfo { Format = "CLAP", PluginId = "clap:a", Name = "A" }],
+            }));
+
+        Assert.NotNull(back);
+        Assert.Equal(PluginFormats.Clap, back!.Format);
+        Assert.Single(back.Entries);
+        Assert.Equal("CLAP", back.Entries[0].Format);
+    }
+
     // 一帧 state 的实际上限（P5.5：隔离默认开后，state 一律走这条帧）。
     //
     // 帧 = 4 字节长度 + UTF-8 JSON + base64 的 state，两端都会拿 MaxFrameBytes 判非法。

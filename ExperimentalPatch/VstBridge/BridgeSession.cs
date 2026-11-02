@@ -134,10 +134,22 @@ internal sealed class BridgeSession : IDisposable
         Write(JsonSerializer.Serialize(new HelloAckMessage
         {
             Ok = true,
-            Formats = Vst3PluginHost.IsSupported
-                ? [PluginFormats.Vst2, PluginFormats.Vst3]
-                : [PluginFormats.Vst2],
+            Formats = BridgeFormats(),
         }));
+    }
+
+    // 这个桥能承载哪些格式。
+    //
+    // x86 桥只有 VST2：VST3 的 native 宿主是 64 位（win-x64），CLAP 也只在 64 位桥上宣布
+    // （32 位 CLAP 不在本功能的范围内，见 DESIGN.md §5.2）。
+    static string[] BridgeFormats()
+    {
+        if (!Environment.Is64BitProcess)
+            return [PluginFormats.Vst2];
+
+        return Vst3PluginHost.IsSupported
+            ? [PluginFormats.Vst2, PluginFormats.Vst3, PluginFormats.Clap]
+            : [PluginFormats.Vst2, PluginFormats.Clap];
     }
 
     void HandleLoad(string? json, byte[] payload)
@@ -183,7 +195,7 @@ internal sealed class BridgeSession : IDisposable
     IBridgePluginHost OwnerOf(int slotNumber)
         => mOwner.TryGetValue(slotNumber, out var host) ? host : mVst2;
 
-    // 扫描：把"问插件要描述"关在桥进程里（那条路会把插件 dll 加载进本进程，
+    // 扫描：把"问插件要描述"关在桥进程里（那条路会把插件二进制加载进本进程，
     // 坏插件在扫描阶段就能 abort 整个宿主）。宿主侧只做**纯文件**枚举。
     void HandleScan(string? json)
     {
@@ -194,11 +206,18 @@ internal sealed class BridgeSession : IDisposable
             return;
         }
 
+        if (string.Equals(message.Format, PluginFormats.Clap, StringComparison.OrdinalIgnoreCase))
+        {
+            HandleClapScan(message);
+            return;
+        }
+
         if (!Vst3PluginHost.IsSupported)
         {
             Write(JsonSerializer.Serialize(new PluginListMessage
             {
                 Deep = message.Deep,
+                Format = PluginFormats.Vst3,
                 Reason = "the VST3 host library is missing in this bridge",
             }));
             return;
@@ -218,12 +237,57 @@ internal sealed class BridgeSession : IDisposable
                 Category = entry.Category,
                 Locator = entry.Locator,
                 IsInstrument = entry.IsInstrument,
+                IsAvailable = entry.IsAvailable,
+                UnavailableReason = entry.UnavailableReason,
             });
         }
 
         Write(JsonSerializer.Serialize(new PluginListMessage
         {
             Deep = message.Deep,
+            Format = PluginFormats.Vst3,
+            Entries = list,
+        }));
+    }
+
+    // CLAP 扫描：文件清单由宿主枚举（"扫哪 = 用户配的清单"留在宿主侧），
+    // 这里只负责把每个文件加载进来问描述。Loading 会执行插件代码 —— 桥正是为此存在。
+    void HandleClapScan(ScanPluginsMessage message)
+    {
+        if (!Environment.Is64BitProcess)
+        {
+            Write(JsonSerializer.Serialize(new PluginListMessage
+            {
+                Deep = message.Deep,
+                Format = PluginFormats.Clap,
+                Reason = "32-bit CLAP plugins are not supported",
+            }));
+            return;
+        }
+
+        var entries = ClapScanner.Scan(message.Paths);
+        var list = new List<ScannedPluginInfo>(entries.Count);
+
+        foreach (var entry in entries)
+        {
+            list.Add(new ScannedPluginInfo
+            {
+                Format = entry.Format,
+                PluginId = entry.PluginId,
+                Name = entry.Name,
+                Vendor = entry.Vendor,
+                Category = entry.Category,
+                Locator = entry.Locator,
+                IsInstrument = entry.IsInstrument,
+                IsAvailable = entry.IsAvailable,
+                UnavailableReason = entry.UnavailableReason,
+            });
+        }
+
+        Write(JsonSerializer.Serialize(new PluginListMessage
+        {
+            Deep = message.Deep,
+            Format = PluginFormats.Clap,
             Entries = list,
         }));
     }

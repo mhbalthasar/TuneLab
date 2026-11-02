@@ -255,6 +255,7 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 |---|---|---|---|
 | VST2.4 | **仅 Windows** | VST.NET2（托管封装）+ **桥进程**（§5.3） | 可行。VST2 SDK 早已停止发放许可，VST.NET2 自带头文件；我们只做运行时加载、不分发 SDK。**x86 老插件必须走 32 位桥进程** |
 | VST3 | 全平台 | OwnAudioVST3（**托管层源码降级 vendor 到 net8**，见 §5.4.1） | 可行，**已落地**：一律经 64 位桥进程（`VstBridge/InProcess/` 是桥侧的进程内实现，宿主只有 `Vst3BridgeInsert`）。原生 dll 改名 `.tlhost` 防撞车。patch 本体不再含插件加载代码（VST3-BRIDGE.md §11） |
+| CLAP | 全平台 | **不需要库**：纯 C ABI，`P/Invoke` 直接调 | **扫描已落地**（P-C1）：一律经 64 位桥加载问描述，宿主只做文件枚举（`ClapBackend`）。播放 / 参数 / 状态是 P-C2，GUI 是 P-C3。CLAP-first 也是「Linux 上跑 Windows 插件」的入口：yabridge 的 CLAP 代理就是一个原生 Linux `.clap`（CLAP.md） |
 | JSFX | 全平台 | 需要 EEL2 解释器 | **最大风险**：没有现成 .NET 实现。要么包 `ysfx`（C++ 解释器，P/Invoke），要么自己写（数月）。见 §12 Q4 |
 
 - 三条路线共用一层**中间契约** `IInsertHost`：`Process(block)`、`LatencySamples`、`OpenEditor()`、
@@ -278,10 +279,14 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
       实测进程内 `LoadPlugin → Initialize` 会把整个宿主带走（DPF 插件的 assert 直接 abort），
       也有插件 20 秒不返回 —— 扫描不能有这个代价。标记漏掉的那一类（DPF 系，子类别运行时拼）
       由 `Create` 时的真实加载补记：用户点错一次之后，那个插件就不再出现（`sKnownInstruments`）。
-- **扫描路径与「立即扫描」住在宿主的「设置」窗里**（一页 `EP-MIXER-16` 的补丁 tab，VST2 / VST3 各一份清单）：
+- **扫描路径与「立即扫描」住在宿主的「设置」窗里**（一页 `EP-MIXER-16` 的补丁 tab，VST2 / VST3 / CLAP 各一份清单）：
   它是"这台机器上插件装在哪儿"的本机设置，跟界面语言、音频设备同类，散在「实验功能」菜单里没人找得到。
   这一页只经 `IHostServices.InsertPlugins` 读写，落盘在 `{DataFolder}/insert-plugins.json`
   （受 `TUNELAB_DATA_DIR` 重定向），**不进 `.tlpx`**。
+- **CLAP 的扫描是"必须加载"的那一类**（与 VST3 相反）：id / 名称 / 厂商 / features 全是运行时的
+  字符串，二进制里没有可读的静态副本。所以清单枚举在宿主（纯文件读取），**问描述一律在桥里**，
+  而且是**一个文件问一次**：坏插件崩掉的只是那一个文件的条目（退化成灰掉的占位行），
+  其余照常出现，进度也能按文件报。细节见 [CLAP.md](CLAP.md)。
 
 ### 5.3 VST2 的位数：x86 老插件与 AnyCPU
 

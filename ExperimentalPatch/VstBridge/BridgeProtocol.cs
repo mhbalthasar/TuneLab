@@ -38,10 +38,16 @@ public static class BridgeProtocol
 }
 
 // 插件格式名。桥、宿主、扫描缓存都用这几个字面量；写死字符串迟早漂移。
+//
+// 这里只放**协议值**（小写）。界面上的显示名（"VST3" / "CLAP"）是另一套词，
+// 在 IInsertBackend.FormatName 与扫描结果里，两者不要混用。
 public static class PluginFormats
 {
     public const string Vst2 = "vst2";
     public const string Vst3 = "vst3";
+
+    // CLAP。纯 C ABI：不需要 per-RID 的 native 宿主库，桥自己就能加载 .clap。
+    public const string Clap = "clap";
 }
 
 public enum BridgeMessageKind
@@ -524,21 +530,35 @@ public sealed class CloseEditorResultMessage
 
 // ── 扫描 ──
 //
-// 【为什么扫描也要过桥】"问插件要一份描述"听起来无害，实际是把插件的 dll 加载进
+// 【为什么扫描也要过桥】"问插件要一份描述"听起来无害，实际是把插件的二进制加载进
 // 本进程 —— 坏插件在这一步就能 abort 掉整个宿主（真机 66 个一起扫时复现过）。
 // 所以扫描（尤其完整扫描）同样只能在桥里做：崩了、卡死了都只是桥没了。
 //
-// 【为什么不带目录清单】带目录的扫描是**纯文件枚举**（.vst3 包、moduleinfo.json、
-// 二进制里的类别标记），宿主自己做，不需要加载插件。过桥的这条只负责 native
-// 扫描器认得的标准位置（也就是"完整扫描"那半）。
+// 【三种格式的差别】
+//   · VST3：宿主只做**纯文件枚举**（.vst3 包、moduleinfo.json、二进制类别标记），
+//     带目录的扫描根本不过桥；过桥的这条只负责 native 扫描器认得的标准位置。
+//   · CLAP：没有"不加载就能读到的元数据"（描述是运行时的字符串），所以必须过桥加载。
+//     宿主仍然负责枚举文件（纯文件读取），把文件清单放在 Paths 里发过来 ——
+//     "扫哪 = 用户配的清单"这条不变量因此留在宿主侧。
+//   · VST2：不走这条消息（它有自己的加载式扫描，见 Vst2Backend）。
 public sealed class ScanPluginsMessage
 {
     [JsonPropertyName("kind")]
     public BridgeMessageKind Kind => BridgeMessageKind.ListPlugins;
 
     // true = 完整扫描（ScanMode.Full，问描述）；false = 快速扫描（标准位置）。
+    // 只对 VST3 有意义；CLAP 的描述本来就是问出来的，两种模式同一条路。
     [JsonPropertyName("deep")]
     public bool Deep { get; init; }
+
+    // 插件格式（`vst3` / `clap`）。缺省 `vst3`：旧宿主不带这个字段，
+    // 反序列化后保留初值，老行为一条不变。
+    [JsonPropertyName("format")]
+    public string Format { get; init; } = PluginFormats.Vst3;
+
+    // 明确的插件**文件**清单（目前只有 CLAP 用）。空 / null = 用该格式的标准位置。
+    [JsonPropertyName("paths")]
+    public List<string>? Paths { get; init; }
 }
 
 // 一条扫描结果。刻意与 InsertPluginInfo 同形，但**不复用**它：
@@ -565,6 +585,14 @@ public sealed class ScannedPluginInfo
 
     [JsonPropertyName("isInstrument")]
     public bool IsInstrument { get; init; }
+
+    // 扫到了、但装不进来（例如 .clap 里没有 clap_entry）。与 InsertPluginInfo 的同名字段同义：
+    // 菜单据此灰掉并写出原因，而不是让用户点了才发现。
+    [JsonPropertyName("available")]
+    public bool IsAvailable { get; init; } = true;
+
+    [JsonPropertyName("unavailableReason")]
+    public string? UnavailableReason { get; init; }
 }
 
 public sealed class PluginListMessage
@@ -574,6 +602,10 @@ public sealed class PluginListMessage
 
     [JsonPropertyName("deep")]
     public bool Deep { get; init; }
+
+    // 回显请求的格式：宿主据此确认这一份结果不是"桥没看懂格式、拿 VST3 的顶上来"。
+    [JsonPropertyName("format")]
+    public string Format { get; init; } = PluginFormats.Vst3;
 
     // 桥这一侧失败时的原因（native 缺失 / 扫描器版本不对）。空 = 结果可信。
     [JsonPropertyName("reason")]

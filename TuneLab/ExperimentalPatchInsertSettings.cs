@@ -52,6 +52,9 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         }
         : Array.Empty<string>();
 
+    // CLAP 的标准位置（三平台，见 ClapPaths）。
+    public static IReadOnlyList<string> DefaultClapPaths => ClapPaths.Default;
+
     static string DataFolder()
     {
         string? overrideFolder = Environment.GetEnvironmentVariable("TUNELAB_DATA_DIR");
@@ -72,6 +75,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
             {
                 ["VST3"] = state.Vst3Paths ?? DefaultVst3Paths.ToList(),
                 ["VST2"] = state.Vst2Paths ?? DefaultVst2Paths.ToList(),
+                ["CLAP"] = state.ClapPaths ?? DefaultClapPaths.ToList(),
             };
         }
     }
@@ -84,6 +88,8 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
             state.Vst3Paths = paths.ToList();
         else if (format == "VST2")
             state.Vst2Paths = paths.ToList();
+        else if (format == "CLAP")
+            state.ClapPaths = paths.ToList();
         else
             return;
 
@@ -165,10 +171,11 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         // 扫哪 = 用户配的清单（EP-MIXER-12）。空清单 = 什么都不扫，不擅自去扫系统目录。
         var vst3Paths = state.Vst3Paths ?? [];
         var vst2Paths = state.Vst2Paths ?? [];
+        var clapPaths = state.ClapPaths ?? [];
 
-        // 进度条跨两个格式累计：两个后端各自只会报"我在自己这份清单里走到第几条"，
+        // 进度条跨格式累计：两个后端各自只会报"我在自己这份清单里走到第几条"，
         // 全局的偏移量只有这里知道。
-        int total = Math.Max(vst3Paths.Count + vst2Paths.Count, 1);
+        int total = Math.Max(vst3Paths.Count + vst2Paths.Count + clapPaths.Count, 1);
 
         // 目录内的"正在检查 xxx"要知道当前是哪个目录、全局走到第几条 —— 后端报细节时只给插件名，
         // 这两个值由下面两个 lambda 边扫边更新。
@@ -240,6 +247,30 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
                 currentDirectory = directory;
                 currentDone = vst3Paths.Count + index;
                 progress?.Report(new InsertScanProgress(vst3Paths.Count + index, total, directory));
+            },
+            onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
+            .Select(p => new InsertPluginEntry
+            {
+                Format = p.Format,
+                PluginId = p.PluginId,
+                Name = p.Name,
+                Vendor = p.Vendor,
+                Category = p.Category,
+                IsInstrument = p.IsInstrument,
+                IsAvailable = p.IsAvailable,
+                UnavailableReason = p.UnavailableReason,
+                Locator = p.Locator,
+            }));
+
+        // CLAP：目录枚举在宿主（纯文件读取），问描述在桥（加载插件）—— 见 ClapBackend。
+        // 它没有"快扫/完整扫描"之分：描述本来就是加载问出来的，两种模式同一条路。
+        int clapBase = vst3Paths.Count + vst2Paths.Count;
+
+        entries.AddRange(sClapBackend.ListPlugins(clapPaths, (index, _, directory) =>
+            {
+                currentDirectory = directory;
+                currentDone = clapBase + index;
+                progress?.Report(new InsertScanProgress(clapBase + index, total, directory));
             },
             onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
             .Select(p => new InsertPluginEntry
@@ -330,6 +361,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
 
     static readonly Vst3Backend sVst3Backend = new();
     static readonly Vst2Backend sVst2Backend = new();
+    static readonly ClapBackend sClapBackend = new();
 
     static InsertPluginEntry ToEntry(CachedPlugin cached) => new()
     {
@@ -387,6 +419,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         // 返回的是 null 清单，Scan() 便一个目录都不扫 —— 界面上就是"明明装了插件却搜不到"。
         state.Vst3Paths ??= DefaultVst3Paths.ToList();
         state.Vst2Paths ??= DefaultVst2Paths.ToList();
+        state.ClapPaths ??= DefaultClapPaths.ToList();
 
         // 迁移：旧文件里可能还留着 IsolateVst3（那个开关已经删了 —— VST3 一律走隔离）。
         // 反序列化会把这个未知键忽略掉；这里只是把版本号抬到当前值，
@@ -418,10 +451,11 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     const int CurrentCacheVersion = 4;
 
     // 设置文件版本。只记"必须迁移的语义变化"，与缓存格式无关。
+    // 4 = 多了一份 CLAP 扫描路径清单（旧的没有这个键 → 走默认值，不需要迁移动作）。
     // 3 = 删掉 IsolateVst3（VST3 一律隔离，不再有开关）。
     // 2 = 隔离开关有了"没设置过"这个状态（P5.5 默认开）。
     //     1 / 0 = 那一版默认就是关，任何一次扫描 / 保存都会写出 IsolateVst3: false。
-    const int CurrentSettingsVersion = 3;
+    const int CurrentSettingsVersion = 4;
 
     static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -438,6 +472,7 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         public int CacheVersion { get; set; }
         public List<string>? Vst3Paths { get; set; }
         public List<string>? Vst2Paths { get; set; }
+        public List<string>? ClapPaths { get; set; }
         public List<CachedPlugin> Cache { get; set; } = [];
         public string? LastScanUtc { get; set; }
 

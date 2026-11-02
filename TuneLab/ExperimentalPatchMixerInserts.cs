@@ -42,6 +42,7 @@ internal sealed class InsertInstanceFactory
 
     readonly Vst3Backend mVst3 = new();
     readonly Vst2Backend mVst2 = new();
+    readonly ClapBackend mVstClap = new();
 
     // 宿主当前的采样率 / 块长。插件的 Initialize 要它们，所以必须在建实例前知道。
     // 由 MixerGraphCompiler.Compile 每次编译时按当前图刷新（见那里的注释：这两个值曾长期停在默认值上，
@@ -59,9 +60,12 @@ internal sealed class InsertInstanceFactory
     // 用户配的 VST2 扫描路径（与 VST3 分开：老插件目录常常是另一棵树）。
     public IReadOnlyList<string> Vst2Paths { get; set; } = InsertPluginSettings.DefaultVst2Paths;
 
+    // 用户配的 CLAP 扫描路径（默认 = 三平台的标准位置，见 ClapPaths）。
+    public IReadOnlyList<string> ClapPaths { get; set; } = InsertPluginSettings.DefaultClapPaths;
+
     // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于隔离宿主（64 位桥）在不在，
-    // VST2 取决于桥可执行文件在不在（Windows-only）。
-    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3, mVst2 };
+    // VST2 取决于桥可执行文件在不在（Windows-only），CLAP 同样取决于桥（纯 C ABI，无额外 native）。
+    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3, mVst2, mVstClap };
 
     // 图侧（MixerGraphCompiler）与工程侧（MixerPersistence 落盘）共用**同一个**工厂：
     // 插件实例里存着用户的参数与 state，各建一份就会"图里在跑、落盘是空的"。
@@ -335,6 +339,14 @@ internal sealed class InsertInstanceFactory
 
         // 2) 缓存里没有（从没扫过 / 缓存被清）→ 退回按目录枚举。
         // 每个格式有自己的一份路径清单（VST2 与 VST3 的老插件目录通常不是同一棵树）。
+        //
+        // CLAP 例外：它的"扫描"必须把每个 .clap 加载进桥问描述（没有静态元数据），
+        // 而这段代码在**每次编译音频图**时都会跑。为一个槽位把几十个插件过一遍桥
+        // 等于每次改路由都冻住好几秒 —— 所以这里不做，交给槽位上存的 Locator
+        // （ClapBackend.MakeLocator 把"文件 + pluginId"一起存进去了）。
+        if (string.Equals(backend.FormatName, ClapBackend.FormatName, StringComparison.OrdinalIgnoreCase))
+            return null;
+
         var paths = string.Equals(backend.FormatName, Vst2Backend.FormatName, StringComparison.OrdinalIgnoreCase)
             ? Vst2Paths
             : Vst3Paths;
