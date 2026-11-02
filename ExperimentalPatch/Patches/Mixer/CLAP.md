@@ -1,6 +1,6 @@
 # CLAP 插入效果：设计记录
 
-> 状态：**P-C1 已落地（只到扫描）**。P-C2（音频 / 参数 / 状态）与 P-C3（GUI）见 §6。
+> 状态：**P-C1（扫描）与 P-C2（音频 / 参数 / 状态）已落地**。GUI（P-C3）未做，插上后显示参数面板。
 > 上游约束见 [DESIGN.md](DESIGN.md) §5.2、桥的总体设计见 [VST3-BRIDGE.md](VST3-BRIDGE.md)。
 
 ## 1. 为什么是 CLAP，而且是现在
@@ -84,12 +84,14 @@ features` 全是运行时的字符串。想知道就得 `dlopen` → `clap_entry
 宿主**核对回显的 `format`**：老桥不认识 `format` 会照着扫 VST3，那份结果如果直接当 CLAP
 缓存下来就是灾难（`VstBridgeClient.LastProtocolError`）。
 
-### 3.6 P-C1 的可见边界
+### 3.6 扫描结果的"可用"含义
 
-`ClapBackend.PlaybackAvailable = false`：扫描出来的条目一律 `IsAvailable = false` +
-"CLAP playback is not implemented yet"。菜单会照常列出格式与厂商，但条目是灰的、写明原因 ——
-比"能点进去、插上了、没声音"诚实。P-C2 打开它时要同时把 `CurrentCacheVersion` 加一，
-否则旧缓存里那批灰条目会一直是灰的。
+桥加载成功 = `IsAvailable = true`，宿主不再额外加条件（P-C2 之后播放也在桥里，能加载就能插）。
+加载失败的文件给一条 `IsAvailable = false` 的占位行，原因写在 `UnavailableReason` ——
+比"凭空少一行"诚实。
+
+P-C1 那一版这里曾固定为 false（"能扫不能插"）。翻成 true 时把 `CurrentCacheVersion`
+加了一（4 → 5）：旧缓存里那批灰条目不会自己变亮。
 
 ## 4. 三平台事实
 
@@ -113,31 +115,44 @@ features` 全是运行时的字符串。想知道就得 `dlopen` → `clap_entry
 | 一库多插件 | 罕见 | 常见（一个 `.clap` 多个 descriptor） |
 | 编辑器 | 插件自建顶层窗口，宿主拿 HWND 置前 | `clap_plugin_gui`：可以把插件 GUI 嵌进**宿主给的**窗口 |
 
-## 6. 后续阶段
+## 6. 阶段
 
-### P-C2：音频 / 参数 / 状态（下一个）
+### P-C1：扫描（已完成，见 §3）
 
-桥侧新增 `ClapPluginHost : IBridgePluginHost`（与 `Vst3PluginHost` 同契约、同槽位表），
-实现：
+### P-C2：音频 / 参数 / 状态（已完成）
 
-- `clap_host` 的最小实现：`get_extension` 返回 null（不认识任何宿主扩展）、
-  `request_restart` / `request_process` / `request_callback` 记录待处理标记。
-- 生命周期：`create_plugin` → `init` → `activate(sample_rate, min, max)` →
-  `start_processing` → `process` → `stop_processing` → `deactivate` → `destroy`。
-- `clap_process`：`audio_inputs` / `audio_outputs` 指向共享环的**交错→分块**视图？
-  **不**：CLAP 用 float 指针数组（每声道一块），桥里的音频本来就是每声道连续缓冲，
-  正好直接给 `data32`，不需要交错转换（VST3 那边也一样）。
-- `in_events` / `out_events`：最小实现（输入为空表 + 参数事件队列，输出只记 param 事件）。
-- 参数：`clap_plugin_params`（`count` / `get_info` / `get_value` / `value_to_text` /
-  `text_to_value` / `flush`）。UI 改参数 = 入队一条 `clap_event_param_value`，下一次
-  `process` 交付（与 VST3 的"等到下一块"一致）。
-- 状态：`clap_plugin_state` 的 `save` / `load`，用 `clap_ostream` / `clap_istream` 的
-  反向回调写进托管 `MemoryStream`（回调里 try/catch，异常不能跨 ABI 边界）。
-- 延迟：`clap_plugin_latency.get` → PDC。
-- 抖动/不适用的扩展：一律返回 null，插件必须自己降级（CLAP 规范要求）。
+桥侧 `ClapPluginHost : IBridgePluginHost`（与 `Vst3PluginHost` 同契约、同槽位表）。实现要点：
 
-`ClapBackend.Create` 走 `Vst3BridgeInsert` 的形状新建 `ClapBridgeInsert`
-（`IBridgeInsert` + 旁通 + 增益/湿干包装仍在宿主侧，与 VST3 一致）。
+- **线程模型**：桥是单线程的（收一条消息办一件事），所以 `process` 与 `on_main_thread`
+  在同一个 OS 线程上。`clap_host_thread_check` 的两个问题都答"是"（不提供这个扩展时，
+  DPF 系插件会假设自己不在主线程上，把该做的事永远往后推）。谁哪天给桥加线程，
+  这个前提与 `ClapLibrary` 的免锁假设要一起改。
+- **宿主扩展**：只提供 `clap.thread-check`；其余一律 `get_extension → null`，由插件自己降级
+  （CLAP 规范要求）。`request_restart` / `request_process` / `request_callback` 只记标记：
+  restart 在下一次进槽位时做"停 → 撤 → 激活 → 开始"（失败就把这一行标成坏、直通），
+  callback 在下一次进槽位时调 `on_main_thread`。
+- **音频**：`clap_process` 的 `audio_inputs` / `audio_outputs` 指向**加载时一次性分配**的
+  非托管缓冲（每端口一份 `float*[channels]`，每声道连续）。共享环给的平面直接拷进主输入端口；
+  其余输入端口清零（CLAP 侧链端口不在 P-C2 范围内）。process 路径上不分配、不加锁。
+- **事件**：入参事件只有一个来源 —— 宿主改参数。`SetParameter` 往预分配的事件数组里写一条
+  `clap_event_param_value`（带 `get_info` 给的 cookie），下一次 `process` 通过 `in_events`
+  交付，交付完就清空（插件没读等于丢了这条改动，比重复应用同一个值安全）。输出事件收下丢掉。
+- **参数**：`clap_plugin_params` 的 `count` / `get_info` / `get_value`；`value_to_text` /
+  `text_to_value` P-C2 不用（参数面板显示裸数值）。宿主停止播放时靠
+  `FlushParameterChanges` 发一小块静音把事件冲进插件，避免"调完几秒后自动变回去"。
+- **状态**：`clap_plugin_state` 的 `save` / `load`，用 `clap_ostream` / `clap_istream` 的反向
+  回调写进 / 读出托管 `MemoryStream`（回调里 try/catch：异常绝不能跨 ABI 边界）。
+- **延迟**：`clap_plugin_latency.get` → PDC；插件 `request_restart` 后重读。
+- **库的生命周期**：`ClapLibrary` 按二进制路径做引用计数（`init` 每库每进程一次，
+  `deinit` + 卸载要等最后一个实例）。这不只是省事 —— 没有计数的话，
+  "插着 CLAP 插件时点立即扫描"会把活实例脚下的库 `deinit` 掉。
+
+宿主侧新增 `ClapBridgeInsert`，与 `Vst3BridgeInsert` 同构（旁通 + 增益/湿干包装仍在宿主侧）。
+它临时实现 `IVst3Insert`（那是"带参数面板 + 编辑器"的宿主契约，名字是 VST3 留下的。
+改成与格式无关的名字是独立提交，不塞进 P-C2）。
+
+**升级注意**：`CurrentCacheVersion` 4 → 5。P-C1 的缓存里 CLAP 条目全是
+`IsAvailable = false`，不加版本号的话菜单会一直灰着。
 
 ### P-C3：GUI
 
@@ -152,12 +167,15 @@ features` 全是运行时的字符串。想知道就得 `dlopen` → `clap_entry
 
 ## 7. 已知限制 / 待办
 
+- **编辑器（P-C3）未做**：插上后显示参数面板（`HasEditor = false`）。
 - 真机（Linux）未验证。桥的传输层已经是跨平台的（UDS / mmap / `UnixProcess`），
   但 `tools/publish-bridges.ps1` 还没有 linux-* 目标（见 §8）。
 - 扫描没有"快扫"：`ListPluginsDeep` 与 `ListPlugins` 是同一条路。等真机看耗时要不要缓存。
 - `InsertInstanceFactory.FindPlugin` 对 CLAP **不**做目录回退枚举（每次编译图都要过桥加载
   几十个插件 = 每次改路由冻几秒），槽位里的 `Locator` 才是定位依据。
-- P-C1 的菜单条目全是灰的（见 §3.6）。
+- 侧链（`CLAP_PORT_SIDECHAIN`）未接：多出来的输入端口一律清零。
+- 参数自动化（宿主 → 插件的事件流）未接：P-C2 只有"用户拖一个参数"这一种事件。
+- `value_to_text` / `text_to_value` 未用：参数面板显示裸数值，没有插件自己的单位 / 枚举名。
 
 ## 8. 发布：桥要按 RID 发
 

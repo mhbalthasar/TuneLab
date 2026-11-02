@@ -82,10 +82,10 @@ public sealed class InsertPluginPathsPage : UserControl
         var clapSection = BuildSection(
             L("CLAP 路径", "CLAP paths"),
             L("经桥进程加载。扫描要逐个加载 .clap 问描述（CLAP 没有可静态读取的元数据），比另外两种格式慢。"
-              + "当前版本只做到扫描：插件能列出来、能看厂商，但还不能插进混音台。",
+              + "插件界面（编辑器）尚未开放，插上后先显示参数面板。",
               "Loaded through a bridge process. Scanning loads every .clap to ask for its description "
               + "(CLAP has no statically readable metadata), so it is slower than the other formats. "
-              + "This build can only scan: plugins are listed with their vendor but cannot be inserted yet."),
+              + "Plugin editors are not available yet: inserted CLAP plugins show the parameter panel."),
             ClapFormat,
             mClap);
 

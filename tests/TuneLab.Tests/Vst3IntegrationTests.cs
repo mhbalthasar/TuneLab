@@ -19,6 +19,7 @@ namespace TuneLab.Tests;
 //
 // 【为什么默认跳过】要机器上真装有 64 位 VST3。用 TL_VST3_DIR 环境变量指定目录，
 // 每个 .vst3 各跑一次；没设就跳过（CI / 别人的机器上不一定有）。
+[Collection("IsolatedBridge")]
 public class Vst3IntegrationTests
 {
     const string Vst3DirVariable = "TL_VST3_DIR";

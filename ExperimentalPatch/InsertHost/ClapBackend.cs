@@ -27,22 +27,14 @@ public sealed class ClapBackend : IInsertBackend
 
     string IInsertBackend.FormatName => FormatName;
 
-    // P-C1 只做到扫描：能列出、能看厂商、能记进缓存，但还不能发声。
-    // P-C2（音频/参数/状态）落地时把这里改成 true，并把 InsertPluginSettings 的
-    // CurrentCacheVersion 加一 —— 否则旧缓存里那批"IsAvailable = false"会一直灰着。
-    //
-    // 用 static readonly（不是 const）：Create 里对它的判断是真的运行期分支，
-    // 写成 const false 会让编译器把后半段当不可达代码报警告。
-    internal static readonly bool PlaybackAvailable = false;
-
-    internal const string PlaybackUnavailableReason =
-        "CLAP playback is not implemented yet (this build can only scan)";
+    // P-C2 起：能扫也能发声（音频 / 状态 / 参数都在桥里）。
+    internal static readonly bool PlaybackAvailable = true;
 
     // 能不能用 = 桥可执行文件在不在。CLAP 不需要 per-RID 的 native 宿主库，
     // 所以"桥在"就是全部条件；桥到底带不带 CLAP 由握手后的 BridgeFormats 决定。
-    public bool IsAvailable => VstBridgeClient.BridgeExecutableExists;
+    public bool IsAvailable => ClapBridgeInsert.IsolationAvailable;
 
-    public string? UnavailableReason => IsAvailable ? null : "the isolated host process is not installed";
+    public string? UnavailableReason => IsAvailable ? null : ClapBridgeInsert.IsolationUnavailableReason;
 
     public IReadOnlyList<InsertPluginInfo> ListPlugins(IReadOnlyList<string>? directories = null,
         Action<int, int, string>? onDirectory = null, bool probeInstruments = true, Action<string>? onDetail = null)
@@ -230,11 +222,11 @@ public sealed class ClapBackend : IInsertBackend
         Category = entry.Category,
         IsInstrument = entry.IsInstrument,
 
-        // 桥只说"这个文件能不能用"；能不能**出声**是宿主这一层的事（P-C2）。
-        IsAvailable = entry.IsAvailable && PlaybackAvailable,
-        UnavailableReason = !entry.IsAvailable
-            ? entry.UnavailableReason ?? "the plugin cannot be loaded"
-            : PlaybackAvailable ? null : PlaybackUnavailableReason,
+        // 桥说"这个文件能不能加载"；能不能**出声**在 P-C2 之后是同一件事（播放也在桥里）。
+        IsAvailable = entry.IsAvailable,
+        UnavailableReason = entry.IsAvailable
+            ? null
+            : entry.UnavailableReason ?? "the plugin cannot be loaded",
 
         Locator = MakeLocator(entry.Locator, entry.PluginId),
     };
@@ -277,25 +269,10 @@ public sealed class ClapBackend : IInsertBackend
 
     public IMixInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
     {
-        // P-C1：只到扫描。这里如实拒绝，而不是造一个"接上了但没声音"的插入 ——
+        // 失败一律如实拒绝（带原因），绝不造一个"接上了但没声音"的插入 ——
         // 后者用户没法从现象上区分"插件没声"和"宿主没实现"。
-        //
-        // P-C2 的接缝：把 PlaybackAvailable 打开，并在下面按 Vst3BridgeInsert 的形状建
-        // ClapBridgeInsert（Locator 里的"文件 + id"正好喂给桥的 LoadPlugin）。
-        if (!PlaybackAvailable)
-        {
-            reason = PlaybackUnavailableReason;
-            return null;
-        }
+        var insert = ClapBridgeInsert.Create(plugin, settings, out reason, out _);
 
-        if (string.IsNullOrEmpty(plugin.Locator)
-            || !TrySplitLocator(plugin.Locator, out _, out _))
-        {
-            reason = "plugin location is unknown (rescan first)";
-            return null;
-        }
-
-        reason = "CLAP playback is not wired into the bridge yet";
-        return null;
+        return insert;
     }
 }

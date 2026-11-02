@@ -445,10 +445,12 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
     }
 
     // 缓存格式版本。只有"扫描结果里有意义的那批字段"变了才加 1。
+    // 5 = CLAP 从"只能扫"变成"能插"（P-C2）：旧缓存里那批 IsAvailable = false 的
+    //     CLAP 条目必须重扫一遍，否则菜单会一直灰着。
     // 4 = 完整扫描（ScanDeep）把 VST3 的厂商/版本按官方口径写进缓存。
     // 3 = VST3 开始从 moduleinfo.json 读厂商（同一产品的两种格式不再有厂商落差）。
     // 2 = 开始区分乐器（并且不再把乐器写进缓存）；1 / 0 = 老格式，读的时候当空表。
-    const int CurrentCacheVersion = 4;
+    const int CurrentCacheVersion = 5;
 
     // 设置文件版本。只记"必须迁移的语义变化"，与缓存格式无关。
     // 4 = 多了一份 CLAP 扫描路径清单（旧的没有这个键 → 走默认值，不需要迁移动作）。

@@ -17,6 +17,7 @@ namespace TuneLab.Tests;
 // 【为什么默认跳过】要有 linux-x64 的桥 exe（自包含发布）落在测试输出目录的
 // bridge/linux-x64/ 下。没有就跳过（CI / 别人的机器上不一定有），与 Vst3IntegrationTests 同口径。
 // 本组读 /proc，故仅 Linux。
+[Collection("IsolatedBridge")]
 public class BridgeIsolationTests
 {
     static bool PlatformOk => OperatingSystem.IsLinux() && Environment.Is64BitProcess;

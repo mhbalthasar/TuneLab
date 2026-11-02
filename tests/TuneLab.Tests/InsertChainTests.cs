@@ -12,6 +12,7 @@ namespace TuneLab.Tests;
 // 这里全部用 GainInsert / FailingInsert（InsertHost 的假后端）而不是真 VST3：
 // 真插件测试机上未必有，而"插入被接进图里、旁通真的跳过、latency 真的去补 PDC"
 // 这些行为与后端是什么无关。后端自身的验证另有一段（见 Vst3BackendTests）。
+[Collection("IsolatedBridge")]
 public class InsertChainTests
 {
     sealed class TestState : IMixChannelState

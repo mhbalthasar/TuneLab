@@ -85,13 +85,10 @@ public class ClapBackendTests
     // 真插件的判定在 ClapIntegrationTests 里对着一堆真 features 验。
 
     [Fact]
-    public void NotScannedWhilePlaybackIsNotWired()
+    public void BrokenLocatorIsRejectedBeforeTouchingTheBridge()
     {
-        // P-C1 的边界：扫描通了、播放没通。这里钉住"不假装能插"——
-        // 一个 IsAvailable = true 的 CLAP 条目会让用户点进一个注定失败的插入。
-        if (ClapBackend.PlaybackAvailable)
-            return;
-
+        // Locator 是"文件\npluginId"两段。老工程 / 手改坏的槽位不能猜：如实报"重新扫描"。
+        // 这一条刻意不碰桥（坏 Locator 在执行任何插件代码之前就该被拒）。
         var backend = new ClapBackend();
 
         var created = backend.Create(
@@ -100,18 +97,22 @@ public class ClapBackendTests
                 Format = ClapBackend.FormatName,
                 PluginId = "clap:com.example.test",
                 Name = "Test",
-                Locator = ClapBackend.MakeLocator(@"C:\x\test.clap", "clap:com.example.test"),
+                Locator = @"C:\x\test.clap",
             },
             new InsertSettings(),
             out string? reason);
 
         Assert.Null(created);
-        Assert.Equal(ClapBackend.PlaybackUnavailableReason, reason);
+        Assert.False(string.IsNullOrWhiteSpace(reason));
     }
 
     [Fact]
-    public void PlaybackUnavailableReasonIsNotEmpty()
-        => Assert.False(string.IsNullOrWhiteSpace(ClapBackend.PlaybackUnavailableReason));
+    public void PlaybackIsWiredInThisBuild()
+    {
+        // P-C2 的边界：能扫也能插。没有这条的话，"播放没接线"这种半成品状态会悄悄回来 ——
+        // 用户看到的是菜单里有条目、点了却插不进来。
+        Assert.True(ClapBackend.PlaybackAvailable);
+    }
 
     [Fact]
     public void BackendsListIncludesClapOnce()

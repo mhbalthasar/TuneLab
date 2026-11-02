@@ -359,7 +359,8 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 返回 null = 管道断了 / 桥没起来；Ok=false = 插件自己拒绝（原因在 Reason）。
     // format：PluginFormats.Vst2（缺省）/ Vst3。桥据此选宿主实现。
     public async Task<LoadPluginResultMessage?> TryLoadAsync(int slot, string pluginPath, double sampleRate,
-        int maxBlock, bool bypass, CancellationToken cancellation = default, string format = PluginFormats.Vst2)
+        int maxBlock, bool bypass, CancellationToken cancellation = default, string format = PluginFormats.Vst2,
+        string? pluginId = null)
     {
         if (!IsRunning)
             return null;
@@ -369,6 +370,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             Slot = slot,
             Path = pluginPath,
             Format = format,
+
+            // 一个 .clap 里可能有多个插件：VST2 / VST3 传 null（一个文件一个插件）。
+            PluginId = pluginId,
             SampleRate = sampleRate,
             MaxBlock = maxBlock,
             Bypass = bypass,
@@ -620,9 +624,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         => RunTimed("the bridge handshake", () => EnsureStartedAsync(), StartTimeout, false);
 
     public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass,
-        string format = PluginFormats.Vst2)
+        string format = PluginFormats.Vst2, string? pluginId = null)
         => RunTimed("loading the plugin",
-            () => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format),
+            () => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format, pluginId: pluginId),
             LoadTimeout, (LoadPluginResultMessage?)null);
 
     public bool UnloadBlocking(int slot)

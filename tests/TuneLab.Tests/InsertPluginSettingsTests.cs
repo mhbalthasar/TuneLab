@@ -25,11 +25,11 @@ public class InsertPluginSettingsTests
     [Fact]
     public void InstrumentsAreNotPartOfTheCatalog()
     {
-        // 4 = 当前格式（完整扫描会把 VST3 的厂商按官方口径写进来）。
+        // 5 = 当前格式（P-C2：CLAP 从"只能扫"变成"能插"，旧缓存要整份重扫）。
         // 旧数字 = 旧格式，整份缓存忽略。
         WithCache("""
         {
-          "CacheVersion": 4,
+          "CacheVersion": 5,
           "Vst3Paths": [],
           "Vst2Paths": [],
           "LastScanUtc": "2026-10-21 00:00:00Z",

@@ -15,6 +15,7 @@ namespace TuneLab.Tests;
 //
 // 【为什么可能跳过】要求机器上真装了 CLAP 插件（或用 TL_CLAP_DIR 指定目录）。
 // 与 Vst3IntegrationTests 同一套约定：没有插件 / 没有发布桥就 Skip。
+[Collection("IsolatedBridge")]
 public class ClapIntegrationTests
 {
     const string ClapDirVariable = "TL_CLAP_DIR";
@@ -114,16 +115,13 @@ public class ClapIntegrationTests
         // 厂商是插件自己报的（不是从路径猜的）：这台机器上的真插件至少有一个带 vendor。
         Assert.Contains(entries, e => !string.IsNullOrWhiteSpace(e.Vendor));
 
-        // P-C1 的边界：能扫、不能插。所有条目都必须是"不可用 + 有原因"，
-        // 否则菜单会给用户一个点了注定失败的入口。
-        if (!ClapBackend.PlaybackAvailable)
+        // P-C2：能扫也能插。清单里这些真插件都该是"可用 + 没有原因"——
+        // 若这里出现不可用，说明桥加载它们时出了问题（菜单会灰掉，用户以为没装）。
+        Assert.All(entries, e =>
         {
-            Assert.All(entries, e =>
-            {
-                Assert.False(e.IsAvailable);
-                Assert.False(string.IsNullOrWhiteSpace(e.UnavailableReason));
-            });
-        }
+            Assert.True(e.IsAvailable, $"{e.Name} ({e.PluginId}) is unavailable: {e.UnavailableReason}");
+            Assert.Null(e.UnavailableReason);
+        });
     }
 
     [Fact]

@@ -16,6 +16,7 @@ internal sealed class BridgeSession : IDisposable
     readonly NamedPipeServerStream mPipe;
     readonly PluginHost mVst2 = new();
     readonly Vst3PluginHost mVst3 = new();
+    readonly ClapPluginHost mClap = new();
 
     // 槽位 → 宿主实现。Load 时按 format 决定，之后的每一条消息都照它转发。
     // 只在桥的主线程读写，不需要锁。
@@ -36,6 +37,7 @@ internal sealed class BridgeSession : IDisposable
         {
             mVst2.Attach(input, output);
             mVst3.Attach(input, output);
+            mClap.Attach(input, output);
         }
     }
 
@@ -165,9 +167,11 @@ internal sealed class BridgeSession : IDisposable
         if (mOwner.Remove(message.Slot, out var previous))
             previous.Unload(message.Slot);
 
-        IBridgePluginHost host = string.Equals(message.Format, PluginFormats.Vst3, StringComparison.OrdinalIgnoreCase)
-            ? mVst3
-            : mVst2;
+        IBridgePluginHost host = string.Equals(message.Format, PluginFormats.Clap, StringComparison.OrdinalIgnoreCase)
+            ? mClap
+            : string.Equals(message.Format, PluginFormats.Vst3, StringComparison.OrdinalIgnoreCase)
+                ? mVst3
+                : mVst2;
 
         // 附带音频段在这个消息里用不到（加载不需要音频），忽略 payload。
         var result = host.Load(message, out int inputChannels, out int outputChannels);

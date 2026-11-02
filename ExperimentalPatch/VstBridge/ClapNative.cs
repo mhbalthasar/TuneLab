@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-// CLAP 的 C ABI 声明（P-C1：只到"问描述"这一步）。
+// CLAP 的 C ABI 声明。
 //
 // 【为什么 CLAP 不需要 native 宿主库】VST3 那边要 vendored 的 ownvst3（每平台一份 .dll/.so/.dylib），
 // 因为 C++ 的接口/虚表没法从托管侧直接调。CLAP 是**纯 C ABI**：入口是一个导出变量
@@ -18,32 +18,78 @@ using System.Text;
 // 【bool 一律用 byte】CLAP 的 bool 是 C99 `_Bool`（1 字节）。C# 的 bool 在互操作里
 // 默认按 4 字节 Win32 BOOL 处理 —— 返回值只写 AL 时高三个字节是垃圾，读出来可能是
 // 假的 true。所以这里的返回值 / 参数全用 byte，判 != 0。
+//
+// 【结构必须逐字节对齐】这些 struct 是直接投给 C 的指针，布局错了就是内存错位。
+// 带固定长字符数组的（clap_param_info / clap_audio_port_info）用 fixed byte[...]，
+// 长度取 C 头文件里的 CLAP_NAME_SIZE=256 / CLAP_PATH_SIZE=1024。
 internal static unsafe class ClapNative
 {
     // 本宿主认识的 CLAP 主版本。Major 不等 = 结构布局都可能不同，不能猜。
     public const uint SupportedMajor = 1;
 
+    // 我们在 clap_host.clap_version 里自报的版本（只影响插件对能力的乐观假设，
+    // 具体能力仍然靠扩展 id 询问）。
+    public const uint HostMinor = 2;
+    public const uint HostRevision = 2;
+
     // 插件工厂的固定扩展 id（clap/plugin.h）。
     public const string PluginFactoryId = "clap.plugin-factory";
+
+    // 扩展 id（clap/ext/*.h）。
+    public const string AudioPortsExtension = "clap.audio-ports";
+    public const string ParamsExtension = "clap.params";
+    public const string StateExtension = "clap.state";
+    public const string LatencyExtension = "clap.latency";
+    public const string ThreadCheckExtension = "clap.thread-check";
+
+    // 事件类型 / 空间（clap/events.h）。
+    public const ushort EventSpacePlugin = 0;
+    public const ushort EventTypeParamValue = 5;
+
+    // 音频端口 flags（clap/audio-ports.h）。
+    public const uint AudioPortIsMain = 1u << 0;
+    public const uint AudioPortIsCv = 1u << 1;
+
+    // 参数 flags（clap/params.h）。
+    public const uint ParamIsStepped = 1u << 0;
+    public const uint ParamIsReadonly = 1u << 3;
+    public const uint ParamIsBypass = 1u << 4;
+
+    // process 的返回值（clap/process.h）。
+    public const int ProcessContinue = 0;
+    public const int ProcessContinueIfNotQuiet = 1;
+    public const int ProcessTail = 2;
+    public const int ProcessSleep = 3;
+    public const int ProcessError = -1;
 
     // 一个 .clap 里最多认多少个插件。真实插件是 1~4 个；这条只是防"读坏了当几百万条"。
     const uint MaxPluginsPerFile = 1024;
 
+    // 一块最多塞多少条参数事件。超过就丢（宁可少一次自动化，不可越界）。
+    public const int MaxEventsPerBlock = 64;
+
     [StructLayout(LayoutKind.Sequential)]
-    public struct Version
+    public struct ClapVersion
     {
         public uint Major;
         public uint Minor;
         public uint Revision;
 
         public override readonly string ToString() => $"{Major}.{Minor}.{Revision}";
+
+        public static ClapVersion Host => new()
+        {
+            Major = SupportedMajor,
+            Minor = HostMinor,
+            Revision = HostRevision,
+        };
     }
 
     // clap_plugin_entry_t：.clap 导出的那一个变量。
     [StructLayout(LayoutKind.Sequential)]
     public struct PluginEntry
     {
-        public Version ClapVersion;
+        public ClapVersion ClapVersion;
 
         // bool init(const char *plugin_path)
         public delegate* unmanaged[Cdecl]<byte*, byte> Init;
@@ -55,12 +101,14 @@ internal static unsafe class ClapNative
         public delegate* unmanaged[Cdecl]<byte*, IntPtr> GetFactory;
     }
 
-    // clap_plugin_factory_t。只声明到"问描述"；create_plugin 留给 P-C2。
+    // clap_plugin_factory_t。
     [StructLayout(LayoutKind.Sequential)]
     public struct PluginFactory
     {
         public delegate* unmanaged[Cdecl]<PluginFactory*, uint> GetPluginCount;
         public delegate* unmanaged[Cdecl]<PluginFactory*, uint, PluginDescriptor*> GetPluginDescriptor;
+
+        // const clap_plugin_t *create_plugin(factory, host, plugin_id)
         public delegate* unmanaged[Cdecl]<PluginFactory*, IntPtr, byte*, IntPtr> CreatePlugin;
     }
 
@@ -69,7 +117,7 @@ internal static unsafe class ClapNative
     [StructLayout(LayoutKind.Sequential)]
     public struct PluginDescriptor
     {
-        public Version ClapVersion;
+        public ClapVersion ClapVersion;
 
         public byte* Id;
         public byte* Name;
@@ -82,6 +130,193 @@ internal static unsafe class ClapNative
 
         // const char *const *features —— 以 null 结尾的字符串数组，可以为 null。
         public byte** Features;
+    }
+
+    // clap_host_t。每个插件实例一份（host_data 指向桥里的槽位），必须放在**非托管内存**里：
+    // 插件会长期持有这个指针并随时回调。
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Host
+    {
+        public ClapVersion ClapVersion;
+        public IntPtr HostData;
+
+        public byte* Name;
+        public byte* Vendor;
+        public byte* Url;
+        public byte* HostVersion;
+
+        // const void *get_extension(host, extension_id)
+        public delegate* unmanaged[Cdecl]<Host*, byte*, IntPtr> GetExtension;
+
+        public delegate* unmanaged[Cdecl]<Host*, void> RequestRestart;
+        public delegate* unmanaged[Cdecl]<Host*, void> RequestProcess;
+        public delegate* unmanaged[Cdecl]<Host*, void> RequestCallback;
+    }
+
+    // clap_plugin_t。
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Plugin
+    {
+        public PluginDescriptor* Desc;
+        public IntPtr PluginData;
+
+        public delegate* unmanaged[Cdecl]<Plugin*, byte> Init;
+        public delegate* unmanaged[Cdecl]<Plugin*, void> Destroy;
+        public delegate* unmanaged[Cdecl]<Plugin*, double, uint, uint, byte> Activate;
+        public delegate* unmanaged[Cdecl]<Plugin*, void> Deactivate;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte> StartProcessing;
+        public delegate* unmanaged[Cdecl]<Plugin*, void> StopProcessing;
+        public delegate* unmanaged[Cdecl]<Plugin*, void> Reset;
+        public delegate* unmanaged[Cdecl]<Plugin*, Process*, int> Process;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte*, IntPtr> GetExtension;
+        public delegate* unmanaged[Cdecl]<Plugin*, void> OnMainThread;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct AudioBuffer
+    {
+        public float** Data32;
+        public double** Data64;
+        public uint ChannelCount;
+
+        // 插件上报的自身延迟（帧）。宿主用 clap.latency 那份，这份只作参考。
+        public uint Latency;
+        public ulong ConstantMask;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Process
+    {
+        public long SteadyTime;
+        public uint FramesCount;
+        public IntPtr Transport;          // 可选，null
+        public AudioBuffer* AudioInputs;
+        public AudioBuffer* AudioOutputs;
+        public uint AudioInputsCount;
+        public uint AudioOutputsCount;
+        public InputEvents* InEvents;
+        public OutputEvents* OutEvents;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct EventHeader
+    {
+        public uint Size;
+        public uint Time;
+        public ushort SpaceId;
+        public ushort Type;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct EventParamValue
+    {
+        public EventHeader Header;
+        public uint ParamId;
+        public IntPtr Cookie;
+        public int NoteId;
+        public short PortIndex;
+        public short Channel;
+        public short Key;
+        public double Value;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct InputEvents
+    {
+        public IntPtr Ctx;
+        public delegate* unmanaged[Cdecl]<InputEvents*, uint> Size;
+        public delegate* unmanaged[Cdecl]<InputEvents*, uint, EventHeader*> Get;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct OutputEvents
+    {
+        public IntPtr Ctx;
+        public delegate* unmanaged[Cdecl]<OutputEvents*, EventHeader*, byte> TryPush;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct OStream
+    {
+        public IntPtr Ctx;
+
+        // int64_t write(stream, const void *buffer, uint64_t size) → 写入字节数，-1 = 失败
+        public delegate* unmanaged[Cdecl]<OStream*, void*, ulong, long> Write;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IStream
+    {
+        public IntPtr Ctx;
+
+        // int64_t read(stream, void *buffer, uint64_t size) → 读到的字节数，0 = EOF，-1 = 失败
+        public delegate* unmanaged[Cdecl]<IStream*, void*, ulong, long> Read;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct AudioPortInfo
+    {
+        public uint Id;
+        public fixed byte Name[256];
+        public uint Flags;
+        public uint ChannelCount;
+        public byte* PortType;
+        public uint InPlacePair;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PluginAudioPorts
+    {
+        public delegate* unmanaged[Cdecl]<Plugin*, byte, uint> Count;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint, byte, AudioPortInfo*, byte> Get;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ParamInfo
+    {
+        public uint Id;
+        public uint Flags;
+        public IntPtr Cookie;
+        public fixed byte Name[256];
+        public fixed byte Module[1024];
+        public double MinValue;
+        public double MaxValue;
+        public double DefaultValue;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PluginParams
+    {
+        public delegate* unmanaged[Cdecl]<Plugin*, uint> Count;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint, ParamInfo*, byte> GetInfo;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint, double*, byte> GetValue;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint, double, byte*, uint, byte> ValueToText;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint, byte*, double*, byte> TextToValue;
+        public delegate* unmanaged[Cdecl]<Plugin*, InputEvents*, OutputEvents*, void> Flush;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PluginState
+    {
+        public delegate* unmanaged[Cdecl]<Plugin*, OStream*, byte> Save;
+        public delegate* unmanaged[Cdecl]<Plugin*, IStream*, byte> Load;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PluginLatency
+    {
+        public delegate* unmanaged[Cdecl]<Plugin*, uint> Get;
+    }
+
+    // clap_host_thread_check。桥是单线程的（收消息 → 办事），所以两个问题的答案都是"是"。
+    // 【为什么必须提供】不少插件在没有这个扩展时会**假设**自己不在主线程上，
+    // 于是把该做的事往后推、永远不做（DPF 系尤其明显：参数改了界面不刷新）。
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HostThreadCheck
+    {
+        public delegate* unmanaged[Cdecl]<Host*, byte> IsMainThread;
+        public delegate* unmanaged[Cdecl]<Host*, byte> IsAudioThread;
     }
 
     // UTF-8 + 结尾 0 的字节串。调用方要 fixed 住再传指针。
@@ -134,5 +369,19 @@ internal static unsafe class ClapNative
         }
 
         return count;
+    }
+
+    // 固定长 char 数组 → 托管字符串（到第一个 0 为止）。
+    public static string FixedString(byte* text, int capacity)
+    {
+        if (text == null)
+            return string.Empty;
+
+        int length = 0;
+
+        while (length < capacity && text[length] != 0)
+            length++;
+
+        return length == 0 ? string.Empty : Encoding.UTF8.GetString(text, length);
     }
 }

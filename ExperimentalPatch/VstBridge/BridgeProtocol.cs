@@ -148,6 +148,11 @@ public sealed class LoadPluginMessage
     [JsonPropertyName("format")]
     public string Format { get; init; } = PluginFormats.Vst2;
 
+    // 一个文件里可能有多个插件（CLAP 的 .clap 可以声明好几个）。VST2 / VST3 一个文件一个插件，
+    // 不用这个字段；CLAP 用它指定要建哪一个（descriptor id，不带 `clap:` 前缀）。
+    [JsonPropertyName("pluginId")]
+    public string? PluginId { get; init; }
+
     [JsonPropertyName("sampleRate")]
     public double SampleRate { get; init; }
 
