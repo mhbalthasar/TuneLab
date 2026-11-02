@@ -16,7 +16,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 都只是桥进程重启，工程与界面不受影响。
 //
 // 【实时纪律】与 Vst3Insert 相同：Process 里不分配、不加锁、不抛异常。
-public sealed class Vst2Insert : IMixInsert, IRuntimeInsertFailure, IDisposable
+public sealed class Vst2BridgeInsert : IMixInsert, IRuntimeInsertFailure, IDisposable
 {
     readonly VstBridgeClient mClient;
     readonly int mSlotId;
@@ -29,7 +29,7 @@ public sealed class Vst2Insert : IMixInsert, IRuntimeInsertFailure, IDisposable
     volatile bool mBypassed;
     bool mDisposed;
 
-    Vst2Insert(InsertPluginInfo plugin, VstBridgeClient client, int slotId,
+    Vst2BridgeInsert(InsertPluginInfo plugin, VstBridgeClient client, int slotId,
         int blockSize, int latencySamples, bool hasEditor, bool bypassed, int inputChannels)
     {
         Plugin = plugin;
@@ -232,7 +232,7 @@ public sealed class Vst2Insert : IMixInsert, IRuntimeInsertFailure, IDisposable
     /// 按插件位数选桥、启动它、把插件装进去。失败返回 null 并写 reason。
     /// 只在 UI 线程调（会同步等桥的回复）。
     /// </summary>
-    public static Vst2Insert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
+    public static Vst2BridgeInsert? Create(InsertPluginInfo plugin, InsertSettings settings, out string? reason)
     {
         reason = null;
 
@@ -292,7 +292,7 @@ public sealed class Vst2Insert : IMixInsert, IRuntimeInsertFailure, IDisposable
             return null;
         }
 
-        return new Vst2Insert(plugin, client, slotId, blockSize,
+        return new Vst2BridgeInsert(plugin, client, slotId, blockSize,
             loaded.LatencySamples, loaded.HasEditor, settings.Bypass, loaded.InputChannels);
     }
 }

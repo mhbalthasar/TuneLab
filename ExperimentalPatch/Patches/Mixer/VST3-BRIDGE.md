@@ -41,7 +41,7 @@ VST2 已经证明桥进程是可行形态；VST3 只是同一套机制接一个�
 ```
 TuneLab (x64)                          VstBridge.x64.exe
 ┌────────────────────────┐             ┌────────────────────────┐
-│ Vst2Insert ─ VstBridgeClient ◀─pipe─▶│ BridgeSession           │
+│ Vst2BridgeInsert ─ VstBridgeClient ◀─pipe─▶│ BridgeSession           │
 │ Vst3Insert ─ OwnVst3Wrapper（进程内） │ └ PluginHost（VST2）    │
 │ Vst3EditorShell          │  共享内存   │    Process / Editor     │
 └────────────────────────┘             └────────────────────────┘
@@ -52,7 +52,7 @@ TuneLab (x64)                          VstBridge.x64.exe
 ```
 TuneLab (x64)                          VstBridge.x64.exe
 ┌────────────────────────┐             ┌────────────────────────┐
-│ Vst2Insert ─┐          │             │ BridgeSession           │
+│ Vst2BridgeInsert ─┐          │             │ BridgeSession           │
 │ Vst3BridgeInsert ─ VstBridgeClient ◀─pipe─▶├ Vst2PluginHost    │
 │ IVst3Insert │          │  共享内存    │ └ Vst3PluginHost        │
 └─────────────┴──────────┘             └────────────────────────┘
@@ -454,7 +454,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
   的宿主统一面。宿主里原来的 `is Vst3Insert` 全部改成 `is IVst3Insert`
   （工厂的 state 存/读、`InsertSlotAdapter.HasEditor`、编辑器壳、参数面板）。
 - `Vst3BridgeInsert`（`InsertHost/Vst3BridgeInsert.cs`）：`IVst3Insert` 的桥实现，
-  与 `Vst2Insert` 同构（平面 ↔ 交织、共享环发 process、state/参数走消息）。P1 的编辑器
+  与 `Vst2BridgeInsert` 同构（平面 ↔ 交织、共享环发 process、state/参数走消息）。P1 的编辑器
   一律不可用（`HasEditor=false`），宿主自动退参数面板。
 - 连接面：从 `VstBridgeClient` 抽出 `IBridgeChannel`（内部子集），
   `Vst3BridgeInsert` 只依赖它 —— 单测用假通道，不碰原生。
@@ -508,7 +508,7 @@ Unix **没有**内核级"父死子死"。用两个手段合成，跨 Linux + mac
   判死、成功一块清零、杀桥复位。从 `VstBridgeClient` 里搬出来，于是"到第几块判死 /
   复位"能脱离真桥单测。
 - 运行期失败面：`IBridgeChannel.AudioStalled`；新增 `IRuntimeInsertFailure`
-  （`RuntimeFailureReason`），`Vst2Insert` / `Vst3BridgeInsert` 都实现 —— 音频停用后
+  （`RuntimeFailureReason`），`Vst2BridgeInsert` / `Vst3BridgeInsert` 都实现 —— 音频停用后
   实例还活着（能改旁通 / 移除），但界面要把这一行标红。
 - 工厂合流：`InsertInstanceFactory.FailureOf` 先看建实例失败，再看活实例的运行期失败 ——
   两个来源对界面是同一件事，界面侧（`IMixerInsert.FailureReason` / tooltip）一行不用改。

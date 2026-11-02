@@ -13,10 +13,10 @@ namespace TuneLab.Audio;
 // 代价：VST2 的编辑器窗口是独立的一扇，不带在宿主窗口里。这是进程边界的必然结果。
 public sealed class Vst2EditorShell : IInsertEditorWindow
 {
-    readonly Vst2Insert mInsert;
+    readonly Vst2BridgeInsert mInsert;
     readonly string mPluginName;
 
-    Vst2EditorShell(Vst2Insert insert, string pluginName)
+    Vst2EditorShell(Vst2BridgeInsert insert, string pluginName)
     {
         mInsert = insert;
         mPluginName = pluginName;
@@ -24,7 +24,7 @@ public sealed class Vst2EditorShell : IInsertEditorWindow
         Open();
     }
 
-    public static Vst2EditorShell Create(Vst2Insert insert, string pluginName)
+    public static Vst2EditorShell Create(Vst2BridgeInsert insert, string pluginName)
         => new(insert, pluginName);
 
     public event Action? WindowClosed;

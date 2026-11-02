@@ -8,7 +8,7 @@ namespace TuneLab.Tests;
 // 侧链输入（roadmap 2.8）的引擎封条。
 //
 // 这里只测**引擎自己的契约**（键的走向、PDC 对齐、成环拒绝、包装器转发）。
-// "插件到底有没有第二个输入"属于后端的事（Vst2Insert / Vst3Insert），需要真插件，
+// "插件到底有没有第二个输入"属于后端的事（Vst2BridgeInsert / Vst3Insert），需要真插件，
 // 不在单测里跑。
 public class MixerSidechainTests
 {

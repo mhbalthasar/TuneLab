@@ -141,7 +141,7 @@ internal sealed class InsertInstanceFactory
             bool loaded = insert switch
             {
                 IVst3Insert vst => vst.LoadState(slot.State),
-                Vst2Insert vst2 => vst2.LoadState(slot.State),
+                Vst2BridgeInsert vst2 => vst2.LoadState(slot.State),
                 _ => true,
             };
 
@@ -204,7 +204,7 @@ internal sealed class InsertInstanceFactory
             var state = insert switch
             {
                 IVst3Insert vst => vst.SaveState(),
-                Vst2Insert vst2 => vst2.SaveState(),
+                Vst2BridgeInsert vst2 => vst2.SaveState(),
                 _ => null,
             };
 
@@ -419,7 +419,7 @@ internal sealed class InsertSlotAdapter(InsertSlot slot, InsertInstanceFactory f
            && insert switch
            {
                IVst3Insert vst3 => vst3.HasEditor,
-               Vst2Insert vst2 => vst2.HasEditor,
+               Vst2BridgeInsert vst2 => vst2.HasEditor,
                _ => false,
            };
 

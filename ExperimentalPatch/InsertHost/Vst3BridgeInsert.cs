@@ -8,7 +8,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 
 // 一个跑在**桥进程**里的 VST3 插件实例：宿主侧的 IVst3Insert 实现。
 //
-// 【它在整条链里的位置】与 Vst2Insert 完全同构：宿主音频线程把交织块翻成平面、
+// 【它在整条链里的位置】与 Vst2BridgeInsert 完全同构：宿主音频线程把交织块翻成平面、
 // 用共享环发一条 process 指令；桥那边真正的插件崩 / 挂只死桥，宿主继续跑。
 // 区别只在插件格式：VST2 走 AEffect，VST3 走桥侧的 Vst3PluginHost（它复用 Vst3Insert）。
 //
@@ -17,7 +17,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 历史性的 native abort。进程内遇到这些 = 整个 TuneLab 没了，连工程都没得救。
 // 过桥之后，超时（P4）一杀桥，宿主只是"这个插入旁通了"。
 //
-// 【实时纪律】与 Vst2Insert 相同：Process 里不分配、不加锁、不抛异常。
+// 【实时纪律】与 Vst2BridgeInsert 相同：Process 里不分配、不加锁、不抛异常。
 public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFailure, IDisposable
 {
     readonly IBridgeChannel mChannel;
@@ -47,7 +47,7 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
         mInputChannels = Math.Max(0, inputChannels);
         mSidechainChannels = Math.Clamp(mInputChannels - 2, 0, 2);
 
-        // 平面缓冲按共享环的最大声道数（4）分配，与 Vst2Insert 同口径。
+        // 平面缓冲按共享环的最大声道数（4）分配，与 Vst2BridgeInsert 同口径。
         const int maxChannels = SharedAudioLayout.MaxChannels;
 
         mInPlanes = new float[maxChannels][];
@@ -111,7 +111,7 @@ public sealed class Vst3BridgeInsert : IMixInsert, IVst3Insert, IRuntimeInsertFa
     bool ProcessChunk(Span<float> buffer, int offset, int n,
         ReadOnlySpan<float> sidechain, int sidechainOffset, int channels)
     {
-        // 交织 → 平面（与 Vst2Insert 逐位相同的填充公式）。
+        // 交织 → 平面（与 Vst2BridgeInsert 逐位相同的填充公式）。
         for (int ch = 0; ch < channels; ch++)
         {
             var plane = mInPlanes[ch];

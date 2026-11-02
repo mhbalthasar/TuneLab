@@ -30,7 +30,7 @@
 `VstBridge.PluginHost.Process` 已经按 `slot.InPlanes.Length` 逐条填平面，
 `BridgeAudioFrames` 也是按 `channels` 泛化的 —— **桥的逻辑本来就是多声道**。
 唯一的硬限制是 `SharedAudioLayout.MaxChannels = 2`（共享环槽位大小由它算），
-以及 `Vst2Insert` 把 `mChannels` 写死成 `SharedAudioLayout.MaxChannels`、
+以及 `Vst2BridgeInsert` 把 `mChannels` 写死成 `SharedAudioLayout.MaxChannels`、
 用 `ch % 2` 把主信号复制到多出来的平面上。
 
 ### 1.3 VST3（进程内原生宿主）
@@ -115,7 +115,7 @@ VST2 没有侧链标准，但有一个**既成惯例**：需要外部键的插�
 
 判定值来自**已经建好的实例**，不落盘、不进扫描缓存：
 
-- `Vst2Insert.Create` 已经拿到 `loaded.InputChannels`（现在只用来判"0 进 0 出"，没存下来）；
+- `Vst2BridgeInsert.Create` 已经拿到 `loaded.InputChannels`（现在只用来判"0 进 0 出"，没存下来）；
   `Vst3Insert` 也知道 `ActualInputChannels`。两个实例各存一份；
 - `IMixInsert` 加 `int SidechainChannels => 0;`（DIM），两个 VST 实例按 `max(0, 输入数 − 2)` 覆盖；
 - 模型侧 `IMixerInsert.SidechainChannels` 通过工厂向实例现问（实例没建好时返回 0）。
@@ -176,13 +176,13 @@ void Process(Span<float> buffer, int offset, int count, ReadOnlySpan<float> side
 ```
 
 默认实现 = 忽略键。七个**不包装别人**的实现（`GainInsert` / `FailingInsert` / `BypassedInsert` /
-`RecordingInsert` / `Doubler` / `Vst2Insert` / `Vst3Insert`）一个都不用改就能编译。
+`RecordingInsert` / `Doubler` / `Vst2BridgeInsert` / `Vst3Insert`）一个都不用改就能编译。
 
 **但包装器必须转发**：`WetDryInsert` 与 `TrimInsert` 都要重写这个重载并把 `sidechain`
 原样传给 `mInner`。漏掉这一条的症状很隐蔽 —— 只有"mix < 1"或"trim ≠ 0"的插入会丢键，
 默认值下一切正常。测试要专门盯这一条。
 
-`Vst2Insert` 的实现：
+`Vst2BridgeInsert` 的实现：
 
 - 无侧链源、或 `SidechainChannels == 0` → 走原来的 2 声道路径，**逐位不变**；
 - 有侧链源 → `mChannels = InputChannels`，平面 0/1 填主信号，2/3 填键
@@ -289,7 +289,7 @@ public int MixerId { get; set; }           // 轨道的稳定序号；0 = 老工
 
 - 建图时 `SidechainBufferCount == 0`，`Runtime` 不分配键缓冲；
 - `RenderChunk` 里走原来的 3 参数 `Process` 调用（不是"传一个空 span"）；
-- `Vst2Insert` 仍然只发 2 条平面（`channels = 2`），桥的行为与旧版一致。
+- `Vst2BridgeInsert` 仍然只发 2 条平面（`channels = 2`），桥的行为与旧版一致。
 
 所以 `DESIGN §7.2` 的"逐样本 bit 相同"仍然成立，`MixerSidechainTests` 有专门的断言。
 
@@ -322,7 +322,7 @@ public int MixerId { get; set; }           // 轨道的稳定序号；0 = 老工
 
 1. `SharedAudioLayout.MaxChannels` 2 → 4；`BridgeProtocol.ProtocolVersion` 1 → 2，
    Hello 握手校验版本（旧桥必须被拒绝，不能"能连上但按 2 声道解读 4 声道布局"）。
-2. `Vst2Insert` 保存 `InputChannels`；无侧链时行为不变；有侧链时填平面 2/3。
+2. `Vst2BridgeInsert` 保存 `InputChannels`；无侧链时行为不变；有侧链时填平面 2/3。
 3. `IMixInsert` 加带 DIM 的四参数重载；`WetDryInsert` / `TrimInsert` 转发。
 4. 单测：`WetDryInsert` / `TrimInsert` 把键原样传给内层（用一个记录键的假插入）。
 

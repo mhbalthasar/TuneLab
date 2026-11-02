@@ -99,7 +99,7 @@ public sealed class InsertParameterWindow : Window
                 },
                 PollInterval = TimeSpan.FromMilliseconds(200),
             },
-            Vst2Insert vst2 => new ParameterSource
+            Vst2BridgeInsert vst2 => new ParameterSource
             {
                 Read = () => vst2.GetParameters()
                     .Select(p => new Parameter((int)p.Id, p.Name, p.Min, p.Max, p.Value, null))

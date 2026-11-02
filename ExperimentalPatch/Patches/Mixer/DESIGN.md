@@ -548,7 +548,7 @@ ExperimentalPatch/VstBridge/             ← 桥进程（另一个进程，崩�
    这条也让"旁通的插入一次都不会被调用"变成可测的：测试替身因此能断言"没进过链"。
 3. 宿主侧 `InsertSlotAdapter.IsBypassed` 同时写三处：数据（undo / 落盘）、活实例（听见）、
    `Changed`（浮窗刷新按键与配色）。
-4. `IsBypassed` 字段在 `Vst2Insert` / `Vst3Insert` 里是 `volatile` —— 写在 UI 线程、读在音频线程。
+4. `IsBypassed` 字段在 `Vst2BridgeInsert` / `Vst3Insert` 里是 `volatile` —— 写在 UI 线程、读在音频线程。
 
 #### 5.7.4 「界面」键：插件编辑器怎么接（2026-10-20）
 
@@ -1249,7 +1249,7 @@ VST2 反而好做，VST3 反而做不了。
 **VST2（主路径）**：侧链 = 插件声明多于 2 个输入（既成惯例，VST2 没有标准 API）。
 `SharedAudioLayout.MaxChannels` 2 → 4（主 L/R + 键 L/R），`BridgeProtocol.ProtocolVersion`
 1 → 2 —— 布局变了，旧桥必须在 Hello 握手时被拒绝，否则会"能连上、但按 2 声道解读 4 声道
-内存"。`Vst2Insert` 按 `InputChannels` 算 `SidechainChannels = clamp(inputs − 2, 0, 2)`；
+内存"。`Vst2BridgeInsert` 按 `InputChannels` 算 `SidechainChannels = clamp(inputs − 2, 0, 2)`；
 无键时只发 2 条平面（与旧版逐位相同），有键时 3 进发单声道键 `(L + R) * 0.5`、
 4 进发 L/R。
 
@@ -1277,7 +1277,7 @@ VST2 反而好做，VST3 反而做不了。
 登记两个键。删轨道**不**强制清引用：悬空引用被编译器跳过，undo 恢复同一对象时引用自动复活。
 
 **退化图**：没有侧链时 `SidechainBufferCount == 0`、`Runtime` 不分配键缓冲、`RenderChunk`
-走 3 参数 `Process`（不是传空 span）、`Vst2Insert` 只发 2 声道 —— §7.2 的逐位相同仍然成立。
+走 3 参数 `Process`（不是传空 span）、`Vst2BridgeInsert` 只发 2 声道 —— §7.2 的逐位相同仍然成立。
 
 **能力来自活实例**，不是扫描缓存：缓存说 4 进、插件换了就会喂错。代价是工程刚打开、图还没
 编译的那一瞬间侧链图标不显示。旁通的插入没有活实例，侧链图标也不显示（已接受）。
@@ -1597,7 +1597,7 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
 | M6 | `IInsertHost` + **VST3**（OwnAudioVST3，独立 ALC） | 挂一个 VST3：出声、存读、延迟被 PDC 补偿 |
-| M7 | **VST2：一律过桥**（x86 + x64 两个桥，§5.3）。**已完成**：`PluginHost` 的 C ABI、`Vst2Backend`/`Vst2Insert`、位数判定、参数/状态、桥的多任务串行化 | 51 个真插件（46 × x64 + 5 × x86）全部出声、旁通逐位一致；插件崩只死桥 |
+| M7 | **VST2：一律过桥**（x86 + x64 两个桥，§5.3）。**已完成**：`PluginHost` 的 C ABI、`Vst2Backend`/`Vst2BridgeInsert`、位数判定、参数/状态、桥的多任务串行化 | 51 个真插件（46 × x64 + 5 × x86）全部出声、旁通逐位一致；插件崩只死桥 |
 | M8 | FX 浮窗接线：旁通 / 界面 / 增删；插件扫描缓存；找不到插件的降级。**扫描路径设置已落在宿主设置窗的一页 tab（`EP-MIXER-16`）** | 与外观稿一致；插件缺失不丢链 |
 | M9 | JSFX（§12 Q4：先 spike 再定） | — |
 

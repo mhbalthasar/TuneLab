@@ -9,7 +9,7 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 
 // VST2 后端：列插件清单 + 通过桥进程建实例。
 //
-// 【加载一律过桥】见 Vst2Insert 的类注释：进程内直载 64 位 VST2 实测会被
+// 【加载一律过桥】见 Vst2BridgeInsert 的类注释：进程内直载 64 位 VST2 实测会被
 // 单个插件的 effSetChunk 崩掉整个宿主，所以不分位数，全部交给桥。
 // 桥按插件位数选 x86 / x64 两份可执行文件（PluginBitness 读 PE 头决定）。
 //
@@ -197,6 +197,6 @@ public sealed class Vst2Backend : IInsertBackend
             return null;
         }
 
-        return Vst2Insert.Create(plugin, settings, out reason);
+        return Vst2BridgeInsert.Create(plugin, settings, out reason);
     }
 }

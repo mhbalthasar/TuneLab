@@ -62,7 +62,7 @@ internal static class InsertEditorHost
             return;
         }
 
-        if (insert is Vst2Insert vst2)
+        if (insert is Vst2BridgeInsert vst2)
         {
             Register(slotId, Vst2EditorShell.Create(vst2, pluginName));
             return;
