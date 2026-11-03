@@ -68,6 +68,41 @@ internal static unsafe class ClapNative
     // 一块最多塞多少条参数事件。超过就丢（宁可少一次自动化，不可越界）。
     public const int MaxEventsPerBlock = 64;
 
+    // 【布局自检】下面的数字是 CLAP 1.x 头文件在 64 位上的自然布局（含对齐填充）。
+    // 布局错了不会有人报错 —— 而是把错位的指针交给插件，表现为随机崩溃 / 内存损坏。
+    // 所以第一次用到 CLAP 时先对一遍：对不上就抛，桥带着这条消息死掉，宿主如实报
+    // "隔离宿主没有响应"，比静默损坏好查得多。
+    static ClapNative()
+    {
+        Check(sizeof(ClapVersion) == 12, "clap_version_t");
+        Check(sizeof(PluginEntry) == 40, "clap_plugin_entry_t");
+        Check(sizeof(PluginFactory) == 24, "clap_plugin_factory_t");
+        Check(sizeof(PluginDescriptor) == 88, "clap_plugin_descriptor_t");
+        Check(sizeof(Host) == 88, "clap_host_t");
+        Check(sizeof(Plugin) == 96, "clap_plugin_t");
+        Check(sizeof(AudioBuffer) == 32, "clap_audio_buffer_t");
+        Check(sizeof(Process) == 64, "clap_process_t");
+        Check(sizeof(EventHeader) == 16, "clap_event_header_t");
+        Check(sizeof(EventParamValue) == 56, "clap_event_param_value_t");
+        Check(sizeof(InputEvents) == 24, "clap_input_events_t");
+        Check(sizeof(OutputEvents) == 16, "clap_output_events_t");
+        Check(sizeof(OStream) == 16, "clap_ostream_t");
+        Check(sizeof(IStream) == 16, "clap_istream_t");
+        Check(sizeof(AudioPortInfo) == 288, "clap_audio_port_info_t");
+        Check(sizeof(PluginAudioPorts) == 16, "clap_plugin_audio_ports_t");
+        Check(sizeof(ParamInfo) == 1320, "clap_param_info_t");
+        Check(sizeof(PluginParams) == 48, "clap_plugin_params_t");
+        Check(sizeof(PluginState) == 16, "clap_plugin_state_t");
+        Check(sizeof(PluginLatency) == 8, "clap_plugin_latency_t");
+        Check(sizeof(HostThreadCheck) == 16, "clap_host_thread_check_t");
+    }
+
+    static void Check(bool ok, string what)
+    {
+        if (!ok)
+            throw new InvalidOperationException("CLAP ABI layout mismatch: " + what);
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct ClapVersion
     {

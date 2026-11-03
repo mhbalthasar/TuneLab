@@ -22,9 +22,10 @@ internal static unsafe class ClapLibrary
         public int RefCount;
     }
 
-    // 键 = 解析后的二进制路径（Windows 不区分大小写；Linux 区分，但同一个文件写两遍
-    // 只会走到同一个键上，宁可多认一次不认两次）。
-    static readonly Dictionary<string, Loaded> sLoaded = new(StringComparer.OrdinalIgnoreCase);
+    // 键 = 解析后的二进制路径。Windows 不区分大小写；Linux 区分（同一个库用两种大小写
+    // 写法挂两次 = 两个引用计数，deinit 会提前）。macOS 默认也不区分。
+    static readonly Dictionary<string, Loaded> sLoaded = new(
+        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
 
     // 一个租约：Acquire 加一，Dispose 减一。实例与扫描各持一份。
     internal sealed class Lease : IDisposable
