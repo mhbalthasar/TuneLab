@@ -255,7 +255,7 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 |---|---|---|---|
 | VST2.4 | **仅 Windows** | VST.NET2（托管封装）+ **桥进程**（§5.3） | 可行。VST2 SDK 早已停止发放许可，VST.NET2 自带头文件；我们只做运行时加载、不分发 SDK。**x86 老插件必须走 32 位桥进程** |
 | VST3 | 全平台 | OwnAudioVST3（**托管层源码降级 vendor 到 net8**，见 §5.4.1） | 可行，**已落地**：一律经 64 位桥进程（`VstBridge/InProcess/` 是桥侧的进程内实现，宿主只有 `Vst3BridgeInsert`）。原生 dll 改名 `.tlhost` 防撞车。patch 本体不再含插件加载代码（VST3-BRIDGE.md §11） |
-| CLAP | 全平台 | **不需要库**：纯 C ABI，`P/Invoke` 直接调 | **已落地**（P-C1 扫描、P-C2 音频/参数/状态）：一律经 64 位桥加载，宿主只做文件枚举（`ClapBackend`）。GUI 是 P-C3（CLAP.md）。CLAP-first 也是「Linux 上跑 Windows 插件」的入口：yabridge 的 CLAP 代理就是一个原生 Linux `.clap` |
+| CLAP | 全平台 | **不需要库**：纯 C ABI，`P/Invoke` 直接调 | **已落地**（P-C1 扫描、P-C2 音频/参数/状态、P-C3 Windows GUI）：一律经 64 位桥加载，宿主只做文件枚举（`ClapBackend`）。Linux / macOS 的编辑器仍未做（CLAP.md）。CLAP-first 也是「Linux 上跑 Windows 插件」的入口：yabridge 的 CLAP 代理就是一个原生 Linux `.clap` |
 | JSFX | 全平台 | 需要 EEL2 解释器 | **最大风险**：没有现成 .NET 实现。要么包 `ysfx`（C++ 解释器，P/Invoke），要么自己写（数月）。见 §12 Q4 |
 
 - 三条路线共用一层**中间契约** `IInsertHost`：`Process(block)`、`LatencySamples`、`OpenEditor()`、

@@ -41,6 +41,21 @@ internal static unsafe class ClapNative
     public const string StateExtension = "clap.state";
     public const string LatencyExtension = "clap.latency";
     public const string ThreadCheckExtension = "clap.thread-check";
+    public const string GuiExtension = "clap.plugin-gui";
+    public const string HostGuiExtension = "clap.host-gui";
+
+    // "win32" 的 UTF-8 字节串，放在非托管内存里：clap_window_t.api 会交给插件，
+    // 生命周期必须覆盖整个 GUI 会话（栈上的 fixed 指针活不过那一次调用）。
+    // is_api_supported / set_parent 共用这一份。
+    public static readonly IntPtr Win32Api = AllocUtf8("win32");
+
+    static IntPtr AllocUtf8(string text)
+    {
+        byte[] bytes = Utf8(text);
+        IntPtr pointer = Marshal.AllocHGlobal(bytes.Length);
+        Marshal.Copy(bytes, 0, pointer, bytes.Length);
+        return pointer;
+    }
 
     // 事件类型 / 空间（clap/events.h）。
     public const ushort EventSpacePlugin = 0;
@@ -94,6 +109,9 @@ internal static unsafe class ClapNative
         Check(sizeof(PluginParams) == 48, "clap_plugin_params_t");
         Check(sizeof(PluginState) == 16, "clap_plugin_state_t");
         Check(sizeof(PluginLatency) == 8, "clap_plugin_latency_t");
+        Check(sizeof(Window) == 16, "clap_window_t");
+        Check(sizeof(PluginGui) == 96, "clap_plugin_gui_t");
+        Check(sizeof(HostGui) == 40, "clap_host_gui_t");
         Check(sizeof(HostThreadCheck) == 16, "clap_host_thread_check_t");
     }
 
@@ -342,6 +360,45 @@ internal static unsafe class ClapNative
     public struct PluginLatency
     {
         public delegate* unmanaged[Cdecl]<Plugin*, uint> Get;
+    }
+
+    // clap_window_t（clap/gui.h）：api 字符串 + 一个联合体（x64 上是 8 字节）。
+    // win32 那一路的联合体成员是 HWND（intptr_t），不是字符串 —— 所以这里用 IntPtr。
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Window
+    {
+        public byte* Api;
+        public IntPtr Specific;
+    }
+
+    // clap_plugin_gui_t（clap/gui.h）。宿主只走 Windows 的 win32 API：
+    // create → set_parent → show；关窗时 hide → destroy。
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PluginGui
+    {
+        public delegate* unmanaged[Cdecl]<Plugin*, byte*, byte, byte> IsApiSupported;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte**, byte*, byte> GetPreferredApi;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte*, byte, byte> Create;
+        public delegate* unmanaged[Cdecl]<Plugin*, void> Destroy;
+        public delegate* unmanaged[Cdecl]<Plugin*, double, byte> SetScale;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint*, uint*, byte> GetSize;
+        public delegate* unmanaged[Cdecl]<Plugin*, uint, uint, byte> SetSize;
+        public delegate* unmanaged[Cdecl]<Plugin*, Window*, byte> SetParent;
+        public delegate* unmanaged[Cdecl]<Plugin*, Window*, byte> SetTransient;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte*, void> SuggestTitle;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte> Show;
+        public delegate* unmanaged[Cdecl]<Plugin*, byte> Hide;
+    }
+
+    // clap_host_gui_t（clap/gui.h）。插件通过这些回调要求宿主改窗口尺寸 / 显隐。
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HostGui
+    {
+        public delegate* unmanaged[Cdecl]<Host*, void> ResizeHintsChanged;
+        public delegate* unmanaged[Cdecl]<Host*, uint, uint, byte> RequestResize;
+        public delegate* unmanaged[Cdecl]<Host*, byte> RequestShow;
+        public delegate* unmanaged[Cdecl]<Host*, byte> RequestHide;
+        public delegate* unmanaged[Cdecl]<Host*, byte, void> Closed;
     }
 
     // clap_host_thread_check。桥是单线程的（收消息 → 办事），所以两个问题的答案都是"是"。

@@ -18,9 +18,28 @@ internal sealed class AudioStallWatch
 
     int mFailures;
     volatile bool mStalled;
+    volatile bool mSuspended;
 
     /// <summary>桥的音频路是否已停用（连续失败过多）。音频线程与 UI 线程都会读。</summary>
     public bool Stalled => mStalled;
+
+    /// <summary>
+    /// 挂起判定：桥的主线程正在做"独占"的活（打开 / 关闭插件编辑器、卸载实例），
+    /// 那段时间 process 一定拿不到结果 —— 那是"桥在忙"，不是"桥死了"。
+    /// 不挂起的话，开一次界面就会把这一行误判成挂起（红 + 永久直通）。
+    /// </summary>
+    public void Suspend()
+    {
+        mSuspended = true;
+        mFailures = 0;
+    }
+
+    /// <summary>恢复判定并清零计数：挂起期间的失败不算到恢复之后。</summary>
+    public void Resume()
+    {
+        mFailures = 0;
+        mSuspended = false;
+    }
 
     /// <summary>
     /// 记一次音频块失败；返回**本次**是否刚跨到停滞态（调用方据此只记一次日志）。
@@ -28,7 +47,7 @@ internal sealed class AudioStallWatch
     /// </summary>
     public bool ReportFailure()
     {
-        if (mStalled)
+        if (mStalled || mSuspended)
             return false;
 
         if (++mFailures < FailureLimit)

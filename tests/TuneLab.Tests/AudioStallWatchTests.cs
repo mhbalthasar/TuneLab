@@ -85,4 +85,43 @@ public class AudioStallWatchTests
         Assert.True(watch.Stalled);
         Assert.True(watch.Stalled);
     }
+
+    // 开 / 关插件编辑器、卸载实例时，桥的主线程被独占（effEditOpen / gui->create / destroy），
+    // 这几秒里每一块都拿不到结果。那是"桥在忙"，不是"桥死了" —— 挂起期间不能判死，
+    // 否则开一次界面就会把这一行标红 + 永久直通。
+    [Fact]
+    public void Suspended_DoesNotStallNoMatterHowManyFailures()
+    {
+        var watch = new AudioStallWatch();
+
+        watch.Suspend();
+
+        for (int i = 0; i < AudioStallWatch.FailureLimit * 4; i++)
+            Assert.False(watch.ReportFailure());
+
+        Assert.False(watch.Stalled);
+    }
+
+    [Fact]
+    public void Resume_ClearsTheStreakSoTheNextRunStartsFresh()
+    {
+        var watch = new AudioStallWatch();
+
+        watch.Suspend();
+
+        for (int i = 0; i < AudioStallWatch.FailureLimit * 4; i++)
+            watch.ReportFailure();
+
+        watch.Resume();
+
+        // 挂起期间那串失败不能算到恢复之后：再失败一块不该立刻判死。
+        Assert.False(watch.ReportFailure());
+        Assert.False(watch.Stalled);
+
+        // 恢复之后阈值照旧。
+        for (int i = 0; i < AudioStallWatch.FailureLimit - 1; i++)
+            watch.ReportFailure();
+
+        Assert.True(watch.Stalled);
+    }
 }

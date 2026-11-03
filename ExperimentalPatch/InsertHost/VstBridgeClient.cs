@@ -630,7 +630,19 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             LoadTimeout, (LoadPluginResultMessage?)null);
 
     public bool UnloadBlocking(int slot)
-        => RunTimed("unloading the plugin", () => TryUnloadAsync(slot), TeardownTimeout, false);
+    {
+        // 卸载要等桥拆编辑器线程（gui->destroy / effEditClose 可能几百毫秒），期间 process 停摆。
+        mAudioStall.Suspend();
+
+        try
+        {
+            return RunTimed("unloading the plugin", () => TryUnloadAsync(slot), TeardownTimeout, false);
+        }
+        finally
+        {
+            mAudioStall.Resume();
+        }
+    }
 
     // 开编辑器要等插件建 UI（几百毫秒很常见）。给它一个上限：插件在 effEditOpen 里卡死时
     // 不能把宿主 UI 线程一起带走 —— 超时就杀桥，音频本来也已经直通了。
@@ -639,6 +651,23 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // 就是"软件卡死了"（用户原话）。真需要更久的插件是少数，而"宁可窗口空着、界面活着"
     // 比"界面冻结十几秒"好 —— 超时后窗口留着，用户还是能继续混音的。
     public (bool Ok, string? Reason, int ChildWindows, long WindowHandle) OpenEditorBlocking(int slot, string title)
+    {
+        // 桥的主线程在插件建 UI 期间不能处理 process（VST2 的 effEditOpen / CLAP 的
+        // gui->create 都要求同一条线程）。这几秒里每一块都拿不到结果，但那不是
+        // "桥赶不上了" —— 不挂起判定的话，开一次界面就会把这一行误判成挂起（红 + 永久直通）。
+        mAudioStall.Suspend();
+
+        try
+        {
+            return OpenEditorCore(slot, title);
+        }
+        finally
+        {
+            mAudioStall.Resume();
+        }
+    }
+
+    (bool Ok, string? Reason, int ChildWindows, long WindowHandle) OpenEditorCore(int slot, string title)
     {
         // 让**桥**有资格把窗口带到前台。Windows 只允许"当前前台进程"或获得它授权的进程
         // 调 SetForegroundWindow；桥是被我们启动的子进程，不授权的话它的 SetForegroundWindow
@@ -668,7 +697,19 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     }
 
     public bool CloseEditorBlocking(int slot)
-        => RunTimed("closing the editor", () => TryCloseEditorAsync(slot), TeardownTimeout, false);
+    {
+        // 关窗要等编辑器线程退完（gui->destroy / effEditClose 在它上面跑），期间 process 停摆。
+        mAudioStall.Suspend();
+
+        try
+        {
+            return RunTimed("closing the editor", () => TryCloseEditorAsync(slot), TeardownTimeout, false);
+        }
+        finally
+        {
+            mAudioStall.Resume();
+        }
+    }
 
     // 已经开着的窗口再点一次「界面」= 带到前台。桥没开窗（插件没界面 / 已关）时回 false，
     // 界面据此决定是重新开一扇还是什么都不做。

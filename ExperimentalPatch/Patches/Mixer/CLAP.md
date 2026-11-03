@@ -1,6 +1,7 @@
 # CLAP 插入效果：设计记录
 
-> 状态：**P-C1（扫描）与 P-C2（音频 / 参数 / 状态）已落地**。GUI（P-C3）未做，插上后显示参数面板。
+> 状态：**P-C1（扫描）、P-C2（音频 / 参数 / 状态）与 P-C3（Windows 的 GUI）已落地**。
+> Linux / macOS 的编辑器仍未做，那两个平台插上后显示参数面板。
 > 上游约束见 [DESIGN.md](DESIGN.md) §5.2、桥的总体设计见 [VST3-BRIDGE.md](VST3-BRIDGE.md)。
 
 ## 1. 为什么是 CLAP，而且是现在
@@ -154,22 +155,33 @@ P-C1 那一版这里曾固定为 false（"能扫不能插"）。翻成 true 时�
 **升级注意**：`CurrentCacheVersion` 4 → 5。P-C1 的缓存里 CLAP 条目全是
 `IsAvailable = false`，不加版本号的话菜单会一直灰着。
 
-### P-C3：GUI
+### P-C3：GUI（Windows 已完成，Linux / macOS 未做）
 
-- Windows：`clap_plugin_gui.create(CLAP_WINDOW_API_WIN32)` + `set_parent(宿主 HWND)` +
-  `show()`。宿主的 HWND 来自现有的 `Vst2EditorHost`（桥里已有创建父窗口的那套）。
-- Linux：`CLAP_WINDOW_API_X11` + `set_parent(XID)`。X11 的窗口 id 是 **X server 全局**的，
-  所以"桥里嵌进宿主给的 XID"是可行的（yabridge 的 mini-WM 那套 hacks 是 Wine 特有的）。
-- Wayland 没有嵌入，只能浮动窗口：在 Wayland 会话里退回"参数面板"（与现在 VST3 的
-  降级一致）。
-- macOS：`CLAP_WINDOW_API_COCOA`，需要 NSView 指针 —— 宿主窗口在 UI 进程，插件在桥进程，
-  跨进程嵌入 NSView 不可行（Cocoa 不像 X11 有全局窗口 id）。macOS 上先只提供参数面板。
+桥侧新增 `ClapEditorWindow`，与 `Vst2EditorWindow` 同一套做法：
+
+- **窗口归桥**：插件的 `create` / `set_parent` / `show` / `destroy` 全在桥进程里的一条 STA
+  线程上，窗口也是桥建的（跨进程 `SetParent` 在 Windows 上不可靠，见 §5 的表格）。
+  宿主拿到的只是桥回传的 HWND，用于置前与跨进程 `IsWindow` 判断。
+- **`clap.host-gui`**：`request_resize` / `request_show` / `request_hide` 转成窗口消息。
+  `create` 期间插件报的初始尺寸用线程静态 `Current` 接住 —— 那一刻槽位里还没挂上窗口对象，
+  丢了就只能按默认大小开窗。
+- **尺寸**：`get_size` 给的是客户区，用 `AdjustWindowRect` 算整窗；`WM_SIZE` 回 `set_size`；
+  同一尺寸不重复 `SetWindowPos`（否则 `request_resize → WM_SIZE → set_size → request_resize`
+  会来回打转）。
+- **降级**：`is_api_supported("win32")` 为 false、非 Windows、或没有 `clap.plugin-gui`
+  → `HasEditor = false`，界面自动退到参数面板（`Vst3EditorShell.TryOpen` 的既有那条路）。
+- **音频判定**：桥的主线程在建 / 拆 UI 期间不能 `process`（与 VST2 一样）。宿主在
+  `OpenEditorBlocking` / `CloseEditorBlocking` / `UnloadBlocking` 期间挂起
+  `AudioStallWatch` —— 否则开一次界面就会把这一行误判成"音频挂起"（红 + 永久直通）。
+- Linux（`CLAP_WINDOW_API_X11` + XID）与 macOS（`CLAP_WINDOW_API_COCOA` + NSView）仍未做：
+  前者要自己泵 X 事件，后者跨进程嵌 NSView 不可行（Cocoa 没有 X11 那样的全局窗口 id）。
 
 ## 7. 已知限制 / 待办
 
-- **编辑器（P-C3）未做**：插上后显示参数面板（`HasEditor = false`）。
+- **Linux / macOS 的编辑器未做**：Windows 已能开插件 GUI；其它平台插上后显示参数面板
+  （`HasEditor = false`）。
 - 真机（Linux）未验证。桥的传输层已经是跨平台的（UDS / mmap / `UnixProcess`），
-  但 `tools/publish-bridges.ps1` 还没有 linux-* 目标（见 §8）。
+  `tools/publish-bridges.ps1 -Runtime linux-x64` 也能发桥，但还没在真机上跑过（见 §8）。
 - 扫描没有"快扫"：`ListPluginsDeep` 与 `ListPlugins` 是同一条路。等真机看耗时要不要缓存。
 - `InsertInstanceFactory.FindPlugin` 对 CLAP **不**做目录回退枚举（每次编译图都要过桥加载
   几十个插件 = 每次改路由冻几秒），槽位里的 `Locator` 才是定位依据。
@@ -179,6 +191,7 @@ P-C1 那一版这里曾固定为 false（"能扫不能插"）。翻成 true 时�
 
 ## 8. 发布：桥要按 RID 发
 
-`tools/publish-bridges.ps1` 目前只发 `win-x64` / `win-x86`。CLAP 本身**不需要**额外 native，
-但桥必须真的发布到目标平台，Linux 才有可执行文件可起。加 `linux-x64` / `linux-arm64` /
-`osx-x64` / `osx-arm64` 时注意：VST3 的 `.tlhost` 只有 RID 匹配才可用，CLAP 不受影响。
+`tools/publish-bridges.ps1` 不带参数时按 Windows 开发默认发 `win-x86` + `win-x64`；
+给 `-Runtime linux-x64`（或任意 RID）就按目标平台发一份 64 位桥。CLAP 本身**不需要**
+额外 native，但桥必须真的发布到目标平台，Linux 才有可执行文件可起。注意 VST3 的
+`.tlhost` 只有 RID 匹配才可用，CLAP 不受影响。

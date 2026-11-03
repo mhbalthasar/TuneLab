@@ -34,8 +34,12 @@ public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
     volatile bool mBypassed;
     bool mDisposed;
 
+    readonly bool mHasEditor;
+    bool mEditorOpen;
+    IntPtr mEditorWindow;
+
     ClapBridgeInsert(InsertPluginInfo plugin, IBridgeChannel channel, int slotId, int blockSize,
-        int latencySamples, bool bypassed, int inputChannels)
+        int latencySamples, bool bypassed, int inputChannels, bool hasEditor)
     {
         Plugin = plugin;
         Name = plugin.Name;
@@ -46,6 +50,7 @@ public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
 
         mInputChannels = Math.Max(0, inputChannels);
         mSidechainChannels = Math.Clamp(mInputChannels - 2, 0, 2);
+        mHasEditor = hasEditor;
 
         // 平面缓冲按共享环的最大声道数（4）分配，与另外两条桥路同口径。
         const int maxChannels = SharedAudioLayout.MaxChannels;
@@ -75,9 +80,9 @@ public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
 
     public int SidechainChannels => mSidechainChannels;
 
-    // 编辑器是 P-C3（CLAP.md §6）。在它落地之前界面自动退参数面板 ——
-    // 与 VST3 在桥不带原生库时的降级同一条路。
-    public bool HasEditor => false;
+    // 编辑器由桥在**它自己的进程里**开（P-C3，Windows）：插件把窗口建在桥的 HWND 里，
+    // 桥用一条 STA 线程泵消息。这里只把 Open/Close 翻成桥消息。
+    public bool HasEditor => mHasEditor;
 
     public bool NeedsOpenGl => false;
 
@@ -220,27 +225,70 @@ public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
         Process(silence, 0, frames);
     }
 
-    // ── 编辑器（P-C3）──
+    // ── 编辑器（P-C3，Windows）──
 
-    public bool OpenEditor(IntPtr parent) => false;
+    public bool OpenEditor(IntPtr parent)
+    {
+        if (!mHasEditor || mDisposed)
+            return false;
 
-    public bool IsEditorOpen => false;
+        var result = mChannel.OpenEditorBlocking(mSlotId, Name);
 
+        if (!result.Ok)
+            return false;
+
+        mEditorOpen = true;
+        mEditorWindow = new IntPtr(result.WindowHandle);
+        return true;
+    }
+
+    public bool IsEditorOpen
+    {
+        get
+        {
+            if (!mEditorOpen)
+                return false;
+
+            // 窗口在桥进程里：跨进程的 IsWindow 能查到它是否还在。用户点 ✕ 之后窗口销毁
+            // → false，宿主的编辑器壳据此注销自己（"关掉后再点没反应"的根治）。
+            if (OperatingSystem.IsWindows() && mEditorWindow != IntPtr.Zero && !IsWindow(mEditorWindow))
+            {
+                mEditorOpen = false;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    // 桥有自己的 STA 线程在泵插件消息，宿主这边不需要泵。
     public void PumpEditorMessages()
     {
     }
 
     public void CloseEditor()
     {
+        if (!mEditorOpen && mEditorWindow == IntPtr.Zero)
+            return;
+
+        mChannel.CloseEditorBlocking(mSlotId);
+        mEditorOpen = false;
+        mEditorWindow = IntPtr.Zero;
     }
 
+    // 窗口在桥里，尺寸由插件通过 clap.host-gui.request_resize 自己提；宿主不直接改。
     public void ResizeEditor(int width, int height)
     {
     }
 
+    // 窗口不在本进程：没有本地顶层窗可枚举。
     public HashSet<IntPtr> SnapshotTopLevelWindows() => [];
 
-    public IntPtr FindEditorWindowSince(HashSet<IntPtr> before) => IntPtr.Zero;
+    // 桥模式下窗口句柄由桥回传，直接交给编辑器壳做置前。
+    public IntPtr FindEditorWindowSince(HashSet<IntPtr> before) => mEditorWindow;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool IsWindow(IntPtr hWnd);
 
     // 桥进程的 stderr（最近几十行）。加载失败时带上它。
     public string? BridgeError => mChannel.LastBridgeError;
@@ -369,6 +417,6 @@ public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
         }
 
         return new ClapBridgeInsert(plugin, client, slotId, blockSize,
-            loaded.LatencySamples, settings.Bypass, loaded.InputChannels);
+            loaded.LatencySamples, settings.Bypass, loaded.InputChannels, loaded.HasEditor);
     }
 }

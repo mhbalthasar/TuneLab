@@ -35,6 +35,9 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
     // clap_host_thread_check 的 vtable：内容不变，全进程一份。
     static readonly IntPtr sThreadCheck = BuildThreadCheck();
 
+    // clap_host_gui 的 vtable：回调里靠 host 指针找回槽位，所以全进程也能共用一份。
+    static readonly IntPtr sHostGui = BuildHostGui();
+
     static IntPtr Utf8HGlobal(string text)
     {
         byte[] bytes = ClapNative.Utf8(text);
@@ -49,6 +52,18 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         var check = (ClapNative.HostThreadCheck*)memory;
         check->IsMainThread = &HostIsMainThread;
         check->IsAudioThread = &HostIsAudioThread;
+        return memory;
+    }
+
+    static IntPtr BuildHostGui()
+    {
+        IntPtr memory = Marshal.AllocHGlobal(sizeof(ClapNative.HostGui));
+        var gui = (ClapNative.HostGui*)memory;
+        gui->ResizeHintsChanged = &HostGuiResizeHintsChanged;
+        gui->RequestResize = &HostGuiRequestResize;
+        gui->RequestShow = &HostGuiRequestShow;
+        gui->RequestHide = &HostGuiRequestHide;
+        gui->Closed = &HostGuiClosed;
         return memory;
     }
 
@@ -146,7 +161,7 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
             inputChannels = slot.InputChannels;
             outputChannels = slot.OutputChannels;
 
-            return (true, null, name, vendor, slot.LatencySamples, isSynth, false, false);
+            return (true, null, name, vendor, slot.LatencySamples, isSynth, CanOpenGui(slot), false);
         }
         catch (Exception ex)
         {
@@ -206,6 +221,30 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         slot.Params = (ClapNative.PluginParams*)GetPluginExtension(slot, ClapNative.ParamsExtension);
         slot.State = (ClapNative.PluginState*)GetPluginExtension(slot, ClapNative.StateExtension);
         slot.Latency = (ClapNative.PluginLatency*)GetPluginExtension(slot, ClapNative.LatencyExtension);
+        slot.Gui = (ClapNative.PluginGui*)GetPluginExtension(slot, ClapNative.GuiExtension);
+    }
+
+    // 这个插件在这个平台上能不能开界面。宿主据此决定"点界面"是开 GUI 还是退参数面板。
+    //
+    // 【P-C3 只做 Windows】CLAP 的窗口 API 是平台相关的：Linux 要 X11 的 XID 并自己泵
+    // X 事件，macOS 要 NSView。那两条不在本阶段，如实报"没有界面" —— 与 VST3 在桥
+    // 不带原生库时的降级同一条路。
+    static bool CanOpenGui(Slot slot)
+    {
+        if (!OperatingSystem.IsWindows() || slot.Plugin == null || slot.Gui == null)
+            return false;
+
+        if (slot.Gui->IsApiSupported == null)
+            return false;
+
+        try
+        {
+            return slot.Gui->IsApiSupported(slot.Plugin, (byte*)ClapNative.Win32Api, 0) != 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     static IntPtr GetPluginExtension(Slot slot, string id)
@@ -647,12 +686,49 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         target->Value = value;
     }
 
-    // ── 编辑器（P-C3）──
+    // ── 编辑器（P-C3，Windows）──
 
     public (bool Ok, string? Reason, int ChildWindows, IntPtr Window) OpenEditor(int slotNumber, string title)
-        => (false, "the CLAP editor is not wired yet (this build has the parameter panel only)", 0, IntPtr.Zero);
+    {
+        if (!mSlots.TryGetValue(slotNumber, out var slot))
+            return (false, "the plugin is not loaded", 0, IntPtr.Zero);
 
-    public bool CloseEditor(int slotNumber) => false;
+        // 已经开着：置前就行（用户可能把窗口最小化了）。
+        if (slot.Editor is { } existing)
+        {
+            if (existing.IsAlive)
+            {
+                existing.BringToFront();
+                return (true, null, existing.ChildWindowCount, existing.Hwnd);
+            }
+
+            // 用户点了 ✕：旧对象已经没用了，重开一扇。
+            slot.Editor = null;
+            existing.Dispose();
+        }
+
+        if (!CanOpenGui(slot))
+            return (false, "this plugin has no editor on this platform", 0, IntPtr.Zero);
+
+        if (!ClapEditorWindow.TryOpen(slot.Plugin, slot.Gui, title, out var window))
+            return (false, "the plugin refused to open its editor", 0, IntPtr.Zero);
+
+        slot.Editor = window;
+        return (true, null, window.ChildWindowCount, window.Hwnd);
+    }
+
+    public bool CloseEditor(int slotNumber)
+    {
+        if (!mSlots.TryGetValue(slotNumber, out var slot) || slot.Editor == null)
+            return false;
+
+        var editor = slot.Editor;
+        slot.Editor = null;
+
+        // Dispose 会 PostMessage(WM_CLOSE) 并等编辑器线程退完（gui->destroy 在那条线程上）。
+        editor.Dispose();
+        return true;
+    }
 
     // ── 插件回调 ──
 
@@ -743,6 +819,9 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
             if (string.Equals(name, ClapNative.ThreadCheckExtension, StringComparison.Ordinal))
                 return sThreadCheck;
 
+            if (string.Equals(name, ClapNative.HostGuiExtension, StringComparison.Ordinal))
+                return sHostGui;
+
             return IntPtr.Zero;
         }
         catch (Exception)
@@ -800,6 +879,82 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
 
     [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     static byte HostIsAudioThread(ClapNative.Host* host) => 1;
+
+    // ── clap.host-gui ──
+    //
+    // 这些回调会从**编辑器线程**进来（插件在自己的 GUI 线程上调 request_resize），
+    // 所以这里只做两件事：找回窗口对象、把请求转给它（它自己 PostMessage 到窗口线程）。
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    static void HostGuiResizeHintsChanged(ClapNative.Host* host)
+    {
+        // 尺寸约束变了：我们的窗口本来就让插件自己定尺寸（set_size 回调），不需要动作。
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    static byte HostGuiRequestResize(ClapNative.Host* host, uint width, uint height)
+    {
+        try
+        {
+            var editor = EditorOf(host);
+            if (editor == null)
+                return 0;
+
+            editor.RequestResize((int)width, (int)height);
+            return 1;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    static byte HostGuiRequestShow(ClapNative.Host* host)
+    {
+        try
+        {
+            var editor = EditorOf(host);
+            if (editor == null)
+                return 0;
+
+            editor.RequestShow();
+            return 1;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    static byte HostGuiRequestHide(ClapNative.Host* host)
+    {
+        try
+        {
+            var editor = EditorOf(host);
+            if (editor == null)
+                return 0;
+
+            editor.RequestHide();
+            return 1;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    static void HostGuiClosed(ClapNative.Host* host, byte wasDestroyed)
+    {
+        // 插件自己把界面关了。窗口对象会在下一次 OpenEditor / IsAlive 时发现并重开。
+    }
+
+    // create 期间槽位里还没挂上窗口对象（TryOpen 还没返回），那时用编辑器线程上的
+    // Current —— 插件常在 create 里报一次初始尺寸，丢了就只能按默认大小开窗。
+    static ClapEditorWindow? EditorOf(ClapNative.Host* host)
+        => ClapEditorWindow.Current ?? SlotOf(host)?.Editor;
 
     // clap_ostream 的 write：插件把 state 交给我们。
     [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -895,6 +1050,10 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         public ClapNative.PluginParams* Params;
         public ClapNative.PluginState* State;
         public ClapNative.PluginLatency* Latency;
+        public ClapNative.PluginGui* Gui;
+
+        // 编辑器窗口（P-C3）。可能从编辑器线程读（host_gui 回调），所以 volatile。
+        public volatile ClapEditorWindow? Editor;
 
         public readonly List<Port> Inputs = [];
         public readonly List<Port> Outputs = [];
@@ -913,9 +1072,9 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         // 插件坏了 / 重启失败：这个槽位从此直通（但实例还在，还能改旁通 / 移除）。
         public bool Broken;
 
-        public bool RestartRequested;
-        public bool CallbackRequested;
-        public bool ProcessRequested;
+        public volatile bool RestartRequested;
+        public volatile bool CallbackRequested;
+        public volatile bool ProcessRequested;
 
         public int LatencySamples;
         public long SteadyTime;
@@ -985,6 +1144,22 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
 
         public void Dispose()
         {
+            // GUI 必须在插件 destroy 之前拆掉：gui->destroy 还在编辑器线程上跑，
+            // 而且插件不该在自己被销毁后还收到窗口消息。Dispose 会等那条线程退完。
+            var editor = Editor;
+            Editor = null;
+
+            if (editor != null)
+            {
+                try
+                {
+                    editor.Dispose();
+                }
+                catch (Exception)
+                {
+                }
+            }
+
             var plugin = Plugin;
 
             if (plugin != null)

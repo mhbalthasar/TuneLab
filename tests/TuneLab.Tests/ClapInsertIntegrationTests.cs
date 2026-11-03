@@ -201,4 +201,40 @@ public class ClapInsertIntegrationTests
         Assert.Null(insert);
         Assert.Contains("instrument", reason);
     }
+
+    // P-C3 的验收：真插件在**桥进程里**开窗，宿主拿到跨进程句柄，关得掉。
+    //
+    // 只验链路（开 / 句柄 / 关），不验像素。没有 win32 界面的插件（或非 Windows）
+    // 直接返回 —— 那不是失败：界面会自动退到参数面板。
+    [Fact]
+    public void Editor_OpensInTheBridgeAndCloses()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var backend = BackendOrSkip();
+        var plugin = FindEffect(backend);
+
+        Skip.If(plugin == null, "no loadable CLAP effect on this machine");
+
+        var insert = ClapBridgeInsert.Create(plugin!, Settings(), out string? reason, out _);
+
+        Assert.NotNull(insert);
+        Assert.Null(reason);
+
+        using var disposable = insert as IDisposable;
+
+        if (!insert!.HasEditor)
+            return;
+
+        Assert.True(insert.OpenEditor(IntPtr.Zero));
+        Assert.True(insert.IsEditorOpen);
+
+        IntPtr window = insert.FindEditorWindowSince([]);
+
+        Assert.NotEqual(IntPtr.Zero, window);
+
+        insert.CloseEditor();
+        Assert.False(insert.IsEditorOpen);
+    }
 }
