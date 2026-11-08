@@ -463,3 +463,6 @@ __pycache__/
 # æµ‹è¯•/æ„å»ºä¸´æ—¶è¾“å‡ºï¼ˆTuneLab.Tests çš„ BaseOutputPath æŒ‡å‘è¿™é‡Œï¼‰
 .tmpbuild/
 
+
+# ±¾µØÊÔÔËĞĞµÄ·¢²¼Êä³ö£¨publish-bridges / dotnet publish ²úÎï£©
+dist/
