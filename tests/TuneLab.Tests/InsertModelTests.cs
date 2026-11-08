@@ -144,7 +144,7 @@ public class InsertModelTests
         var project = NewProject("t1");
         var list = (DataObjectList<InsertSlot>)project.Tracks[0].Inserts;
 
-        // JSFX 没有后端：必失败，与开发机上有没有 VST3 native / 桥无关。
+        // 不存在的 JSFX 插件：必失败（与本机有没有 ysfx / 桥无关 —— 文件先找不到）。
         var slot = new InsertSlot("insert-fail-" + Guid.NewGuid().ToString("N"), "JSFX", "jsfx:1", "Test", list);
         list.Add(slot);
 

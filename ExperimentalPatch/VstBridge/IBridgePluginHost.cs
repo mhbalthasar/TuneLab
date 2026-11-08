@@ -21,7 +21,7 @@ internal interface IBridgePluginHost
 
     bool Unload(int slotNumber);
 
-    bool Process(int slotNumber, bool bypass, out int frames, out int channels);
+    bool Process(int slotNumber, bool bypass, int tag, out int frames, out int channels);
 
     byte[]? GetState(int slotNumber);
 

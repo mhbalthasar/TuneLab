@@ -383,7 +383,7 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
 
     // ── 音频 ──
 
-    public bool Process(int slotNumber, bool bypass, out int frames, out int channels)
+    public bool Process(int slotNumber, bool bypass, int tag, out int frames, out int channels)
     {
         frames = 0;
         channels = 0;
@@ -391,7 +391,9 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         if (!mSlots.TryGetValue(slotNumber, out var slot))
             return false;
 
-        if (mIn == null || !mIn.TryRead(0, out _, out var inPlanes, out int channelCount, out int frameCount))
+        // 只认 tag 对得上的输入；超时留下的过期块直接丢弃（见 BlockHeader.Tag）。
+        if (mIn == null || !mIn.TryReadMatching(tag, 0, out _, out var inPlanes, out int channelCount,
+            out int frameCount))
             return false;
 
         frames = frameCount;
@@ -407,7 +409,7 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
             if (bypass || slot.Bypassed || slot.Broken)
             {
                 // 直通：输入原样发回去。
-                mOut?.TryPublish(slotNumber, inPlanes, channelCount, frameCount, 1000);
+                mOut?.TryPublish(slotNumber, inPlanes, channelCount, frameCount, 1000, tag);
                 return true;
             }
 
@@ -442,11 +444,11 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
                 // 插件说"这一块我搞砸了"：这一块直通，但**不算宿主故障** ——
                 // 别让 AudioStallWatch 把它记成"插件挂了"。
                 slot.PendingCount = 0;
-                mOut?.TryPublish(slotNumber, inPlanes, channelCount, frameCount, 1000);
+                mOut?.TryPublish(slotNumber, inPlanes, channelCount, frameCount, 1000, tag);
                 return true;
             }
 
-            PublishMainOutput(slot, slotNumber, n);
+            PublishMainOutput(slot, slotNumber, n, tag);
             return true;
         }
         catch (Exception)
@@ -454,7 +456,7 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
             // 插件抛错（托管侧不该发生，但桥里挂了不影响宿主）：这一块直通。
             try
             {
-                mOut?.TryPublish(slotNumber, inPlanes, channelCount, frameCount, 1000);
+                mOut?.TryPublish(slotNumber, inPlanes, channelCount, frameCount, 1000, tag);
             }
             catch (Exception)
             {
@@ -508,7 +510,7 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
         }
     }
 
-    void PublishMainOutput(Slot slot, int slotNumber, int frames)
+    void PublishMainOutput(Slot slot, int slotNumber, int frames, int tag)
     {
         var main = slot.Outputs[slot.MainOutput];
 
@@ -526,7 +528,7 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
             slot.PublishPlanes[1][i] = float.IsFinite(r) ? r : 0f;
         }
 
-        mOut?.TryPublish(slotNumber, slot.PublishPlanes, 2, frames, 1000);
+        mOut?.TryPublish(slotNumber, slot.PublishPlanes, 2, frames, 1000, tag);
     }
 
     // ── 状态 ──

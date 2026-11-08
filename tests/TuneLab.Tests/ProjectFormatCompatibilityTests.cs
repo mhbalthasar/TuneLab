@@ -202,4 +202,26 @@ public class ProjectFormatCompatibilityTests
                 throw new NotSupportedException("unhandled cbor state: " + reader.PeekState());
         }
     }
+
+    // 宿主私有元数据是手写 CBOR 读写（不是反射），新增键必须两端都改。
+    // 这条测试钉住 baseHref（崩溃恢复基准目录）与 includeEffects（分轨带效果）不会写丢/读丢。
+    [Fact]
+    public void NativeExtras_RoundTrip_BaseHrefAndIncludeEffects()
+    {
+        var file = new NativeProjectFile
+        {
+            Project = SampleProject(),
+            BaseHref = @"Y:\Projects\Song",
+            Export = new ExportConfigInfo { IncludeEffects = true, MasterExportChannels = 2 },
+        };
+
+        using var stream = new MemoryStream();
+        new TuneLabProjectCbor().SerializeNative(stream, file);
+        stream.Position = 0;
+
+        var read = new TuneLabProjectCbor().DeserializeNative(stream);
+
+        Assert.Equal(file.BaseHref, read.BaseHref);
+        Assert.True(read.Export.IncludeEffects);
+    }
 }

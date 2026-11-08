@@ -21,6 +21,16 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // （VstBridge/InProcess/），宿主程序集里不再引用 ownvst3。
 public sealed class Vst3Backend : IInsertBackend
 {
+    // VST3 桥只有 64 位一份：x64 进程里的 LoadLibrary 碰不了 32 位 bundle。
+    // 扫描时就要把它标成不可用，别让用户点了才看到"桥没反应"。
+    public const string Unsupported32BitReason =
+        "32-bit VST3 plugins are not supported by the 64-bit bridge";
+
+    public static bool Is32BitBundle(string? locator)
+        => !string.IsNullOrEmpty(locator)
+           && (locator.Contains(@"\x86-win\", StringComparison.OrdinalIgnoreCase)
+               || locator.Contains("/x86-win/", StringComparison.OrdinalIgnoreCase));
+
     string IInsertBackend.FormatName => "VST3";
 
     // 能不能用 VST3 = 这台机器上有没有可用的隔离宿主（平台 + 64 位 + 桥可执行文件就位）。
@@ -88,6 +98,8 @@ public sealed class Vst3Backend : IInsertBackend
         var list = new List<InsertPluginInfo>(entries.Count);
         foreach (var entry in entries)
         {
+            bool is32Bit = Is32BitBundle(entry.Locator);
+
             list.Add(new InsertPluginInfo
             {
                 Format = entry.Format,
@@ -97,6 +109,8 @@ public sealed class Vst3Backend : IInsertBackend
                 Category = entry.Category,
                 Locator = entry.Locator,
                 IsInstrument = entry.IsInstrument,
+                IsAvailable = !is32Bit,
+                UnavailableReason = is32Bit ? Unsupported32BitReason : null,
             });
         }
 
@@ -159,6 +173,8 @@ public sealed class Vst3Backend : IInsertBackend
                     Locator = bundle,
                     Category = is32Bit ? "32-bit (needs the bridge)" : string.Empty,
                     IsInstrument = isInstrument,
+                    IsAvailable = !is32Bit,
+                    UnavailableReason = is32Bit ? Unsupported32BitReason : null,
                 });
             }
         }
@@ -200,6 +216,14 @@ public sealed class Vst3Backend : IInsertBackend
         if (string.IsNullOrEmpty(plugin.Locator))
         {
             reason = "plugin location is unknown (rescan first)";
+            return null;
+        }
+
+        // 扫描已经标了不可用，这里再守一道：工程里存着旧插件 / 缓存被手工改过时，
+        // 不能让 x64 桥去 LoadLibrary 一个 x86 bundle（那只会得到一句含糊的加载失败）。
+        if (Is32BitBundle(plugin.Locator))
+        {
+            reason = Unsupported32BitReason;
             return null;
         }
 

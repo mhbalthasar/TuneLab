@@ -17,6 +17,7 @@ internal sealed class BridgeSession : IDisposable
     readonly PluginHost mVst2 = new();
     readonly Vst3PluginHost mVst3 = new();
     readonly ClapPluginHost mClap = new();
+    readonly JsfxPluginHost mJsfx = new();
 
     // 槽位 → 宿主实现。Load 时按 format 决定，之后的每一条消息都照它转发。
     // 只在桥的主线程读写，不需要锁。
@@ -38,6 +39,7 @@ internal sealed class BridgeSession : IDisposable
             mVst2.Attach(input, output);
             mVst3.Attach(input, output);
             mClap.Attach(input, output);
+            mJsfx.Attach(input, output);
         }
     }
 
@@ -149,9 +151,15 @@ internal sealed class BridgeSession : IDisposable
         if (!Environment.Is64BitProcess)
             return [PluginFormats.Vst2];
 
-        return Vst3PluginHost.IsSupported
-            ? [PluginFormats.Vst2, PluginFormats.Vst3, PluginFormats.Clap]
-            : [PluginFormats.Vst2, PluginFormats.Clap];
+        var formats = new List<string> { PluginFormats.Vst2, PluginFormats.Clap };
+
+        if (Vst3PluginHost.IsSupported)
+            formats.Add(PluginFormats.Vst3);
+
+        if (JsfxPluginHost.IsSupported)
+            formats.Add(PluginFormats.Jsfx);
+
+        return [.. formats];
     }
 
     void HandleLoad(string? json, byte[] payload)
@@ -171,7 +179,9 @@ internal sealed class BridgeSession : IDisposable
             ? mClap
             : string.Equals(message.Format, PluginFormats.Vst3, StringComparison.OrdinalIgnoreCase)
                 ? mVst3
-                : mVst2;
+                : string.Equals(message.Format, PluginFormats.Jsfx, StringComparison.OrdinalIgnoreCase)
+                    ? mJsfx
+                    : mVst2;
 
         // 附带音频段在这个消息里用不到（加载不需要音频），忽略 payload。
         var result = host.Load(message, out int inputChannels, out int outputChannels);
@@ -366,7 +376,7 @@ internal sealed class BridgeSession : IDisposable
         // 卡死时桥的主循环就卡在这里，回执永远不来，宿主的音频线程跟着无限期阻塞
         // （实测：真 VST3 卡死 → 整个宿主死锁）。处理结果本来就在共享环里，
         // 宿主等输出环（20ms 上限）就够了，这条回执是多余的一次同步点。
-        OwnerOf(message.Slot).Process(message.Slot, message.Bypass, out _, out _);
+        OwnerOf(message.Slot).Process(message.Slot, message.Bypass, message.Tag, out _, out _);
     }
 
     void HandleGetState(string? json)

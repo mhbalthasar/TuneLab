@@ -11,7 +11,13 @@
 | **AssemblyVersion 钉死** | 两 csproj 显式 `<AssemblyVersion>2.0.0.0</AssemblyVersion>`，2.x 永不再动 | 绑定层退出裁决：插件加载成败只取决于 ABI 真实兼容性，不取决于版本数字 |
 | **sdk-version 门** | manifest `sdk-version` × `ExtensionManager.SdkVersion` | "插件用了新 API × 老宿主"这一唯一合法不兼容方向，加载前人话拒绝 |
 
-**发布收口动作**（每次发布含新 API 的版本时，一并做）：`PublicAPI.Unshipped.txt` 整体挪进 `Shipped.txt` + `ExtensionManager.SdkVersion` 提一档（如 1.0 → 1.1）。
+**提档与发布收口：一个发布周期只占一档。**
+
+- **发版后第一笔新 API** 申报进 `PublicAPI.Unshipped.txt` 时，`ExtensionManager.SdkVersion` 提一档（如 1.1 → 1.2），开发文档版本表加一行、标「尚未发布」。
+- **同一周期后续的新 API** 并入这一档、**不再提**，只往版本表那一行里补内容。两次发布之间冒出来的中间档没有对应的正式宿主，对插件作者没有意义；开发构建之间的区别看构建版本号与提交，不归 sdk-version 管。
+- **发版时收口**：`Unshipped.txt` 整体挪进 `Shipped.txt`，`ExtensionManager.LastReleasedSdkVersion` 跟上 `SdkVersion`，版本表那一行填上发布版本号。
+- **为什么不等到发版才提**：每次推送 master 都出构建产物。若已提供新 API 却仍声称旧档，插件作者用了新 API 只能声明旧档，插件随之被已发布的老宿主加载、用到时才缺成员。
+- **机械校验**：`SdkVersionLedgerTests`——Unshipped 有内容 ⇔ `SdkVersion` 恰比 `LastReleasedSdkVersion` 高一档；版本表里必须有当前这一档。忘了提、重复提都会挂测试。
 
 ## 1. 接口三分类：加成员的规矩由"谁实现它"决定
 
@@ -59,6 +65,24 @@ DIM 默认体的语义责任：默认体必须是**可长期成立的兜底行�
 - 实现集封闭在 SDK 内（config 类全 sealed + 私有构造 + 静态工厂/With，见既有"工厂化构造"约定）；宿主渲染器按具体类型分发，未知实现渲染为 unsupported 占位、不崩。
 - 加新 config 类型 = 纯加性（新类 + 宿主新 creator）；给既有 config 加字段走"工厂化构造 + `With` 流式"既有 ABI 韧性机制。
 
+### 会变的值怎么暴露：先看 `IReadOnlyNotifiableProperty<T>`
+
+设计「一个值 + 它变了的通知」时，**先判断能不能直接用 `IReadOnlyNotifiableProperty<T>`**（Foundation 通知面），而不是顺手写成
+`X { get; }` + `XChanged` 两个成员——那个接口就是为把这一对收成一个对象而设计的，值和通知绑在一起、可整体往下传、宿主的通用订阅
+工具直接可用。三条判据全满足才用它：
+
+1. **读值便宜（O(1)）**：叶子值。每次读都要现算的汇总（遍历拼一张表、现建状态列表）停在 `IReadOnlyNotifiable` 或「getter + 事件」，
+   不把 O(n) 伪装成属性 getter（见该接口注释）。
+2. **变化与通知在数据线程上对齐**：`WillModify` 里读得旧值、`Modified` 里读得新值、没有通知时值不变。源头若在别的线程变
+   （如播放头时间由音频线程按缓冲推进），宿主在数据线程维护一份快照、在两个事件之间更新它，就满足这一条——不要因此退回
+   「getter + 事件」。真正守不住这一条的（值在没有任何通知时也会变）才用「getter + 刷新信号事件」，并在事件注释写明它是信号。
+3. **由宿主实现**：Foundation 只公开接口、不公开实现类，插件实现面若用它，每个插件都得自己实现 `WillModify` / `Modified` 及其时序，
+   是纯负担。插件实现面（如合成会话）用「getter + 事件」。
+
+现状对照：音符的 `StartTime` / `EndTime` / `Pitch` / `BodyOffset` / `BodyPhonemes` 用它（宿主实现、O(1)、离散）；合成会话的
+`Status` / `SynthesizedParameters` / `SynthesizedPhonemes` / `SynthesizedPitch` 各配一个 `*Changed` 事件（插件实现、读时现算）——
+两边都是按上面的判据定的，不是遗漏。
+
 ## 2. 纯值 DTO：形态政策
 
 加字段的通用规矩：**带默认值、不标 `required`**——已编译插件构造的旧对象缺新字段时取默认，纯加性。（托管 struct 加字段同样是加性兼容：布局 JIT 期按加载类型现算，前提是既有字段不动。）
@@ -102,4 +126,22 @@ SDK 公开枚举（`PropertyType` / `SynthesisSegmentStatus` / `DragAxis` 等）
 | 给枚举加成员 | ✅ 加性（有条件） | 确认消费侧未知值容忍 + 申报 Unshipped |
 | 删/改任何 public 签名 | ❌ breaking | 编译必红（RS0017+RS0016）；发布前 = 编辑 Shipped.txt 重新定稿；发布后 = 3.0 事项，`*REMOVED*` 留痕 |
 | struct ↔ class、field ↔ property、改字段类型宽度 | ❌ breaking | 同上——这三类在冻结前已按终形定案，不要再动 |
-| 发布含新 API 的版本 | — | Unshipped → Shipped + `ExtensionManager.SdkVersion` 提档（一个动作、两处台账） |
+| 改参数 / 返回值的可空标注（`?`） | ⚠️ 不破二进制、但破语义 | 清单记着可空标注（RS0016/17 照样报警）；放宽（非空 → 可空）对调用方无害，收紧（可空 → 非空）会让传 null 的插件编译告警、运行被拒——按 breaking 对待。可空是契约：标了 `?` 宿主就永远得接受 null |
+| 新 API 落地 / 发布 | — | 发版后第一笔：`SdkVersion` 提一档 + 版本表加「尚未发布」行；同周期后续：并入该档、不再提；发版：Unshipped → Shipped + `LastReleasedSdkVersion` 跟上（见 §0） |
+
+## 5. 源码组织：一个公开类型一个文件
+
+挪类型不影响 ABI、清单也不变，但插件作者（与读 SDK 源码的 agent）是按类型名找文件的。规矩：**能被独立使用的公开类型单独一个文件**，文件名 = 类型名。只有四种情况可以同住：
+
+1. 类型与它的扩展方法、Builder、internal 辅助类型（如 `IReadOnlyMap` + `IReadOnlyMapExtensions` + `IReadOnlyMapBuilder`）；
+2. 接口与它的静态工厂类（如 `INormalizedScale` + `NormalizedScale`）；
+3. 只被这一个类型用到的枚举或小类型（如 `PathPickerConfig` + `PathPickerTarget` / `FileTypeFilter`）；
+4. 封闭族：基类与它的几种具体情况（如 `VoiceSourceLayoutItem` / `Voice` / `Group`）。
+
+一旦附属类型被第二个类型用到，就该拆出去。族的总说明留在族的主文件里，拆出去的成员文件头一行指回去。
+
+## 6. 下一个大版本（3.0）才能做的事
+
+已发布的签名里认定形状不对、但改了就是二进制破坏的，记在这里，开 3.0 时逐条对照（届时连同 `*REMOVED*` 留痕一起做）：
+
+- **`Foundation.Point` 改成只读形状**：现在是带公开可写字段 `X` / `Y` 的 struct。字段进了调用方的 IL（`ldfld` / `stfld`），改成属性即 `MissingFieldException`，而公开字段把内部表示永久交了出去、也让"改了副本、原值没变"这类 bug 成为可能。后来新增的值类型一律是只读 record struct（属性、`with` 改值），3.0 时 `Point` 与它们对齐。

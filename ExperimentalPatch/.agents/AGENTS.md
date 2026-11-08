@@ -104,6 +104,7 @@
 | `app.shutdown` | 通知 | 退出时，宿主引擎销毁**之前** | `AppShutdownAnchor` | 收尾。宿主服务此时仍可用；要快，别阻塞退出。 |
 | `app.splash` | 贡献 | `OnFrameworkInitializationCompleted` **开头**（Avalonia 已起，启动工作一行都还没干） | `IStartupScreen` | 提供启动闪屏。没人提供 = 宿主走无闪屏的原样路径。 |
 | `app.settings` | 贡献 | 每次打开「设置」窗、建完宿主自己的 tab 之后 | `SettingsTabContribution`（标题 + `Func<object>`，运行时是 `Control`） | 往设置窗尾部加一页。没有贡献 = 与上游逐项一致。**标题由补丁按 `UiLanguage` 自己给**，别动上游翻译表。 |
+| `app.exportOptions` | 贡献 | 每次建「导出」侧栏、画完宿主自己的分组之后 | `ExportOptionsContribution`（标题 + `Func<object>` + `Refresh`，运行时是 `Control`） | 往导出侧栏加选项（如"包含轨道效果器"）。没有贡献 = 侧栏与上游逐项一致。**宿主切工程时会调 `Refresh()`**，补丁据此重读 `IHostServices` 上的当前工程状态。 |
 
 通知型锚点触发顺序固定为 `app.startup` → `app.ready` → `app.shutdown`，各**恰好一次**；`app.splash` 是索取，不参与这个序列。
 

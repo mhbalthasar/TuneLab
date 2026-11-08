@@ -18,6 +18,7 @@ namespace TuneLab.GUI.Controllers;
 // 支持 keyed-diff reconcile（条件属性面板）：config 可随数据值变化，调用方在值 commit 后重算整棵 config 再调
 // Reconcile，本控件按 key diff——同 key 同类型复用控件仅更参数（不闪、不丢焦点）、key 消失则 dispose、新 key 建、
 // 同 key 换类型则换控件。纯参数变化不重排布局；仅结构（增删/换类型/顺序）变化时重排。订阅/重算时机由调用方管理。
+// 各值控件的编辑过程（开始改值 → 提交）登记到所在窗口的 EditGate；窗口编辑中 Reconcile 推迟到编辑结束（见 Reconcile）。
 internal class PropertyObjectController : StackPanel
 {
     // 是否在每个属性后渲染尾随分隔线（默认 false）。字段之间靠间距分开、不画线：线只留给分组边界
@@ -51,9 +52,26 @@ internal class PropertyObjectController : StackPanel
 
     static string ItemsSummary(int count) => string.Format("{0} items".Tr("PropertyObjectController"), count);
 
+    // 收起时的摘要：首个非空行（开头的空行不算，否则摘要为空、看着像没填）；其后还有内容就补 "…"，
+    // 让人知道不止这一行。\r\n 与 \r 都按换行切（粘贴来的文本常带 \r，留着会混进宽度与截断）。
+    // 全是空白则不显示摘要（同空字符串）。
+    internal static string? FirstLineSummary(string text)
+    {
+        var lines = text.Split(["\r\n", "\r", "\n"], StringSplitOptions.None);
+        int first = Array.FindIndex(lines, line => !string.IsNullOrWhiteSpace(line));
+        if (first < 0)
+            return null;
+        bool more = lines.Skip(first + 1).Any(line => !string.IsNullOrWhiteSpace(line));
+        return more ? lines[first] + " …" : lines[first];
+    }
+
     // 宿主注入的逐属性右键菜单项（返回 null/空 = 不加）：菜单项在每次右键时现取，随宿主状态（如钉选态）即时变化，
     // 排在通用项「恢复默认值」之前。嵌套 ObjectConfig 的子控制器不继承本钩子（作用面 = 本层直属属性）。
     public Func<PropertyKey, IControllerConfig, IReadOnlyList<MenuItem>?>? ItemContextMenuProvider { get; set; }
+
+    // 宿主注入的整面板公共右键项（如音素面板的拆分 / 删除：属于整块，与点在哪个字段上无关）。与 ItemContextMenuProvider
+    // 相反，嵌套 ObjectConfig 的子控制器继承本钩子——点在子字段上也该有这些项。排在字段专属项之后、「恢复默认值」之前。
+    public Func<IReadOnlyList<MenuItem>?>? ContainerContextMenuProvider { get; set; }
 
     // 按钮（ButtonConfig）的作用域与完成通知，见 ButtonRoot。面板持有方在根控制器上设 / 订阅；嵌套控制器经
     // AttachButtonRoot 共享根的那一份（路径 = 根到本层的 key / 元素 token 串）。
@@ -80,12 +98,41 @@ internal class PropertyObjectController : StackPanel
     {
         ResetConfig();
         mDataObject = dataObject;
-        Reconcile(config);
+        ReconcileNow(config);
     }
 
     // 数据对象不变，把控件树 keyed-diff 到新 config。
+    // 所在窗口有编辑进行中（见 EditGate）时只记下最新的 config、编辑结束后再对齐：新声明可能去掉 / 换掉正被拖的字段，
+    // 或增减它上方的字段把它挤得跳位置。期间到来的多次只取最后一次；编辑自己的提交还会引起一次新的声明，
+    // 结束后对齐的总是最新的那份。
     public void Reconcile(ObjectConfig config)
     {
+        if (mDataObject == null)
+            return;
+
+        if (EditGate.Of(this) is { IsEditing: true } gate)
+        {
+            bool scheduled = mPendingConfig != null;
+            mPendingConfig = config;
+            if (!scheduled)
+                gate.AfterEditing(ApplyPendingConfig);
+            return;
+        }
+
+        ReconcileNow(config);
+    }
+
+    void ApplyPendingConfig()
+    {
+        if (mPendingConfig is not { } config)
+            return;   // 期间已被更新的 Reconcile / SetConfig / ResetConfig 取代
+        mPendingConfig = null;
+        Reconcile(config);
+    }
+
+    void ReconcileNow(ObjectConfig config)
+    {
+        mPendingConfig = null;
         if (mDataObject == null)
             return;
 
@@ -161,6 +208,7 @@ internal class PropertyObjectController : StackPanel
         mCreatorsByKey = new();
         mOrder = new();
         mDataObject = null;
+        mPendingConfig = null;
     }
 
     // 增量对齐 Children 到目标顺序（mOrder 各 creator 的 LayoutViews 拼接）：已在正确位置的复用控件**不动**
@@ -255,9 +303,10 @@ internal class PropertyObjectController : StackPanel
                 void OnContextRequested(object? sender, ContextRequestedEventArgs e)
                 {
                     var menu = new ContextMenu();
-                    var items = Parent.ItemContextMenuProvider?.Invoke(key, currentConfig());
-                    if (items != null && items.Count > 0)
+                    foreach (var items in new[] { Parent.ItemContextMenuProvider?.Invoke(key, currentConfig()), Parent.ContainerContextMenuProvider?.Invoke() })
                     {
+                        if (items == null || items.Count == 0)
+                            continue;
                         foreach (var item in items)
                             menu.Items.Add(item);
                         menu.Items.Add(new Separator());
@@ -294,6 +343,7 @@ internal class PropertyObjectController : StackPanel
             mController = ObjectPoolManager.Get<PropertyObjectController>();
             mController.AttachButtonRoot(parent.mButtonRoot, parent.mButtonPath + "/" + key.Id);
             mController.CollapseScope = parent.FoldKey(key);
+            mController.ContainerContextMenuProvider = parent.ContainerContextMenuProvider;   // 整块公共项往下传（字段专属项不传）
             mController.SetConfig(config, parent.DataObject.Object(key.Id));
 
             // 子字段的标签左缘 = 引导线右侧再缩进 24（与顶层字段同一套边距），故整体缩进 = 引导线位置 + 1。
@@ -323,6 +373,7 @@ internal class PropertyObjectController : StackPanel
             mController.ResetConfig();
             mController.DetachButtonRoot();
             mController.CollapseScope = null;
+            mController.ContainerContextMenuProvider = null;
             ObjectPoolManager.Return(mController);
             ObjectPoolManager.Return(mTitle);
         }
@@ -359,6 +410,7 @@ internal class PropertyObjectController : StackPanel
             // 先绑定（初次刷新即把真实值写入），Relayout 才加入可视树——否则池复用的控件会以残留旧值/旧量程
             // 先布局渲染一帧，thumb 随后才跳到正确位置（初次选中音符时可见的瞬间挪动）。
             mController.BindDataProperty(parent.DataObject.DoubleField(key.Id, config.DefaultValue), s);
+            EditGate.Track<double>(mController, s);
         }
 
         void Apply(SliderConfig config)
@@ -421,6 +473,7 @@ internal class PropertyObjectController : StackPanel
 
             Apply(config);
             mController.BindDataProperty(parent.DataObject.DoubleField(key.Id, config.DefaultValue), s);
+            EditGate.Track(mController, s);
             mFold = new FieldFold(mTitle, [mValueColumn], parent.FoldKey(key),
                 summary: () => MultipleOr(parent.DataObject.GetValue(key.Id, PropertyValue.Create(mConfig.DefaultValue)),
                     v => v.ToDouble(out var d) ? mConfig.Format.Format(d) : null),
@@ -474,10 +527,10 @@ internal class PropertyObjectController : StackPanel
             mHost = ObjectPoolManager.Get<Panel>();
             mHost.Margin = new(24, FieldGap, 24, 12);
             Build(config);
-            // 摘要：首行（多行文本只取第一行）；掩码字段不泄露内容。
+            // 摘要：多行文本取首个非空行；掩码字段不泄露内容。
             mFold = new FieldFold(mTitle, [mHost], parent.FoldKey(key),
                 summary: () => MultipleOr(parent.DataObject.GetValue(key.Id, PropertyValue.Create(config.DefaultValue)),
-                    v => !v.ToString(out var text) ? null : mIsPassword ? (text.Length == 0 ? null : "••••••") : text.Split('\n')[0]),
+                    v => !v.ToString(out var text) ? null : mIsPassword ? (text.Length == 0 ? null : "••••••") : FirstLineSummary(text)),
                 watch: parent.DataObject);
             AttachContextMenu(key, () => config, mFold.Header, mHost);
         }
@@ -524,9 +577,10 @@ internal class PropertyObjectController : StackPanel
             if (mIsMultiline)
             {
                 // 不池化：AvaloniaEdit 控件自带文档与渲染层、状态面比单行大得多，复用要清的东西比省下的多。
-                mMultiline = new MultilineTextInput() { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch };
+                mMultiline = new MultilineTextInput() { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch, DiscardOnEscape = true };
                 mMultiline.SetMaxVisibleLines(config.MaxVisibleLines);
                 mMultiline.BindDataProperty(field, mFieldScope);
+                EditGate.Track(mMultiline, mFieldScope);
                 mHost.Children.Add(mMultiline);
             }
             else
@@ -534,6 +588,7 @@ internal class PropertyObjectController : StackPanel
                 mSingleLine = ObjectPoolManager.Get<SingleLineTextController>();
                 mSingleLine.IsPassword = config.IsPassword;
                 mSingleLine.BindDataProperty(field, mFieldScope);
+                EditGate.Track(mSingleLine, mFieldScope);
                 mHost.Children.Add(mSingleLine);
             }
         }
@@ -586,6 +641,7 @@ internal class PropertyObjectController : StackPanel
             mController.Apply(config);
 
             mController.BindDataProperty(parent.DataObject.StringField(key.Id, config.DefaultValue), s);
+            EditGate.Track(mController, s);
             // 摘要：文件 / 文件夹名（整条路径在窄侧栏里放不下，名字才是辨认它的部分）。
             mFold = new FieldFold(mTitle, [mController], parent.FoldKey(key),
                 summary: () => MultipleOr(parent.DataObject.GetValue(key.Id, PropertyValue.Create(config.DefaultValue)),
@@ -626,7 +682,7 @@ internal class PropertyObjectController : StackPanel
             BindWith(config);
             // 摘要：选中项的显示文本；值不在选项里时显示原值字面量（同下拉本体的呈现）。
             mFold = new FieldFold(mTitle, [mController], parent.FoldKey(key),
-                summary: () => MultipleOr(parent.DataObject.GetValue(mKey, mConfig.DefaultOption.Value),
+                summary: () => MultipleOr(parent.DataObject.RawValueField(mKey, mConfig.DefaultOption.Value).Value,
                     v => mConfig.Items.Leaves().Where(item => item.Value.Equals(v)).Select(item => item.ShowText()).FirstOrDefault() ?? v.ToString()),
                 watch: parent.DataObject);
             AttachContextMenu(key, () => mConfig, mFold.Header, mController);
@@ -637,8 +693,10 @@ internal class PropertyObjectController : StackPanel
         void BindWith(ComboBoxConfig config)
         {
             mController.SetConfig(config);
-            // 绑裸 PropertyValue 字段：option 值可为任意基础类型，存进数据的就是该值本身（非显示文本）。
-            mController.BindDataProperty(Parent.DataObject.ValueField(mKey, config.DefaultOption.Value), s);
+            // 绑裸 PropertyValue 字段：option 值可为任意类型，存进数据的就是该值本身（非显示文本）。按原值读、不按默认值的
+            // 类型过滤——另一类型的合法选项、不在候选里要琥珀显示的旧值都得原样读出（见 RawValueField）。
+            mController.BindDataProperty(Parent.DataObject.RawValueField(mKey, config.DefaultOption.Value), s);
+            EditGate.Track(mController, s);
         }
 
         public override Type ConfigType => typeof(ComboBoxConfig);
@@ -841,6 +899,7 @@ internal class PropertyObjectController : StackPanel
             mTitle = CreateTitle(key.DisplayText ?? key.Id, 30);
 
             mController.BindDataProperty(parent.DataObject.BooleanField(key.Id, config.DefaultValue), s);
+            EditGate.Track(mController, s);
             mFold = new FieldFold(mTitle, [mController], parent.FoldKey(key),
                 summary: () => MultipleOr(parent.DataObject.GetValue(key.Id, PropertyValue.Create(config.DefaultValue)),
                     v => v.ToBoolean(out var on) ? (on ? "On" : "Off").Tr("PropertyObjectController") : null),
@@ -1004,6 +1063,7 @@ internal class PropertyObjectController : StackPanel
     };
 
     ButtonRoot mButtonRoot = new();
+    ObjectConfig? mPendingConfig;   // 窗口编辑中推迟的最新 config（见 Reconcile）
     string mButtonPath = string.Empty;
     IDataPropertyObject? mDataObject;
     Dictionary<string, Creator> mCreatorsByKey = new();

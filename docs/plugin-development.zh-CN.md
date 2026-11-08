@@ -43,6 +43,7 @@
 |---|---|---|
 | `1.0` | TuneLab 2.0.0 | V1 SDK 的全部初始面 |
 | `1.1` | TuneLab 2.1.0 | 路径选择控件（`PathPickerConfig` / `FileTypeFilter`）、多行文本框（`TextBoxConfig.WithMultiline`） |
+| `1.2` | 尚未发布 | 标签组（`TagConfig` / `TagItem`）、按钮（`ButtonConfig` / `IButtonClickContext` / `IDialogService` / `IProgressReporter`，见 §9）、声明失效（`InvalidatePart` / `InvalidateNotes` 及配套的 `PartId` / note `Id`，见 §5.2）、`+` 菜单与下拉的分组和分隔线（`AddableElement` / `AddableKey` 分组、`Separator`、`ComboBoxItem.Separator`） |
 
 插件级（描述「这个包提供什么」）。**身份内联进 manifest**：一个条目 = 一个具体可注册能力，自带身份（引擎 id / 文件扩展名）+ 实现类全名。宿主读完 manifest 即知插件提供什么、无需加载程序集反射。
 
@@ -365,7 +366,7 @@ public ObjectConfig GetNotePropertyConfig(IVoiceSynthesisNotePropertyContext con
 **note / part 属性约定（keyed `Properties`，这是 per-note/per-part 参数的唯一通道）**：
 
 - `IVoiceSynthesisNote` 的固定字段只有最小通用乐理量（`Id`/`StartTime`/`EndTime`/`Pitch`/`Lyric`/`LeadingPhonemes`/`BodyPhonemes`/`BodyOffset`）。**所有 voice 专属的 per-note 参数（如张力、气声、性别）都走 `note.Properties`（keyed）**——加新参数 = 在 `GetNotePropertyConfig` 的 `ObjectConfig.Properties` 里加一个 key，不动接口固定面。part 级专属参数同理走 `GetPartPropertyConfig`。
-- 面板用控件配置词汇搭（都在 `TuneLab.SDK`）：`SliderConfig`（构造函数已封，只走静态工厂：`SliderConfig.Linear(default, min, max)` 连续、`SliderConfig.Integer(default, min, max)` 整数、`SliderConfig.Create(default, scale)` 接自定义标度 `INormalizedScale`；流式 `.WithFormat(INumberFormat)` 定制数值显示/回读、`.WithRandomizable()` 声明可随机——宿主在右侧给随机入口、点一下在标度上按归一化均匀重取值，适合随机种子等场景；`.WithMinLabel(text)` / `.WithMaxLabel(text)` 给量程两端加描述文本（如 min="Soft"、max="Hard"，插件自译、可只设一端）——显示在滑条两端，该属性被用户钉到参数面板后同文本作上下界，与 `AutomationConfig` 的同名字段同一语义）、`ComboBoxConfig.Create(options)`（值/显示分离，可「界面中文/底层存枚举值」；`.WithDefault(option)` 指定默认选中，缺省取首项；`new ComboBoxItem(组名, 子项)` 是分组——本身不可选、展开成子菜单、可再嵌套；`ComboBoxItem.Separator(标签)` 是分隔线（标签可省），顶层与分组子项里都能放，顶层也可用 `.AppendSeparator(标签)`；叶子达 10 个时宿主自动在菜单顶部给搜索框）、`CheckBoxConfig.Create(default)`、`TextBoxConfig.Create(default)`（`.WithPassword()` 掩码；`.WithMultiline(最多行数)` 多行框——框贴着内容长、到该行数封顶、其后框内滚动（`0` = 不封顶），值仍是**一个** string（换行在里面），故存储与撤销都不变。掩码没有多行形态：两者同时声明时字段仍为单行）、`PathPickerConfig.CreateFile(default)` / `PathPickerConfig.CreateFolder(default)`（路径选择：文本框 + 浏览按钮开系统选择器，值就是路径字符串——`.AppendFileType(名称, "*.exe")` 加类型过滤、`.WithPickerTitle(标题)` 定制对话框标题；宿主不校验路径存不存在，自己在 `ApplySettings`/`Init` 里校）；以上构造函数均已封、只走静态工厂。容器是 `ObjectConfig.Create(IReadOnlyOrderedMap<PropertyKey, IControllerConfig>)`——与值配置一样封了构造函数、只走静态工厂。`PropertyKey` = `(id, 可选显示名)`，从裸字符串或元组隐式转换，故 `{ ("tension", "张力"), … }` 即给键带上显示名；只写 `"tension"` 则显示 id。变长容器 `ListConfig` / `ExtensibleObjectConfig` 的 `+` 候选与下拉同构：`new AddableElement(组名, 子项)` / `new AddableKey(组名, 子项)` 是分组（子菜单、可嵌套），`AddableElement.Separator(标签)` / `AddableKey.Separator(标签)` 是分隔线，搜索框规则同下拉；键控容器隐藏已加入的键后，所辖区段空了的分隔线也随之隐藏；分组与分隔线都没有 `Template`（`AddableKey` 的也没有键 Id），读候选时先判 `SubItems`。`ExtensibleObjectConfig` 条目的显示顺序就是你给的 `Properties` 顺序：数据里的键无序（删掉再加会落进空位，先后不可靠），别照搬数据的键序，按你自己的候选目录排；要让用户自己调顺序，用元素为对象的 `ListConfig`（支持拖序号重排）。要让用户从一组固定候选里挑若干个，用 `TagConfig.Create(候选)`：已选的值排成 chip、自动换行，末尾一个 `+` 弹候选菜单。值是所选候选值组成的 `PropertyArray`，**有序、不重复**：新加的追加到末尾，用户可拖动 chip 调序（顺序可以有含义，如关键的排前面），已选的值不再出现在 `+` 菜单里。候选是 `TagItem`，形状同 `ComboBoxItem`（值/显示分离、值可为任意基础类型；`new TagItem(组名, 子项)` 是分组、`TagItem.Separator(标签)` 是分隔线，搜索框规则同下拉），但是独立类型。`.WithDefault([值…])` 指定默认已选（缺省为空）。多选时宿主显示并集，只有部分对象带的 tag 显示为半透明——从 `+` 里选它即补给其余对象。存值里有候选之外的值时原样保留、显示为琥珀色（怎么生效由你决定），同下拉的非法值。元素为同一组选项的 `ComboBoxConfig` 的 `ListConfig` 数据形状相同，但允许重复、元素可逐个改——按需要的语义二选一。把已有字段（如用空对象当开关的 `ExtensibleObjectConfig`）改成 `TagConfig` 时数据形状会变；`GetXxxConfig` 拿得到当前值，可以对老键继续返回老 config、tag 用新键，或自己转换老值。
+- 面板用控件配置词汇搭（都在 `TuneLab.SDK`）：`SliderConfig`（构造函数已封，只走静态工厂：`SliderConfig.Linear(default, min, max)` 连续、`SliderConfig.Integer(default, min, max)` 整数、`SliderConfig.Create(default, scale)` 接自定义标度 `INormalizedScale`；流式 `.WithFormat(INumberFormat)` 定制数值显示/回读、`.WithRandomizable()` 声明可随机——宿主在右侧给随机入口、点一下在标度上按归一化均匀重取值，适合随机种子等场景；`.WithMinLabel(text)` / `.WithMaxLabel(text)` 给量程两端加描述文本（如 min="Soft"、max="Hard"，插件自译、可只设一端）——显示在滑条两端，该属性被用户钉到参数面板后同文本作上下界，与 `AutomationConfig` 的同名字段同一语义）、`ComboBoxConfig.Create(options)`（值/显示分离，可「界面中文/底层存枚举值」；`.WithDefault(option)` 指定默认选中，缺省（或指定的项不能选）取第一个能选的叶子——跳过分组与分隔线，一个能选的都没有时默认值为空；选项值可为不同类型，存值不在选项里时原样保留、显示为琥珀色；`new ComboBoxItem(组名, 子项)` 是分组——本身不可选、展开成子菜单、可再嵌套；`ComboBoxItem.Separator(标签)` 是分隔线（标签可省），顶层与分组子项里都能放，顶层也可用 `.AppendSeparator(标签)`；叶子达 10 个时宿主自动在菜单顶部给搜索框）、`CheckBoxConfig.Create(default)`、`TextBoxConfig.Create(default)`（`.WithPassword()` 掩码；`.WithMultiline(最多行数)` 多行框——框贴着内容长、到该行数封顶、其后框内滚动（`0` = 不封顶）；按键同单行框——Enter 确认、Shift+Enter 换行，值仍是**一个** string（换行在里面），故存储与撤销都不变。掩码没有多行形态：两者同时声明时字段仍为单行）、`PathPickerConfig.CreateFile(default)` / `PathPickerConfig.CreateFolder(default)`（路径选择：文本框 + 浏览按钮开系统选择器，值就是路径字符串——`.AppendFileType(名称, "*.exe")` 加类型过滤、`.WithPickerTitle(标题)` 定制对话框标题；宿主不校验路径存不存在，自己在 `ApplySettings`/`Init` 里校）；以上构造函数均已封、只走静态工厂。容器是 `ObjectConfig.Create(IReadOnlyOrderedMap<PropertyKey, IControllerConfig>)`——与值配置一样封了构造函数、只走静态工厂。`PropertyKey` = `(id, 可选显示名)`，从裸字符串或元组隐式转换，故 `{ ("tension", "张力"), … }` 即给键带上显示名；只写 `"tension"` 则显示 id。变长容器 `ListConfig` / `ExtensibleObjectConfig` 的 `+` 候选与下拉同构：`new AddableElement(组名, 子项)` / `new AddableKey(组名, 子项)` 是分组（子菜单、可嵌套），`AddableElement.Separator(标签)` / `AddableKey.Separator(标签)` 是分隔线，搜索框规则同下拉；键控容器隐藏已加入的键后，所辖区段空了的分隔线也随之隐藏；分组与分隔线都没有 `Template`（`AddableKey` 的也没有键 Id），读候选时先判 `SubItems`。`ExtensibleObjectConfig` 条目的显示顺序就是你给的 `Properties` 顺序：数据里的键无序（删掉再加会落进空位，先后不可靠），别照搬数据的键序，按你自己的候选目录排；要让用户自己调顺序，用元素为对象的 `ListConfig`（支持拖序号重排）。要让用户从一组固定候选里挑若干个，用 `TagConfig.Create(候选)`：已选的值排成 chip、自动换行，末尾一个 `+` 弹候选菜单。值是所选候选值组成的 `PropertyArray`，**有序、不重复**：新加的追加到末尾，用户可拖动 chip 调序（顺序可以有含义，如关键的排前面），已选的值不再出现在 `+` 菜单里。候选是 `TagItem`，形状同 `ComboBoxItem`（值/显示分离、值可为任意基础类型；`new TagItem(组名, 子项)` 是分组、`TagItem.Separator(标签)` 是分隔线，搜索框规则同下拉），但是独立类型。`.WithDefault([值…])` 指定默认已选（缺省为空）。候选值与默认所选都必须是真实值，`PropertyValue.Null` / `PropertyValue.Multiple` 会在构造时直接报参数错误。多选时宿主显示并集，只有部分对象带的 tag 显示为半透明——从 `+` 里选它即补给其余对象。存值里有候选之外的值时原样保留、显示为琥珀色（怎么生效由你决定），同下拉的非法值。元素为同一组选项的 `ComboBoxConfig` 的 `ListConfig` 数据形状相同，但允许重复、元素可逐个改——按需要的语义二选一。把已有字段（如用空对象当开关的 `ExtensibleObjectConfig`）改成 `TagConfig` 时数据形状会变：tag 用新键，旧数据怎么兼容见本节下文「声明里的闭包与字段演进」。
 
 ```csharp
 readonly ObjectConfig mNoteConfig = ObjectConfig.Create(new OrderedMap<PropertyKey, IControllerConfig>
@@ -375,8 +376,8 @@ readonly ObjectConfig mNoteConfig = ObjectConfig.Create(new OrderedMap<PropertyK
 });
 ```
 
-- **读值**：合成时从 `VoiceSynthesisNoteSnapshot.Properties`（`PropertyObject` 值拷）读，用 `GetDouble(key, default)` / `GetBoolean` / `GetString`。**稀疏存储**——只有用户改过的字段才在里面；读不到就用你声明的默认值（`PropertyObject` 的 `Get*` 第二参数就是 fallback，传与声明一致的默认值即可）。
-- **`AutomationConfig`**：`DefaultValue` / `MinValue` / `MaxValue` / `Scale` / `Color`（如 `"#E5A573"`） / `Randomizable`（默认值面板的滑条右侧加随机入口，宜用于连续轨）/ `MinLabel` / `MaxLabel` / `Format`，经 `AutomationConfig.Create(...)` 构造、流式 `WithColor` / `WithDefault` / `WithRandomizable` / `WithMinLabel` / `WithMaxLabel` / `WithFormat` 配置。**轨的显示名不在 config 上**——它随 map 的键走（`PropertyKey` 的 `DisplayText`），与属性面板同一套。**`DefaultValue = double.NaN` ⇒ 分段轨**（无默认基线、段间断开，如 pitch 类、bend）；实数 ⇒ 连续轨（处处有值、有基线，如 growl）。回显轨恒为分段形（`DefaultValue = NaN`）。
+- **读值**：合成时从 `VoiceSynthesisNoteSnapshot.Properties`（`PropertyObject` 值拷）读，用 `GetDouble(key, default)` / `GetBoolean` / `GetString`（完整规则见下文「属性值的语义」）。**稀疏存储**——只有用户改过的字段才在里面；读不到就用你声明的默认值（`PropertyObject` 的 `Get*` 第二参数就是 fallback，传与声明一致的默认值即可）。
+- **`AutomationConfig`**：`DefaultValue` / `MinValue` / `MaxValue` / `Scale` / `Color`（如 `"#E5A573"`；不设即默认全透明 `"#00000000"`，由宿主从调色板挑一个不与其它轨撞色的颜色，结果确定；alpha 为 0 的颜色一律算不设） / `Randomizable`（默认值面板的滑条右侧加随机入口，宜用于连续轨）/ `MinLabel` / `MaxLabel` / `Format`，经 `AutomationConfig.Create(...)` 构造、流式 `WithColor` / `WithDefault` / `WithRandomizable` / `WithMinLabel` / `WithMaxLabel` / `WithFormat` 配置。**轨的显示名不在 config 上**——它随 map 的键走（`PropertyKey` 的 `DisplayText`），与属性面板同一套。**`DefaultValue = double.NaN` ⇒ 分段轨**（无默认基线、段间断开，如 pitch 类、bend）；实数 ⇒ 连续轨（处处有值、有基线，如 growl）。回显轨恒为分段形（`DefaultValue = NaN`）。
 - **值轴标度**：`AutomationConfig.Create(minValue, maxValue)` 是线性轴；`Create(INormalizedScale)` 重载可传自定义标度（与 `SliderConfig.Create` 对偶）——如 `NormalizedScale.Integer(min, max)` 让该轨成为整数轨，或自实现对数轴等。**离散标度 ⇒ 信号处处落格**：宿主不止在写入时吸附锚点，还在**求值与渲染**时把 Hermite 连续输出投影回标度（曲线呈阶梯、`Evaluate` 返回的最终值即落格），所以**引擎无需自行取整**、也覆盖 load/preset/回喂等一切编辑路径。连续标度下投影为恒等（仅有浮点往返的 ULP 级扰动，勿依赖值被逐位原样透传）。
   **标度定义的是值轴形状与格点，不是值域保证。**宿主**不**把求值结果钳进 `[MinValue, MaxValue]`——这个保证无法兑现：标度单调递增只是文档约定（`INormalizedScale` 是公共接口、`NormalizedScale.Custom` 收任意两个 lambda），非单调标度的端点不是极值，钳位既不保证落进引擎理解的范围、又会破坏合法值。所以越界值确实会到达 `Evaluate`——现实来源是改过量程后的旧工程、从别处带来的 preset、以及引擎自己回喂的值——请**在引擎侧按算法需要自行校验**（数组下标、查表参数、除数是最容易出事的几处）。宿主的**落笔**本身不越界（拖拽、锚点输入都钳在量程内），但值模型是**加性**的，所以正常使用也会出界：锚点存的是相对 `DefaultValue` 的偏移（用户事后改默认值滑条 ⇒ 整批锚点求值结果平移出界），vibrato 偏移也是加性叠到轨上（曲线贴近上界时让 vibrato 影响该轨 ⇒ 出界）。这两条是加性模型的刻意设计，不是缺陷。参数面板绘制裁剪到面板内，故越界锚点呈现为贴边。
 - **二值区间轨（band / 开关色带）**：要一条"开/关区间"的轨（如气声开关、段落静音），声明**分段轨 + 退化量程**即可——`AutomationConfig.Create(v, v)`（`Create` 默认 `DefaultValue=NaN` ⇒ 分段；`min==max` ⇒ 无值轴）。宿主识别此形态后渲染为**满高开关色带**（有段=开区间高亮、gap=关空白）而非折线，交互变为横拖涂开 / 右键横拖涂关（忽略纵向，无高度概念）。消费侧判定就是段的存在性：`!double.IsNaN(evaluator.Evaluate(t)[i])` 即"开"，段内数值不参与、不必读。区间边界 = 段锚点跨度、由用户精确拖出。
@@ -461,6 +462,54 @@ public ObjectConfig GetNotePropertyConfig(IVoiceSynthesisNotePropertyContext con
 - 结果没变就别调——虽然宿主会合拍，不调最省。
 
 参考实现：`tests/plugins/V1.Voice` 的 `LyricAnalysis`（歌词以声调数字结尾如 `ma3`，约 0.6 秒后 note 面板出现 Tone Depth、part 面板出现 Tone Strength）。
+
+#### 属性值的语义（所有面板通用）
+
+本节适用于所有声明面板的地方：part / note / 音素属性、instrument、effect 参数、扩展设置。插件最常踩的坑都在这里，写面板前请通读；后面各控件的说明只讲各自特有的部分。
+
+- **默认值就是"未设"，也定了字段的类型。** 用户没改过的字段不在数据里（稀疏存储），读不到就是默认值，不需要另找一个值（比如 `PropertyValue.Null`）当"未设"的哨兵。所以默认值必须是这个字段的一个真实值：用 `PropertyValue.Null` 或 `PropertyValue.Multiple` 作默认值，字段就永远存不进值——tag 在构造时直接报参数错误；下拉框没指定默认值、或指定的项不能选时，取第一个能选的选项。
+- **恢复默认 = 删掉这个键。** 标题行右键的「恢复默认」删掉存值，此后读到的就是默认值。别让含义依赖"存没存过"：设成与默认相同的值，和没设过，读出来是一样的。
+- **存值的类型与默认值不同时，按默认值处理。** 滑条、数字框只认数，复选框只认布尔，文本框、路径只认字符串，tag、列表只认数组，对象容器只认对象。例外是下拉框：选项值可以混用类型，存什么读什么，不在选项里的值原样保留、显示为琥珀色。这条是宿主对非法数据的兜底，**不能拿来做迁移**（见下一节「字段形状演进」）。
+- **读值用对 API。** 读快照或声明 context 里的 `PropertyObject`：
+  - 数值用 `GetDouble(key, 默认值)`，布尔用 `GetBoolean`，字符串用 `GetString`。别写 `GetValue(key, 0)`：`0` 让泛型推断成 `int`，SDK 1.1 及以前的宿主上它恒返回默认值。
+  - 形状不定的值（数组、对象）按原值取：`props.Map.TryGetValue(key, out var value)`。`GetValue(key, PropertyValue.Null)` 在老宿主上同样恒返回默认值。
+  - 读到的值一律校验：撤销、preset、粘贴、旧版本的插件都可能带来任意形状。
+- **多选。** 声明时 context 给的是每个选中对象各自的值，要合并就自己 `.Merge()`（同键全等给该值，不等或部分缺给 `Multiple`）。面板上的显示：标量按整值比较，不一致就显示为多值；列表按下标逐个合并；tag 显示并集。编辑时把同一个值写给全部对象（列表、tag 按元素扇出）。
+- **`Multiple` 只是多选读出时"各对象不一致"的标记，不是值。** 不能作默认值，也不能写回——宿主拒绝写入。没改值就别提交。
+- **闭包、重建与字段形状演进**：见下一节。
+
+#### 声明里的闭包与字段演进（所有面板通用）
+
+本节适用于所有声明面板的地方：part / note / 音素属性、instrument、effect 参数、扩展设置。
+
+**闭包只捕获值。** 声明返回的 config 里可以带函数，如按钮的点击回调（§9）。它在声明调用结束之后才执行，而声明 context 与视图只在调用期间有效。需要什么——PartId、note Id、音素符号、同级字段已填的值——就在 `GetXxxConfig` 里先取出来，让闭包捕获这些值，不要捕获 context 或视图对象本身。
+
+```csharp
+public ObjectConfig GetNotePropertyConfig(IVoiceSynthesisNotePropertyContext context)
+{
+    var props = BaseNoteProperties();
+    // 单选时才给"重新分析"：多选没有"一个"音符可对应
+    if (context.Notes.Count == 1)
+    {
+        string partId = context.Part.PartId, noteId = context.Notes[0].Id;   // 取出值再捕获
+        props.Add(("reanalyze", "声调"), ButtonConfig.Create("重新分析", _ => ReanalyzeAsync(partId, noteId)));
+    }
+    return ObjectConfig.Create(props);
+}
+```
+
+**依赖 context 的现建，其余照样缓存。** 宿主既不要求 config 共用，也不要求现建。依赖 context 的 config（如上面的按钮）在每次声明时现建——闭包很便宜；不依赖 context 的照样可以缓存共用。
+
+**外部数据变了，让宿主重新声明。** 闭包只活一次声明。用户改值、选中变化时宿主会自己重新声明；你自己算出的数据变了（如解析出的声调、合成后缓存的分析结果），调用 `InvalidatePart` / `InvalidateNotes`（上一节），宿主重新调用声明函数，闭包随之换成新值。
+
+**字段形状演进：用新键。** 新版插件改了某个字段的值形状（比如从对象改成数组，或对象里换了字段），用户工程里仍是旧形状的值。宿主不解读形状，只有你知道旧值是什么意思，兼容由你负责：
+
+- **新形状放在新键上**，不要在旧键上直接换形状。宿主对类型不符的存值只做兜底——按缺省处理、显示声明的默认值——这是对非法数据的容错，判据是数据类型：新旧形状若只是对象里的字段不同、类型相同，它根本察觉不到。不要依赖它做迁移。
+- `GetXxxConfig` 读得到当前值（各视图的 `Properties` 快照）。检测到旧键里有旧形状的值时，二选一：
+  - 在旧键上继续返回旧形状的 config（可以只在它还有内容时显示、只删不加），合成时按旧逻辑读取它；
+  - 或者把旧值转换成新形状，作为新键 config 的**默认值**返回：用户看到的就是转换后的值，一编辑就以新形状存在新键上。合成时有新键用新键，否则按同一套逻辑转换旧键。
+- **多选**：默认值是这一次声明共用的。所选对象的旧值转换结果不一致时，没有一个默认值能同时代表它们，这时返回原本的默认值。
+- **为什么原键换形状在新旧类型相同时一定出错**：面板编辑是在当前显示的值上改、再整体写回（比如 tag 加一项，是把"显示的那组 + 新项"写回去）。新旧形状类型相同时，宿主照原样显示旧值，用户一编辑就在旧值上继续改，你在默认值里给的转换结果根本不会出现。
 
 ### 5.3 输入活视图 `IVoiceSynthesisContext` 与 `IVoiceSynthesisNote`
 
@@ -1034,7 +1083,7 @@ public ObjectConfig GetSettingsConfig(IExtensionSettingsContext context)
 ```
 
 - **按钮没有值**：它不读写任何属性，恢复默认、preset、设置落盘都跳过它，CLI / agent 也设不了它。**按钮不改工程数据**——它只动你自己的状态（缓存、连接、模型……）。
-- **闭包只捕获值**：声明 context 和视图只在声明调用期间有效，点击可能发生在几分钟以后。需要 PartId、note Id、已填的值，就在 `GetXxxConfig` 里先取出来再让闭包捕获。设置页的 `context.Settings` 是窗口里**当前填写的值（含尚未保存的）**，所以"测试连接"能直接用用户刚输入的密钥。
+- **闭包只捕获值**（§5.2「声明里的闭包与字段演进」）：点击可能发生在几分钟以后，声明 context 和视图早已失效。设置页的 `context.Settings` 是窗口里**当前填写的值（含尚未保存的）**，所以"测试连接"能直接用用户刚输入的密钥。
 - **线程**：`OnClick` 在主线程上调用，与 `Init`、`CreateSession`、声明函数、会话事件同一条线程；`await` 之后默认也回到主线程（除非你写了 `ConfigureAwait(false)`）。所以只在主线程上访问的资源，按钮里用不着加锁。
 - **`await` 是交错点**：主线程在 `await` 期间会去处理别的事，宿主可能这时调用你的其他方法（合成调度、声明函数、会话事件）。要注意的不是多线程，而是**状态跨越 `await` 时是否一致**——比如清缓存清到一半 `await`，合成调度可能正好来读缓存：要么让清理一步完成、中间不 `await`，要么保证 `await` 前后状态都可用。你自己开的后台线程（如合成 worker）的并发安全照旧由你负责。
 - **别阻塞主线程**：宿主拦不住，后果由你承担（界面卡住、系统报"未响应"）。瞬间完成的操作直接同步执行就行；耗时的要 `await`，或放进 `RunWithProgress`（§9.2）。同步等待弹窗结果（`.Result` / `.Wait()`）会死锁。
@@ -1044,23 +1093,23 @@ public ObjectConfig GetSettingsConfig(IExtensionSettingsContext context)
 - **位置**：只能作为 `ObjectConfig` 的成员（任意嵌套深度，含列表元素里的对象）。直接当 `ArrayConfig` / `ListConfig` 的元素或 `ExtensibleObjectConfig` 的可加键时不支持——那些位置每一格都是一个值。
 - **两种形态，都占一行**：有标题时（键的显示名；不给显示名则用 id）按钮在标题右侧；键的显示名**显式给空字符串**——`("run", "")`——则不显示标题、按钮铺满整行，适合按钮文字本身就说明一切的操作。除此之外没有布局属性；按钮不可收起（它没有值）。
 
-### 9.2 点击期间的弹窗服务（`click.Dialogs`）
+### 9.2 点击期间的弹窗服务（`click.DialogService`）
 
-**弹窗只能在按钮点击期间弹**，入口只有回调参数 `click.Dialogs`：
+**弹窗只能在按钮点击期间弹**，入口只有回调参数 `click.DialogService`：
 
 ```csharp
 static async Task ClearCacheAsync(IButtonClickContext click)
 {
-    if (!await click.Dialogs.Confirm("清理缓存", "删除全部缓存文件？")) return;
-    await click.Dialogs.RunWithProgress("正在清理…", async (progress, cancel) =>
+    if (!await click.DialogService.Confirm("清理缓存", "删除全部缓存文件？")) return;
+    await click.DialogService.RunWithProgress("正在清理…", async (progress, cancel) =>
     {
         for (int i = 1; i <= n; i++) { cancel.ThrowIfCancellationRequested(); /* … */ progress.Report((double)i / n, $"第 {i} / {n} 个文件"); }
     });
-    await click.Dialogs.ShowMessage("清理缓存", "完成。");
+    await click.DialogService.ShowMessage("清理缓存", "完成。");
 }
 
 // 点了按钮后要用户填几个参数：返回完整的值（没改的字段为默认值），取消返回 null
-var inputs = await click.Dialogs.PromptInputs("导出预设", ObjectConfig.Create(new OrderedMap<PropertyKey, IControllerConfig>
+var inputs = await click.DialogService.PromptInputs("导出预设", ObjectConfig.Create(new OrderedMap<PropertyKey, IControllerConfig>
 {
     { ("name", "预设名"), TextBoxConfig.Create(lastName) },          // 初始值写在默认值里
     { ("quality", "质量"), SliderConfig.Integer(5, 0, 10) },
@@ -1068,10 +1117,10 @@ var inputs = await click.Dialogs.PromptInputs("导出预设", ObjectConfig.Creat
 ```
 
 - 宿主按自身风格画出来：主题一致，确定 / 取消等按钮文字由宿主翻译，标题和正文由你自译；弹窗以**按钮所在的窗口**为父窗口模态显示，并标明来源插件。
-- **有效期**：从回调开始到它返回的 Task 完成。把 `click.Dialogs` 存起来、事后再用会抛 `InvalidOperationException`。
+- **有效期**：从回调开始到它返回的 Task 完成。把 `click.DialogService` 存起来、事后再用会抛 `InvalidOperationException`。
 - 任意线程可调。**不要同步阻塞等待**返回的 Task（`.Result` / `.Wait()`）——弹窗要用 UI 线程，在 UI 线程上阻塞即死锁。
 - `RunWithProgress`：进度窗从 0% 开始；`Report(fraction, status)` 的 `fraction` 为 `null` 时显示不确定进度（滚动条），`status` 是进度条下方的一行文字（自译），省略或传 `null` 表示保持上一次的文字（想清空传 `""`）；`fraction` 没有"保持不变"的写法，只更新文字时要传入当前进度；`progress.SetCancellable(false)` 让取消按钮在不能打断的关键段（替换文件、写索引……）里变灰，出关键段再置回 `true`（默认可取消；应用退出时 token 照样取消，关键段仍须能应对进程被结束）；`Report` 可任意线程、高频调用（宿主按帧合并）；进度窗恒带取消按钮，用户取消或应用退出时 token 取消；`work` 抛出的异常原样传回给你。
-- `PromptInputs`：用和属性面板同一套控件渲染你的 config（与脚本工具的 inputs 是同一个表单窗）；表单数据与工程隔离、不进撤销。
+- `PromptInputs`：用和属性面板同一套控件渲染你的 config（与脚本工具的 inputs 是同一个表单窗）；表单数据与工程隔离、不进撤销。表单要随填写的值变化（某项选了 X 才出现别的字段）时，传一个函数而不是固定的 config：`PromptInputs(title, values => BuildForm(values))`——和属性面板一样，值一变就以表单当前的值重新调用它；`values` 只含用户改过的字段，读不到即默认值。
 
 ### 9.3 插件自己的设置界面
 

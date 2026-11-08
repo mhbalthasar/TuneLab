@@ -289,7 +289,7 @@ internal sealed class PluginHost : IBridgePluginHost
 
     // 处理宿主要求的一块。输入从共享环取，处理完把结果发到另一个共享环。
     // 返回 false = 这一块没处理成功（宿主会记日志 / 决定是否旁通）。
-    public bool Process(int slotNumber, bool bypass, out int frames, out int channels)
+    public bool Process(int slotNumber, bool bypass, int tag, out int frames, out int channels)
     {
         frames = 0;
         channels = 0;
@@ -298,7 +298,9 @@ internal sealed class PluginHost : IBridgePluginHost
             return false;
 
         // 入场券：宿主要求处理时，输入环里**已经有**一块在等我们。
-        if (mIn == null || !mIn.TryRead(0, out _, out var inPlanes, out int ch, out int fr))
+        // 只认 tag 对得上的那块；上一次超时留下的过期块直接丢掉（否则会把
+        // 别的插入的输入当成自己的，链上两条插入会互相喂上一块输出 = 啸叫）。
+        if (mIn == null || !mIn.TryReadMatching(tag, 0, out _, out var inPlanes, out int ch, out int fr))
             return false;
 
         frames = fr;
@@ -309,7 +311,7 @@ internal sealed class PluginHost : IBridgePluginHost
             if (bypass)
             {
                 // 直通：输入原样发回去。宿主要的是"旁通时声音不变"。
-                mOut?.TryPublish(slotNumber, inPlanes, ch, fr, 1000);
+                mOut?.TryPublish(slotNumber, inPlanes, ch, fr, 1000, tag);
                 return true;
             }
 
@@ -341,7 +343,7 @@ internal sealed class PluginHost : IBridgePluginHost
                 slot.PublishPlanes[c] = slot.OutPlanes[Math.Min(c, slot.OutPlanes.Length - 1)];
 
             // 插件失败也**不能**输出静音：直通原样，用户至少还听得见原来的东西。
-            mOut?.TryPublish(slotNumber, ok ? slot.PublishPlanes : inPlanes, ch, fr, 1000);
+            mOut?.TryPublish(slotNumber, ok ? slot.PublishPlanes : inPlanes, ch, fr, 1000, tag);
             return ok;
         }
         catch (Exception)

@@ -1734,7 +1734,7 @@ internal sealed class AgentSideBarContentProvider
                 Margin = new(0, 0, 16, 0), // 与右侧 Copy 留间距：短回复气泡窄时两者会贴到一起
             };
             ToolTip.SetTip(tokens, multi
-                ? string.Format("Total of {0} model calls this turn (tool round-trips repeat the prefix)\nInput {1:N0} · Output {2:N0}\nLast call context ~{3:N0} tokens".Tr(this),
+                ? string.Format("Total of {0} model calls this turn\nInput {1:N0} · Output {2:N0}\nLast call context ~{3:N0} tokens".Tr(this),
                     modelCalls, usage.PromptTokens, usage.CompletionTokens, lastContextTokens)
                 : string.Format("Input {0:N0} · Output {1:N0}".Tr(this), usage.PromptTokens, usage.CompletionTokens));
             DockPanel.SetDock(tokens, Dock.Left);
@@ -2225,6 +2225,7 @@ internal sealed class AgentSideBarContentProvider
             MaxHeight = 96,
             Padding = new(6, 6, ScrollBar.ReservedThickness, 6),
             AutoGrow = true,
+            EnterCommits = false,   // Enter 由下面的提交处理器接管
             VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
             Margin = new(0, 8, 0, 0),
             Watermark = question.Options.Count > 0
@@ -2282,6 +2283,16 @@ internal sealed class AgentSideBarContentProvider
         submitButton.PointerExited += (_, _) => SyncSubmitState();
         submitButton.PointerPressed += (_, e) => { e.Handled = true; Submit(); };
         buttons.Children.Add(submitButton);
+        // Enter 提交答案、Shift+Enter 换行（同主输入框的发送）。隧道阶段：赶在编辑器插入换行之前拦下；
+        // 还不能提交（没选也没写）时 Enter 什么都不做，不落成一个换行。
+        input.AddHandler(InputElement.KeyDownEvent, (EventHandler<KeyEventArgs>)((_, e) =>
+        {
+            if (e.Key == Key.Enter && e.KeyModifiers == KeyModifiers.None)
+            {
+                e.Handled = true;
+                Submit();
+            }
+        }), Avalonia.Interactivity.RoutingStrategies.Tunnel);
         // 把按钮态并入 refreshers：Refresh() 因此是"重刷全部显示"的唯一入口——选项一变（Toggle_ 里调它）
         // 按钮可用态跟着重算，不必另铺一条刷新路径。文本框改动同样触发它（只选/只写/两者都有都算有内容）。
         refreshers.Add(SyncSubmitState);
@@ -2744,7 +2755,8 @@ internal sealed class AgentSideBarContentProvider
         return button;
     }
 
-    const string SystemPrompt =
+    // 只写行为约束，不写"你能 / 不能做 X"：能力由工具列表自省给出（AgentGuidanceTextTests 守着）。
+    internal const string SystemPrompt =
         "You are an assistant embedded in TuneLab, a singing voice synthesis editor. " +
         "You operate the project almost entirely by writing small JavaScript programs through the run_script tool (the `tl` object API): one script reads, computes and edits in a single step and runs as ONE undoable change. " +
         "Only act on the project when the user explicitly asks you to inspect or modify it; for greetings, small talk or non-requests, reply briefly in natural language and call no tool. " +
@@ -2761,10 +2773,10 @@ internal sealed class AgentSideBarContentProvider
         "When the user wants a REUSABLE feature they can run again from a menu (\"add a menu item that …\", \"make me a tool to …\"), or a one-off they would clearly want repeatedly, author a script tool — define getScriptInfo() + main() (see get_script_api) — and save it with save_script; it registers into the matching menu (top Scripts, or the note / part / piano-blank right-click) for one-click reuse. Use list_scripts / read_script / delete_script to manage them. " +
         "If they also want a keyboard shortcut for it — or for any action — call list_keybindings to find a free gesture, then set_keybinding; a saved script's action id is \"script:<its id>\". " +
         "For questions about TuneLab's own settings (\"where do I change …\", \"how do I set …\"), call list_settings and tell the user the Settings page and row label in their language; call set_setting only when they want YOU to change it for them. " +
-        // 导出：两条最容易误导用户的边界写死在提示里——①导出不是保存（说错会让用户以为工程已存盘）；②音频导出是人在环
-        // 决定（渲染要锁界面几分钟），agent 不代按，只把用户领到导出面板。
+        // 导出：两条最容易误导用户的边界写死在提示里——①导出不是保存（说错会让用户以为工程已存盘）；②音频导出要先
+        // 合成全曲、期间锁界面几分钟，故先告诉用户再调（授权卡片上也会写，但用户不该被突然锁住）。
         "To write the project out to a file (project/MIDI formats) use export_project — but it exports a COPY: never tell the user you \"saved\" their project, since their save file and unsaved changes are untouched. " +
-        "You CANNOT export audio (wav/mp3/flac/ogg): rendering locks the UI for as long as it takes, so that call is the user's to make — point them at the Export side panel and, if useful, get the settings ready first instead of trying to do it yourself. " +
+        "To render audio (wav/mp3/flac/ogg) use export_audio — it first synthesizes the whole project, which can take minutes and locks the user's window meanwhile, so tell them before you call it. " +
         "When a plugin \"doesn't work\", diagnose in this order and do NOT stop at the first step: list_extensions (load status + error + whether one of its identities is SHADOWED by another package — loaded is not the same as used), then list_extension_routing if anything is contested, then list_sound_sources / list_effects to confirm the capability itself is there. " +
         "Earlier tool results are stale snapshots (the user or your own edits may have changed things); re-read with get_project_overview or a script before relying on current counts or values.";
 
@@ -2773,7 +2785,7 @@ internal sealed class AgentSideBarContentProvider
     readonly DockPanel mSettingsView = new() { LastChildFill = true };
     // 可见会话的消息滚动区挂载点：切换会话只换其 Child 为目标会话各自的 ListView（离屏会话的视图被其 SessionContext 持有、不销毁）。
     readonly Panel mMessagesHost = new();
-    readonly MultilineTextInput mInput = new();
+    readonly MultilineTextInput mInput = new() { EnterCommits = false };   // Enter 由发送处理器接管（见构造处）
     // token 用量状态行（输入框上方）：显示当前会话的累计 + 上下文占用，随会话切换/每轮刷新（见 RefreshTokenStatus）。
     readonly TextBlock mTokenStatus = new();
     // 图片附件：待发缩略图条 + 待发图片列表（属"当前撰写"状态、与输入框共享、跨会话切换保留）+ 📎按钮。

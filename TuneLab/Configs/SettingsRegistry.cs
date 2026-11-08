@@ -113,7 +113,9 @@ internal static class SettingsRegistry
         "Audio Device", ComboBoxConfig.Create(), D.AudioDevice, dynamicOptions: () => AudioEngine.GetAllDevices().Select(o => (ComboBoxItem)o).ToList());
     public static readonly SettingItem<int> SampleRate = Int("SampleRate", SettingTab.Audio,
         "Sample Rate", IntCombo(D.SampleRate, 32000, 44100, 48000, 96000, 192000), D.SampleRate);
-    public static readonly SettingItem<int> BufferSize = Int("BufferSize", SettingTab.Audio,
+    // [EP-MIXER-30] 采样数形式的缓冲只保留读写（旧 settings.json 里还有这个键），不再在设置窗渲染：
+    // 用户可见的入口是补丁的插件扫描页「效果器插件缓冲时间」（毫秒，存在 insert-plugins.json）。
+    public static readonly SettingItem<int> BufferSize = Int("BufferSize", null,
         "Buffer Size", IntCombo(D.BufferSize, 64, 128, 256, 512, 1024, 2048, 4096, 8192), D.BufferSize);
     public static readonly SettingItem<string> PianoKeySamplesPath = Str("PianoKeySamplesPath", SettingTab.Audio,
         "Piano Key Samples", TextBoxConfig.Create(), D.PianoKeySamplesPath, patterns: ["*.sf2"], pickerName: "SoundFont");

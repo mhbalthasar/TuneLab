@@ -16,6 +16,9 @@ internal class AudioPart : Part, IAudioPart
     public INotifiableProperty<AudioPartStatus> Status { get; } = new NotifiableProperty<AudioPartStatus>(AudioPartStatus.Unlinked);
     public IActionEvent AudioChanged => mAudioChanged;
     public INotifiableProperty<string> BaseDirectory { get; } = new NotifiableProperty<string>(string.Empty);
+    // [EP-MIXER-32] 崩溃恢复的兜底基准目录（自动保存工程里的 basehref）。默认基准（BaseDirectory）找不到
+    // 文件时，再按这个目录解析一次相对路径；老工程为空 = 不启用兜底。
+    public INotifiableProperty<string> BaseHref { get; } = new NotifiableProperty<string>(string.Empty);
     public override DataString Name { get; }
     public override DataStruct<double> Pos { get; }
     public override DataStruct<double> StartOffset { get; }
@@ -37,6 +40,11 @@ internal class AudioPart : Part, IAudioPart
         { 
             if (Path.Value.StartsWith("..")) 
                 Reload(); 
+        });
+        BaseHref.Modified.Subscribe(() =>
+        {
+            if (Path.Value.StartsWith(".."))
+                Reload();
         });
         SetInfo(info);
     }
@@ -125,15 +133,29 @@ internal class AudioPart : Part, IAudioPart
             // Reload) before BaseDirectory is assigned. Resolving now would combine against an
             // empty base and probe the wrong location, throwing FileNotFoundException. Defer:
             // assigning BaseDirectory re-triggers Reload for relative paths.
-            if (string.IsNullOrEmpty(BaseDirectory.Value))
+            //
+            // 崩溃恢复兜底：自动保存文件在 %APPDATA% 下，默认基准是自动保存目录；
+            // 工程里带的 basehref（原工程目录）才是音频文件真正所在。先按默认基准解析，
+            // 文件不存在时再按 basehref 试一次；两者都没有才降级为 Unlinked。
+            string? resolved = null;
+
+            if (!string.IsNullOrEmpty(BaseDirectory.Value))
+                resolved = ExperimentalPatchAudioPartPath.FromStored(path, BaseDirectory.Value);
+
+            if ((resolved == null || !File.Exists(resolved)) && !string.IsNullOrEmpty(BaseHref.Value))
+            {
+                string fallback = ExperimentalPatchAudioPartPath.FromStored(path, BaseHref.Value);
+                if (File.Exists(fallback))
+                    resolved = fallback;
+            }
+
+            if (resolved == null)
             {
                 Status.Value = AudioPartStatus.Unlinked;
                 return;
             }
 
-            // [EP-MIXER-18] 统一交给 Patcher：它同时容忍老文件那种少了分隔符的
-            // ..Insts\…（见 ExperimentalPatchAudioPartPath 的注释）。
-            path = ExperimentalPatchAudioPartPath.FromStored(path, BaseDirectory.Value);
+            path = resolved;
         }
         int samplingRate = AudioEngine.SampleRate.Value;
 

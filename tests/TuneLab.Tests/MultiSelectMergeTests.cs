@@ -257,4 +257,61 @@ public class MultiSelectMergeTests
         Assert.True(b.GetInfo().Map["ph"].ToArray(out var bArr) && bArr[0].ToObject(out var bObj)
             && bObj.GetString("sym") == "a");
     }
+
+    // ===== Multiple 不入存储：它只是多选读出时"各对象不一致"的标记，写入一律拒绝 =====
+
+    [Fact]
+    public void Storage_RejectsMultiple_TopLevelAndNested()
+    {
+        var note = NoteWith("ph", Arr(1.0, 2.0));
+
+        Assert.Throws<System.ArgumentException>(() => note.SetValue("x", PropertyValue.Multiple));
+        Assert.Throws<System.ArgumentException>(() => note.SetValue("ph", Arr(1.0, PropertyValue.Multiple)));
+        Assert.Throws<System.ArgumentException>(() => note.SetValue("o", Obj(("k", PropertyValue.Multiple))));
+        Assert.False(note.GetInfo().Map.ContainsKey("x"));
+    }
+
+    // 多选：动手前就拒绝——把多选读出的当前值（Multiple）原样写回，不能抹掉各成员自己的值。
+    [Fact]
+    public void MultiSelect_WritingBackMultiple_IsRejectedAndMembersKeepTheirValues()
+    {
+        var a = NoteWith("ph", Arr(1.0, 2.0));
+        var b = NoteWith("ph", Arr(3.0));
+        var merged = new MultipleDataPropertyObject([a, b]);
+
+        var current = merged.GetValue("ph", PropertyValue.Create(new PropertyArray([])));
+        Assert.True(current.IsMultiple());
+        Assert.Throws<System.ArgumentException>(() => merged.SetValue("ph", current));
+
+        Assert.Equal(Arr(1.0, 2.0), a.GetInfo().Map["ph"]);
+        Assert.Equal(Arr(3.0), b.GetInfo().Map["ph"]);
+    }
+
+    // ===== 按原值读（RawValueField）：不按默认值的类型过滤，给选项可为任意类型的 ComboBox 用 =====
+
+    [Fact]
+    public void RawValueField_ReadsAnyStoredType_AbsentIsDefault()
+    {
+        var note = new DataPropertyObject();
+        var field = note.RawValueField("pick", PropertyValue.Create(1.0));
+        Assert.Equal(PropertyValue.Create(1.0), field.Value);                    // 缺席 = 默认
+
+        note.SetValue("pick", "text");                                           // 与默认不同类型的合法选项
+        Assert.Equal(PropertyValue.Create("text"), field.Value);
+        Assert.Equal(PropertyValue.Create(1.0), note.GetValue("pick", PropertyValue.Create(1.0)));   // 对照：类型门把它换成默认
+    }
+
+    [Fact]
+    public void RawValueField_MultiSelect_EqualIsValue_DifferentIsMultiple()
+    {
+        var a = new DataPropertyObject();
+        var b = new DataPropertyObject();
+        a.SetValue("pick", "x");
+        b.SetValue("pick", "x");
+        var merged = new MultipleDataPropertyObject([a, b]);
+        Assert.Equal(PropertyValue.Create("x"), ((IRawValueProperty)merged.RawValueField("pick", PropertyValue.Create(0.0))).RawValue);
+
+        b.SetValue("pick", 2.0);
+        Assert.True(((IRawValueProperty)merged.RawValueField("pick", PropertyValue.Create(0.0))).RawValue.IsMultiple());
+    }
 }

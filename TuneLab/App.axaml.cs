@@ -108,7 +108,9 @@ public partial class App : Application
             // init audio engine
             AudioUtils.Init(new NAudioCodec());
             AudioEngine.SampleRate.Value = Settings.SampleRate;
-            AudioEngine.BufferSize.Value = Settings.BufferSize;
+            // 效果器插件缓冲时间由补丁设置（insert-plugins.json）决定，默认 50 ms。
+            // 宿主只经补丁层的接缝应用，不再把补丁专用项写进 settings.json。
+            ExperimentalPatchBootstrap.ApplyInsertBuffer();
             if (!string.IsNullOrEmpty(Settings.AudioDriver)) AudioEngine.CurrentDriver.Value = Settings.AudioDriver;
             if (!string.IsNullOrEmpty(Settings.AudioDevice)) AudioEngine.CurrentDevice.Value = Settings.AudioDevice;
             AudioEngine.Init();
@@ -116,8 +118,13 @@ public partial class App : Application
             AudioEngine.MasterGain = Settings.MasterGain;
             Settings.PianoKeySamplesPath.Modified.Subscribe(() => AudioEngine.LoadKeySamples(Settings.PianoKeySamplesPath));
             Settings.MasterGain.Modified.Subscribe(() => { AudioEngine.MasterGain = Settings.MasterGain; });
-            Settings.BufferSize.Modified.Subscribe(() => { AudioEngine.BufferSize.Value = Settings.BufferSize; });
-            Settings.SampleRate.Modified.Subscribe(() => { AudioEngine.SampleRate.Value = Settings.SampleRate; });
+            ExperimentalPatchBootstrap.InsertBufferMsChanged += _ => ExperimentalPatchBootstrap.ApplyInsertBuffer();
+            Settings.SampleRate.Modified.Subscribe(() =>
+            {
+                AudioEngine.SampleRate.Value = Settings.SampleRate;
+                // 采样率变了，同一个毫秒数对应的帧数也变了：重算一次，保持"缓冲时间"不变。
+                ExperimentalPatchBootstrap.ApplyInsertBuffer();
+            });
             Settings.AudioDriver.Modified.Subscribe(() => { AudioEngine.CurrentDriver.Value = Settings.AudioDriver; });
             Settings.AudioDevice.Modified.Subscribe(() => { AudioEngine.CurrentDevice.Value = Settings.AudioDevice; });
 

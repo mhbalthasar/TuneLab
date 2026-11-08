@@ -162,27 +162,35 @@ internal static class MixerPersistence
             return;
         }
 
-        project.BeginMergeNotify();
-        try
+        // [EP-MIXER-29] 套用载荷会逐条改 output / send / 插入，每一条都会经混音台模型请求重建图；
+        // EndMergeNotify 里攒下的通知更是成批喷出来。一次装载能连着编几十遍图，每遍都要把
+        // 插件过一遍桥 —— 打开工程卡、播放抖、日志刷同一条 unavailable，根子都在这里。
+        // 用作用域把中间的重建全部攒着，离开作用域时编一次（Dispose 里做，见 AudioGraph）。
+        using (AudioEngine.SuspendMixerGraphRebuild())
         {
-            ApplyPayload(project, payload);
-        }
-        catch (Exception ex)
-        {
-            HostLog.Error("mixer: failed to apply routing payload: " + ex);
-        }
-        finally
-        {
-            project.EndMergeNotify();
-            project.Commit();
+            project.BeginMergeNotify();
+            try
+            {
+                ApplyPayload(project, payload);
+            }
+            catch (Exception ex)
+            {
+                HostLog.Error("mixer: failed to apply routing payload: " + ex);
+            }
+            finally
+            {
+                project.EndMergeNotify();
+                project.Commit();
+            }
         }
 
-        // 【必须重建图】装载发生在 `mDocument.SetProject` **之后**：那一刻 AudioGraph 已经
-        // 用"没有插入"的工程编过一次图，之后 ApplyPayload 才把插入槽位塞进来。
-        // 而插入不是"加轨/改路由"那类会自己触发重建的事件（成员变化挂在混音台模型上，
-        // 而模型是懒创建的，此时可能还没订阅）。不补这一下，槽位要等下一次结构变化
-        // 才进链 —— 用户看到的就是"插件的「界面」键全是灰的，加一个新插件之后才全变正常"。
-        AudioEngine.RebuildMixerGraph();
+        // 【为什么作用域退出时那次重建是必须的】装载发生在 `mDocument.SetProject` **之后**：
+        // 那一刻 AudioGraph 已经用"没有插入"的工程编过一次图，之后 ApplyPayload 才把插入槽位
+        // 塞进来。而插入不是"加轨/改路由"那类会自己触发重建的事件（成员变化挂在混音台模型上，
+        // 而模型是懒创建的，此时可能还没订阅）。不补这一下，槽位要等下一次结构变化才进链 ——
+        // 用户看到的就是"插件的「界面」键全是灰的，加一个新插件之后才全变正常"。
+        // 这一补由最外层作用域的 Dispose 无条件做掉（见 AudioGraph.RebuildSuspension），
+        // 所以这里不能再跟一次 RebuildMixerGraph，否则装载时白编两遍图。
     }
 
     static void ApplyPayload(Project project, Payload payload)

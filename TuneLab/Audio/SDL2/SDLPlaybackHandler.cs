@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using SDL2;
+using TuneLab.Foundation;
 
 namespace TuneLab.Audio.SDL2;
 
@@ -186,9 +187,11 @@ internal class SDLPlaybackHandler : IAudioPlaybackHandler
                     DevicesChanged?.Invoke(); //
                 }, null);
             };
-            // 转发事件：当前缓冲区被播放
-            _d.onSamplesConsumed = val =>
+            // [EP-MIXER-31] 转发事件：当前缓冲区被播放
+            _d.onSamplesConsumed = playedFrames =>
             {
+                // 在音频回调线程上更新"听到的位置"（不碰 UI）。
+                _audioProvider.OnSamplesConsumed(playedFrames);
                 context.Post(_ =>
                 {
                     if (IsPlaying)
@@ -200,6 +203,22 @@ internal class SDLPlaybackHandler : IAudioPlaybackHandler
             // 填充缓冲区
             _d.onBufferEnd = (buffer, offset, count) =>
             {
+                // [EP-MIXER-31] 音频优先：这段跑在 SDL 的音频回调线程上。第一次进来就把它抬到
+                // Highest（进程本身在 AudioEngine.Init 里已抬到 High）。设备重启会
+                // 换线程，所以按线程 id 判一次；受限账户上设置失败不影响出声。
+                int threadId = Environment.CurrentManagedThreadId;
+                try
+                {
+                    // 线程 id 可能被运行时复用（设备重启后新线程拿到旧 id），
+                    // 所以除了 id 还核对一次当前优先级。
+                    if (sBoostedAudioThreadId != threadId || Thread.CurrentThread.Priority != ThreadPriority.Highest)
+                    {
+                        sBoostedAudioThreadId = threadId;
+                        Thread.CurrentThread.Priority = ThreadPriority.Highest;
+                    }
+                }
+                catch (Exception) { }
+
                 int length = count / 2;
                 for (int i = offset; i < offset + count; i++)
                 {
@@ -299,6 +318,13 @@ internal class SDLPlaybackHandler : IAudioPlaybackHandler
         _d.Stop();
     }
 
+    // [EP-MIXER-31] 丢弃已填充但未播完的块（暂停/恢复/跳转）。必须让生产者重新填一块，
+    // 否则下一个回调看到空块只会输出静音，不会推 BUFFER_END。
+    public void Flush()
+    {
+        _d.Flush();
+    }
+
     // 获取所有音频设备
     public IReadOnlyList<string> GetAllDevices()
     {
@@ -308,9 +334,20 @@ internal class SDLPlaybackHandler : IAudioPlaybackHandler
         };
 
         int cnt = SDL.SDL_GetNumAudioDevices(0);
+        if (cnt <= 0)
+        {
+            // [EP-MIXER-31] 设备枚举为空时把驱动和 SDL 错误写进日志：用户看到的"只有 (Auto)"通常就是这里。
+            Log.Warning($"SDL: no output audio devices (driver='{_d.driver}', error='{SDL.SDL_GetError()}')");
+            return res;
+        }
+
         for (int i = 0; i < cnt; i++)
         {
-            res.Add(SDL.SDL_GetAudioDeviceName(i, 0));
+            var name = SDL.SDL_GetAudioDeviceName(i, 0);
+            if (string.IsNullOrEmpty(name))
+                continue;
+            if (!res.Contains(name))
+                res.Add(name);
         }
 
         return res;
@@ -349,6 +386,9 @@ internal class SDLPlaybackHandler : IAudioPlaybackHandler
             CurrentDevice = null;
         }
     }
+
+    // [EP-MIXER-31] 已抬过优先级的音频回调线程 id（设备重启会换线程，故不是 bool）。
+    static int sBoostedAudioThreadId;
 
     private bool _initialized = false;
     private CachedArguments _cachedArguments = new();

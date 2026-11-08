@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using TuneLab.Audio;
 using TuneLab.Data;
+using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.GUI;
 using TuneLab.GUI.Components;
 using TuneLab.GUI.Controllers;
@@ -143,6 +144,17 @@ internal class ExportSideBarContentProvider : ISideBarContentProvider
         mContentPanel.Children.Add(mTrackListPanel);
 
         AddSeparator();
+
+        // --- [EP-MIXER-34] 补丁贡献的导出选项 ---
+        // 宿主只画标题并挂载控件；开关本身与文案都在补丁层。
+        foreach (var option in ExperimentalPatchBootstrap.GetExportOptions())
+        {
+            AddSectionLabel(option.Title);
+            if (option.CreateContent() is Control control)
+                mContentPanel.Children.Add(control);
+            mExportOptions.Add(option);
+            AddSeparator();
+        }
 
         // --- Format ---
         AddSectionLabel("Format".Tr(TC.Dialog));
@@ -300,6 +312,8 @@ internal class ExportSideBarContentProvider : ISideBarContentProvider
                 mSampleRateDropDown.SelectedIndex = Array.IndexOf(SampleRates, 44100);
                 mBitDepthDropDown.SelectedIndex = Array.IndexOf(BitDepths, 16);
                 mBitrateDropDown.SelectedIndex = Array.IndexOf(Bitrates, 320);
+                foreach (var option in mExportOptions)
+                    option.Refresh();
                 UpdateFormatDependentVisibility();
                 return;
             }
@@ -325,6 +339,9 @@ internal class ExportSideBarContentProvider : ISideBarContentProvider
 
             var brIndex = Array.IndexOf(Bitrates, mProject.ExportBitrate);
             mBitrateDropDown.SelectedIndex = brIndex >= 0 ? brIndex : Array.IndexOf(Bitrates, 320);
+
+            foreach (var option in mExportOptions)
+                option.Refresh();
 
             UpdateFormatDependentVisibility();
         }
@@ -409,6 +426,7 @@ internal class ExportSideBarContentProvider : ISideBarContentProvider
             BitDepth = selectedBitDepth,
             Bitrate = selectedBitrate,
             RangeMode = mRangeDropDown.SelectedIndex == 1 ? ExportRangeMode.Selection : ExportRangeMode.WholeSong,
+            IncludeEffects = mProject?.ExportIncludeEffects ?? true,
         });
     }
 
@@ -576,6 +594,7 @@ internal class ExportSideBarContentProvider : ISideBarContentProvider
     readonly StackPanel mBitrateGroup;
     readonly StackPanel mTrackListPanel;
     readonly List<TrackItem> mTrackItems = new();
+    readonly List<ExportOptionsContribution> mExportOptions = [];
 
     ProjectDocument? mDocument;
     IProject? mProject;
@@ -611,4 +630,6 @@ internal class ExportOptions
     public required int BitDepth { get; init; } // 无损格式(WAV/FLAC)位深
     public required int Bitrate { get; init; }  // 有损格式(MP3/OGG)目标码率 kbps
     public required ExportRangeMode RangeMode { get; init; }
+    // 分轨导出是否经过轨道自己的插入链；Master 导出不受影响（它本来就经过完整混音图）。
+    public bool IncludeEffects { get; init; }
 }

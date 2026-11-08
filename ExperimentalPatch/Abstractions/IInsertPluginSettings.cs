@@ -50,6 +50,19 @@ public interface IInsertPluginSettings
 
     /// <summary>Vst3IsolationAvailable 为 false 时的短原因（英文，进日志与状态行）。</summary>
     string? Vst3IsolationUnavailableReason => null;
+
+    /// <summary>
+    /// 效果器插件缓冲时间（毫秒）。宿主按当前采样率折算成设备缓冲尺寸，并同步桥进程
+    /// 单块的等待上限；默认 50 ms。真源在补丁设置文件 insert-plugins.json（EP-MIXER-30）。
+    /// </summary>
+    /// <remarks>
+    /// 默认实现 = 50 / 忽略写入：没有这个能力的后端（测试替身、旧宿主）保持老行为。
+    /// </remarks>
+    int BufferMs
+    {
+        get => 50;
+        set { }
+    }
 }
 
 // 扫描进度。宿主**按目录**推进（一个目录报一次），界面据此画进度条。

@@ -33,6 +33,14 @@ public interface IHostServices
     // 同样有默认实现：不接插入效果的宿主不该被迫实现它。
     IInsertPluginSettings? InsertPlugins => null;
 
+    // 分轨导出是否经过轨道自己的插入链。当前工程的导出设置；没有打开工程时返回默认值。
+    // 默认 true = 新工程带效果器；老工程由宿主从工程文件里读出 false（见 EP-MIXER-33）。
+    bool ExportIncludeEffects
+    {
+        get => true;
+        set { }
+    }
+
     // 注册一个**主窗口**快捷键（例如 "F3"）。补丁自己的窗口（混音台）没有输入焦点时，
     // 按键只会到主窗口，所以开关这类窗口得由宿主在主窗口上挂。
     // 解析不了 / 主窗口还没建好时静默忽略（默认实现也是空）。

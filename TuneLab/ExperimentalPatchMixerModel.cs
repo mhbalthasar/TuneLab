@@ -424,10 +424,7 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
                 backend.IsAvailable ? null : backend.UnavailableReason));
         }
 
-        // JSFX 还没接：保留条目但禁用 + 写明原因（DESIGN.md §6.3 的纪律——界面不画做不到的入口）。
-        // VST2 不再在这里占位：它已经是 Backends 里的真后端（走桥进程），
-        // 可用性由后端自己报，重复列一行会让菜单出现两个 VST2。
-        mFormats.Add(new MixerInsertFormat("JSFX", false, "not implemented yet"));
+        // 所有格式都由 Backends 自报可用性；不再保留“未实现”的占位条目。
     }
 
     void OnMembershipModified()

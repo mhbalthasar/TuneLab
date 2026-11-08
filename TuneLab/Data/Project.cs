@@ -14,6 +14,9 @@ namespace TuneLab.Data;
 
 internal class Project : DataObject, IProject
 {
+    // 所在的撤销根（打开中的工程挂在 ProjectDocument 下；游离 / 测试构造的工程为 null）。
+    internal DataDocument? Document => Parent as DataDocument;
+
     public ITempoManager TempoManager => mTempoManager;
     public ITimeSignatureManager TimeSignatureManager => mTimeSignatureManager;
     public IReadOnlyDataObjectList<ITrack> Tracks => mTracks;
@@ -36,6 +39,8 @@ internal class Project : DataObject, IProject
     public int ExportBitrate { get; set; } = 320;
     public bool MasterExportEnabled { get; set; } = true;
     public int MasterExportChannels { get; set; } = 2;
+    // [EP-MIXER-33] 新工程默认带轨道效果器导出；老工程没有这个键，反序列化后是 false，导出语义保持不变。
+    public bool ExportIncludeEffects { get; set; } = true;
 
     public Project() : this(new ProjectInfo()) { }
     public Project(ProjectInfo info)

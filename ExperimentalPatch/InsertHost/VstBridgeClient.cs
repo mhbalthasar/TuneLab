@@ -118,12 +118,17 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // UI 线程改参数、音频线程发块，两条来回一交错就会把回复读错人。
     readonly SemaphoreSlim mRoundTrip = new(1, 1);
 
+    // 音频往返标签：每发一块 +1。桥原样回传，宿主只认自己刚发的那个 ——
+    // 超时留在环里的旧块不会冒充这一块的结果（见 BlockHeader.Tag）。
+    int mProcessTag;
+
     readonly int mBitness;
     bool mDisposed;
 
-    // 等一块音频的上限。20ms 是一个"宁可漏一块也不能让音频线程无限等"的取舍：
-    // 桥卡死时（插件死循环）这一块直通，下一块照常发；记日志由调用方做。
-    const int BlockWaitMs = 20;
+    // 等一块音频的上限。由宿主按「效果器插件缓冲时间」设置（InsertAudioTuning.BlockWaitMs）：
+    // 它至少要覆盖一块音频的时长，否则桥稍微忙一点就必然超时。桥卡死时这一块直通，
+    // 下一块照常发；连续失败到 AudioStallWatch 的阈值后整条插入停用。
+    static int BlockWaitMs => InsertAudioTuning.BlockWaitMs;
 
     public VstBridgeClient(int bitness)
     {
@@ -360,7 +365,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // format：PluginFormats.Vst2（缺省）/ Vst3。桥据此选宿主实现。
     public async Task<LoadPluginResultMessage?> TryLoadAsync(int slot, string pluginPath, double sampleRate,
         int maxBlock, bool bypass, CancellationToken cancellation = default, string format = PluginFormats.Vst2,
-        string? pluginId = null)
+        string? pluginId = null, string? importRoot = null)
     {
         if (!IsRunning)
             return null;
@@ -373,6 +378,9 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
             // 一个 .clap 里可能有多个插件：VST2 / VST3 传 null（一个文件一个插件）。
             PluginId = pluginId,
+
+            // JSFX 的 import 根；其余格式传 null。
+            ImportRoot = importRoot,
             SampleRate = sampleRate,
             MaxBlock = maxBlock,
             Bypass = bypass,
@@ -624,9 +632,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         => RunTimed("the bridge handshake", () => EnsureStartedAsync(), StartTimeout, false);
 
     public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass,
-        string format = PluginFormats.Vst2, string? pluginId = null)
+        string format = PluginFormats.Vst2, string? pluginId = null, string? importRoot = null)
         => RunTimed("loading the plugin",
-            () => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format, pluginId: pluginId),
+            () => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format, pluginId: pluginId,
+                importRoot: importRoot),
             LoadTimeout, (LoadPluginResultMessage?)null);
 
     public bool UnloadBlocking(int slot)
@@ -813,8 +822,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
         try
         {
+            int tag = unchecked(++mProcessTag);
+
             // 1) 把输入推进宿主→桥的环，然后通知桥"有一块等你"。
-            if (!mInput.TryPublish(slot, inPlanes, channels, frames, BlockWaitMs))
+            if (!mInput.TryPublish(slot, inPlanes, channels, frames, BlockWaitMs, tag))
                 return FailAudioBlock();
 
             if (!SendControlBlocking(JsonSerializer.Serialize(new ProcessRequest
@@ -823,6 +834,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
                     Frames = frames,
                     Channels = channels,
                     Bypass = bypass,
+                    Tag = tag,
                 })))
             {
                 return FailAudioBlock();
@@ -834,8 +846,15 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             // process 里时回执永远不来，音频线程就被无限期阻塞（实测：真 VST3 卡死 →
             // 整个宿主死锁）。桥侧已经不再为 ProcessRequest 回执（见 BridgeSession），
             // 于是音频路径上不再有任何"等管道"的动作。
-            if (!mOutput.TryRead(BlockWaitMs, out _, out var planes, out int outChannels, out int outFrames))
+            //
+            // 只认 tag 对得上的那块：上一次超时留下的输出还在环里，按"下一个"直接取
+            // 就会把别的插入 / 上一块的结果当成这一块，串台之后链上两条插入会互相喂
+            // 自己上一块的输出（啸叫的根因）。
+            if (!mOutput.TryReadMatching(tag, BlockWaitMs, out _, out var planes, out int outChannels,
+                out int outFrames))
+            {
                 return FailAudioBlock();
+            }
 
             try
             {

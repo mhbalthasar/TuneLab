@@ -300,7 +300,13 @@ internal class TuneLabProject : IImportFormat, IExportFormat, INativeProjectForm
                     export.MasterExportEnabled = (bool)masterExportEnabled;
                 if (exportConfigObj.TryGetValue("masterExportChannels", out var masterExportChannels))
                     export.MasterExportChannels = (int)masterExportChannels;
+                if (exportConfigObj.TryGetValue("includeEffects", out var includeEffects))
+                    export.IncludeEffects = (bool)includeEffects;
             }
+
+            // [EP-MIXER-32] 崩溃恢复用：自动保存工程里的原工程目录（相对音频引用的兜底基准）。
+            if (project.TryGetValue("baseHref", out var baseHref) && baseHref.Type == JTokenType.String)
+                file.BaseHref = (string?)baseHref;
 
             return file;
         }
@@ -494,7 +500,12 @@ internal class TuneLabProject : IImportFormat, IExportFormat, INativeProjectForm
         exportConfig.Add("bitrate", export.Bitrate);
         exportConfig.Add("masterExportEnabled", export.MasterExportEnabled);
         exportConfig.Add("masterExportChannels", export.MasterExportChannels);
+        exportConfig.Add("includeEffects", export.IncludeEffects);
         project.Add("exportConfig", exportConfig);
+
+        // [EP-MIXER-32] 崩溃恢复的基准目录。原版读到不认识的键会 SkipValue，故不破坏兼容。
+        if (!string.IsNullOrEmpty(file.BaseHref))
+            project.Add("baseHref", file.BaseHref);
 
         var bytes = Encoding.UTF8.GetBytes(project.ToString(Formatting.None));
         output.Write(bytes, 0, bytes.Length);

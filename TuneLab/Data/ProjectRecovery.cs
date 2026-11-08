@@ -1,3 +1,4 @@
+using TuneLab.Audio;
 using TuneLab.Extensions.Formats.TLP;
 
 namespace TuneLab.Data;
@@ -11,11 +12,17 @@ internal static class ProjectRecovery
 {
     public static void Apply(Project project, NativeProjectFile file, string fallbackProjectPath)
     {
-        project.SetInfo(file.Project);
-        project.SetExportConfig(file.Export);
+        // [EP-MIXER-29] 与普通打开同理：SetInfo 会逐条换轨 / 换 part，路由装载会逐条改 output /
+        // send / 插入，每一条都各自要求编一次混音图（一次恢复实测能编几十遍，每遍都把整条
+        // 插件链重新过一遍桥）。攒着，离开作用域时统一编一次。
+        using (AudioEngine.SuspendMixerGraphRebuild())
+        {
+            project.SetInfo(file.Project);
+            project.SetExportConfig(file.Export);
 
-        // 自动保存的 .tlpx 同样带 epMixer。文件内载荷优先；老自动保存没有这个键时，
-        // 退回到 fallbackProjectPath 的 sidecar（通常传自动保存记录里的原工程路径）。
-        MixerPersistence.Load(project, fallbackProjectPath, file.EpMixer);
+            // 自动保存的 .tlpx 同样带 epMixer。文件内载荷优先；老自动保存没有这个键时，
+            // 退回到 fallbackProjectPath 的 sidecar（通常传自动保存记录里的原工程路径）。
+            MixerPersistence.Load(project, fallbackProjectPath, file.EpMixer);
+        }
     }
 }

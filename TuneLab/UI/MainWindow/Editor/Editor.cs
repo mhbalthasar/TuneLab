@@ -101,6 +101,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
                 endTime: () => AudioEngine.EndTime,
                 currentToolActionId: () => ToolActionId(mPianoWindow.PianoTool.Value),
                 isParameterPanelVisible: () => mPianoWindow.IsParameterPanelVisible,
+                parameterPanels: () => mPianoWindow.ParameterPanelStatuses,
                 isWaveformVisible: () => mPianoWindow.IsWaveformVisible,
                 sidebarPanelActionIds: () => mRightSideTabBar.OpenTabs.Select(SidebarActionId).OfType<string>().ToList(),
                 focusedSurface: () => mTrackWindow.IsKeyboardFocusWithin ? "arrangement" : mPianoWindow.IsKeyboardFocusWithin ? "pianoRoll" : null,
@@ -373,10 +374,9 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             Prompts = () => true,
             Execute = SaveRecoveredToOriginal,
         });
-        // 【音频导出不进动作面】导出混音 / 导出单轨音频都不在这里，理由与 `project export`
-        // 拒绝干音频导出同一条（见 ProjectExportCommand）：渲染期界面必须锁住好几分钟，
-        // 而"要不要现在把机器占住"是用户的人在环决定。外部能做的是把参数备好（导出设置属于工程数据，
-        // 脚本面可写），最后一下由用户按。「导出为<工程格式>」则已有那条命令（它能传路径）。
+        // 【音频导出不进动作面】导出混音 / 导出单轨音频都不在这里：导出要一个路径参数、还要先把合成等到落定，
+        // 那是命令的形状——混音走 `project export-audio`，「导出为<工程格式>」走 `project export`。
+        // 动作面上的同类入口只能弹框让人自己选路径，对外部调用方没有意义。
 
         // ── 应用与窗口。设置窗是非模态的（Show 而非 ShowDialog）：开着不挡别的动作，故不算 Prompts。
         Keymap.Register(new() { Id = "app.settings", DisplayName = () => "Settings".Tr(TC.Menu), Kind = ActionKind.AppState, Execute = () => SettingsWindow.Open(this.Window()) }, KeyScope.Global);
@@ -785,7 +785,9 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             }
         }
 
-        double currentTime = AudioEngine.CurrentTime;
+        // [EP-MIXER-31] 合成调度看的是预读头（SchedulingTime），不是听到的位置（CurrentTime）：
+        // 后者比预读头晚一个缓冲，用它排程会让合成刚好卡在块边界上。
+        double currentTime = AudioEngine.SchedulingTime;
         while (busy < limit && idle.Count > 0)
         {
             ISynthesisPipeline? best = null;
@@ -935,7 +937,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         var file = new NativeProjectFile
         {
             Project = mDocument.Project.GetInfo(),
-            Editor = new EditorInfo { PlayheadPos = Playhead.Pos },
+            Editor = CaptureEditorInfo(),
             Export = mDocument.Project.GetExportConfig(),
             EpMixer = MixerPersistence.Serialize(mDocument.Project),   // [EP-MIXER-11]
         };
@@ -944,6 +946,12 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         // 恢复出来的工程没有保存路径，但它当时的原路径仍是有意义的基准来源，要继续传下去，
         // 否则从"恢复态"再崩一次就彻底丢掉了原位置。
         var originalPath = string.IsNullOrEmpty(mDocument.Path) ? mDocument.RecoveredOriginalPath : mDocument.Path;
+
+        // [EP-MIXER-32] 自动保存文件落在 %APPDATA%\TuneLab\AutoSave 下，相对音频引用（..Insts\...）的
+        // 默认基准是自动保存目录。把原工程目录写进工程本身，sidecar 元数据丢了也能找回音频。
+        if (!string.IsNullOrEmpty(originalPath))
+            file.BaseHref = Path.GetDirectoryName(originalPath);
+
         // 展示名取【语言无关】的文件名，绝不用 mDocument.Name——工程未命名时它是本地化后的"未命名工程"，
         // 持久化下去会让换语言后的恢复显示旧语言的名字，还会把非 ASCII 文本带进文件名。
         // 工程从未保存过则留空，由恢复侧按【当前】语言渲染。
@@ -1024,6 +1032,8 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
                     ]
                 }]
             }));
+            // 新工程用默认单面板（布局属于工程，不从上一个工程带过来）。
+            RestoreEditorInfo(new EditorInfo());
         });
     }
 
@@ -1068,14 +1078,20 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
 
         try
         {
-            var project = CreateProject(file.Project);
-            project.SetExportConfig(file.Export);
-            mDocument.SetProject(project, path);
+            // [EP-MIXER-29] 装载一个工程 = 十几条轨 + 几条 AUX + Master 插入 + 路由载荷，
+            // 每一样都会各自要求重建混音图（日志实测一次装载编图 60 多次，每次都把整条
+            // 插件链重新过一遍桥）。包进作用域，中间的重建全部攒着，离开时编一次。
+            using (AudioEngine.SuspendMixerGraphRebuild())
+            {
+                var project = CreateProject(file.Project);
+                project.SetExportConfig(file.Export);
+                mDocument.SetProject(project, path);
 
-            // [EP-MIXER-11] 路由优先从 .tlpx 里的 epMixer 取；没有（例如原版刚保存过）才回落到 sidecar。
-            MixerPersistence.Load(project, path, file.EpMixer);
+                // [EP-MIXER-11] 路由优先从 .tlpx 里的 epMixer 取；没有（例如原版刚保存过）才回落到 sidecar。
+                MixerPersistence.Load(project, path, file.EpMixer);
 
-            Playhead.Pos = Math.Max(0, file.Editor.PlayheadPos);
+                RestoreEditorInfo(file.Editor);
+            }
         }
         catch (Exception ex)
         {
@@ -1085,6 +1101,20 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
 
         RecentFilesManager.AddFile(path);
         return null;
+    }
+
+    // 工程文件里的编辑器状态：播放头 + 参数面板布局。存档的几条路（保存、另存、自动保存、命令面导出）共用。
+    public EditorInfo CaptureEditorInfo()
+    {
+        var (panels, focused) = mPianoWindow.CaptureParameterLayout();
+        return new EditorInfo { PlayheadPos = Playhead.Pos, ParameterPanels = panels, FocusedParameterPanel = focused };
+    }
+
+    // 打开工程、崩溃恢复共用。没存布局（旧工程、.tlp）= 默认单面板。
+    public void RestoreEditorInfo(EditorInfo info)
+    {
+        Playhead.Pos = Math.Max(0, info.PlayheadPos);
+        mPianoWindow.RestoreParameterLayout(info.ParameterPanels, info.FocusedParameterPanel);
     }
 
     Project CreateProject(ProjectInfo info)
@@ -1203,7 +1233,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         var projectFile = new NativeProjectFile
         {
             Project = mDocument.Project.GetInfo(),
-            Editor = new EditorInfo { PlayheadPos = Playhead.Pos },
+            Editor = CaptureEditorInfo(),
             Export = mDocument.Project.GetExportConfig(),
             EpMixer = MixerPersistence.Serialize(mDocument.Project),   // [EP-MIXER-11]
         };
@@ -1232,7 +1262,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         var file = new NativeProjectFile
         {
             Project = mDocument.Project.GetInfo(),
-            Editor = new EditorInfo { PlayheadPos = Playhead.Pos },
+            Editor = CaptureEditorInfo(),
             Export = mDocument.Project.GetExportConfig(),
             EpMixer = MixerPersistence.Serialize(mDocument.Project),   // [EP-MIXER-11]
         };
@@ -1333,6 +1363,17 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             endTime = Project.TempoManager.GetTime(selection.EndTick);
         }
 
+        // [EP-MIXER-33] 分轨带效果时导出会复用混音图里的插件实例。音频线程与导出线程同时调用同一个
+        // 插件实例会把两个播放位置交错喂进去（听起来是乱序/爆音）。导出期间先停播，
+        // 并等当前这一块走完（缓冲时长 + 20 ms 余量）。
+        bool wasPlaying = AudioEngine.IsPlaying;
+        if (wasPlaying)
+        {
+            AudioEngine.Pause();
+            int bufferMs = (int)Math.Ceiling(AudioEngine.BufferSize.Value * 1000.0 / AudioEngine.SampleRate.Value);
+            Thread.Sleep(Math.Max(60, bufferMs + 20));
+        }
+
         // Create export progress dialog with progress bar
         var exportDialog = new ExportDialog();
         exportDialog.SetTitle("Export".Tr(TC.Dialog));
@@ -1391,7 +1432,8 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
                     else if (trackIndex >= 0 && trackIndex < project.Tracks.Count)
                     {
                         var track = project.Tracks[trackIndex];
-                        AudioEngine.ExportTrack(filePath, track, isStereo, options.SampleRate, settings, trackProgress, startTime: startTime, endTime: endTime);
+                        AudioEngine.ExportTrack(filePath, track, isStereo, options.SampleRate, settings, trackProgress,
+                            startTime: startTime, endTime: endTime, includeEffects: options.IncludeEffects);
                     }
                 }
             }
@@ -1416,6 +1458,10 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         {
             await this.ShowMessage("Export".Tr(TC.Dialog), "Export completed successfully.".Tr(TC.Dialog));
         }
+
+        // 导出前如果正在播放，导出结束后接着播（导出期间必须独占插件实例）。
+        if (wasPlaying)
+            AudioEngine.Play();
     }
 
     public void Undo()
@@ -1496,6 +1542,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         List<string> installedNames = [];
         List<string> succeeded = [];
         List<string> failed = [];
+        List<string> needsNewerHost = [];   // 装上了，但要求的 SDK 比本 TuneLab 新：没加载，要更新 TuneLab 才能用
         foreach (var file in files)
         {
             var name = Path.GetFileNameWithoutExtension(file);
@@ -1531,6 +1578,8 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
                 var result = ExtensionManager.LoadResults.LastOrDefault(r => r.DirectoryPath == dir);
                 if (result != null && result.Status == ExtensionLoadStatus.Failed)
                     failed.Add(name + ": " + (result.Error ?? "load failed"));
+                else if (result?.RequiredSdk is { } required)
+                    needsNewerHost.Add(string.Format("{0} (SDK {1})", name, required));
                 else
                     succeeded.Add(name);
             }
@@ -1560,11 +1609,14 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
             mSideBarStrip.Get(SideBarTab.Extensions).SetContent(SideBarTab.Extensions, mExtensionSideBarContentProvider.Content);
 
         // 批量安装一次性汇总（不再每个包弹一次窗）。各包的实际加载状态见扩展侧边栏。
-        if (succeeded.Count > 0 || failed.Count > 0)
+        if (succeeded.Count > 0 || failed.Count > 0 || needsNewerHost.Count > 0)
         {
             var summary = new List<string>();
             if (succeeded.Count > 0)
                 summary.Add("Installed: ".Tr(TC.Dialog) + string.Join(", ", succeeded));
+            if (needsNewerHost.Count > 0)
+                summary.Add("Installed, but requires a newer version of TuneLab: ".Tr(TC.Dialog)
+                    + string.Join(", ", needsNewerHost));
             if (failed.Count > 0)
                 summary.Add("Failed: ".Tr(TC.Dialog) + string.Join("; ", failed));
             await this.ShowMessage("Tips".Tr(TC.Dialog), string.Join("\n", summary));
@@ -2006,6 +2058,7 @@ internal class Editor : DockPanel, PianoWindow.IDependency, TrackWindow.IDepende
         public bool HasSaveTarget => editor.HasSaveTarget;
         public string? Open(string path) => editor.TryLoadProject(path);
         public string? Save(string? path) => editor.SaveFromCommand(path);
+        public EditorInfo CaptureEditorInfo() => editor.CaptureEditorInfo();
     }
 
     // 模态进度框那道口子（`project export-audio`）。**复用界面上那条导出用的同一个框**：

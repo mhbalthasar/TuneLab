@@ -57,6 +57,7 @@ internal class ProjectDocument : DataDocument
             foreach (var audioPart in track.Parts.OfType<IAudioPart>())
             {
                 audioPart.BaseDirectory.Value = dir;
+                ApplyBaseHref(audioPart);
             }
         });
 
@@ -67,9 +68,14 @@ internal class ProjectDocument : DataDocument
 
             var dir = AudioPartBaseDirectory();
             if (string.IsNullOrEmpty(dir))
+            {
+                // 没有默认基准时仍要把 basehref 交给 part：崩溃恢复可能只有 basehref。
+                ApplyBaseHref(audioPart);
                 return;
+            }
 
             audioPart.BaseDirectory.Value = dir;
+            ApplyBaseHref(audioPart);
         });
     }
 
@@ -86,6 +92,7 @@ internal class ProjectDocument : DataDocument
         // 有了真实保存路径就回到"从保存路径推基准目录"，清掉显式来源——否则内存里的解析基准会与
         // "把这个文件重新打开一次"所得的基准不一致，成为一处看不见的分歧。
         mBaseDirectoryOverride = null;
+        mBaseHrefOverride = null;
         mRecoveredOriginalPath = null;
         ResetAudioPartBaseDirectory();
         mName = File.Exists(path) ? new FileInfo(path).Name : "Untitled Project".Tr(TC.Document);
@@ -93,16 +100,19 @@ internal class ProjectDocument : DataDocument
         mProjectNameChanged?.Invoke();
     }
 
-    // 崩溃恢复专用：工程【保持未保存态】（无保存路径，故一次 Ctrl+S 不会覆盖原文件），
+    // [EP-MIXER-32] 崩溃恢复专用：工程【保持未保存态】（无保存路径，故一次 Ctrl+S 不会覆盖原文件），
     // 但展示名与解析基准来自自动保存的元数据。originalPath 为空（工程从未保存过）时不设基准，
     // 相对音频引用无法解析——那是"未保存工程没有基准目录"的必然结果，如实降级不猜测。
-    public void SetRecovered(string displayName, string? originalPath)
+    public void SetRecovered(string displayName, string? originalPath, string? baseHref = null)
     {
         mPath = string.Empty;
         mRecoveredOriginalPath = File.Exists(originalPath) ? originalPath : null;
         mBaseDirectoryOverride = mRecoveredOriginalPath == null
             ? null
             : System.IO.Path.GetDirectoryName(mRecoveredOriginalPath);
+        // 自动保存工程自己带的基准目录（原工程目录）。sidecar 元数据丢失时，这是
+        // 相对音频引用唯一的落脚点；与默认基准不同时才作为兜底使用。
+        mBaseHrefOverride = string.IsNullOrEmpty(baseHref) ? null : baseHref;
         ResetAudioPartBaseDirectory();
         mName = displayName;
         mLastSavedHead = Head;
@@ -125,18 +135,28 @@ internal class ProjectDocument : DataDocument
             return;
 
         var dir = AudioPartBaseDirectory();
-        if (string.IsNullOrEmpty(dir))
-            return;
 
         foreach (var audioPart in Project.AllAudioParts())
         {
-            audioPart.BaseDirectory.Value = dir;
+            if (!string.IsNullOrEmpty(dir))
+                audioPart.BaseDirectory.Value = dir;
+
+            ApplyBaseHref(audioPart);
         }
+    }
+
+    // [EP-MIXER-32] basehref 只对内部 AudioPart 生效（IAudioPart 是冻结的 SDK 面，不加成员）。
+    // 保存到新路径时必须清空：旧 basehref 属于"恢复态"，留着会让相对路径继续指向原目录。
+    void ApplyBaseHref(IAudioPart audioPart)
+    {
+        if (audioPart is AudioPart concrete)
+            concrete.BaseHref.Value = mBaseHrefOverride ?? string.Empty;
     }
 
     string mPath = string.Empty;
     string mName = string.Empty;
     string? mBaseDirectoryOverride = null;
+    string? mBaseHrefOverride = null;
     string? mRecoveredOriginalPath = null;
     Head mLastSavedHead;
     readonly Holder<Project> mProject = new();

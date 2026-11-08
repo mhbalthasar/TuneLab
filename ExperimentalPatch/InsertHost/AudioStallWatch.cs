@@ -13,7 +13,8 @@ namespace TuneLab.ExperimentalPatch.InsertHost;
 // 【实时纪律】ReportFailure 在音频线程调用；Stalled 会被 UI 线程读，所以用 volatile。
 internal sealed class AudioStallWatch
 {
-    // 连续多少块失败就认定桥赶不上了：20ms/块 × 50 ≈ 连续 1 秒都拿不到结果。
+    // 连续多少块失败就认定桥赶不上了：50 块 × 当前单块等待上限
+    // （InsertAudioTuning.BlockWaitMs，默认 50 ms）≈ 连续 2.5 秒都拿不到结果。
     public const int FailureLimit = 50;
 
     int mFailures;

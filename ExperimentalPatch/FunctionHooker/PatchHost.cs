@@ -128,6 +128,24 @@ public static class PatchHost
         }
     }
 
+    // 宿主：建导出侧栏时取一次补丁贡献的选项快照。没有补丁/没有贡献 = 空表。
+    public static IReadOnlyList<ExportOptionsContribution> GetExportOptions()
+    {
+        var hub = mHub;
+        if (hub == null)
+            return [];
+
+        try
+        {
+            return hub.GetExportOptions();
+        }
+        catch (Exception ex)
+        {
+            hub.Host.LogError("failed to collect experimental export options", ex);
+            return [];
+        }
+    }
+
     // 宿主：退出收尾调用（须早于宿主引擎销毁，补丁才能安全访问宿主服务）。
     public static void Shutdown()
     {

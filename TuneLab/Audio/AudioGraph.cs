@@ -197,8 +197,45 @@ internal class AudioGraph()
     // 而 mTrackLockObject 是音频回调每块都要拿的锁 —— 持锁编译会把音频线程整段钉住，
     // 听感是卡顿/爆音，严重时（插件加载里再去等 UI 线程）直接互相等死。
     // 所以：锁里只拷一份结构快照，编译与换快照都在锁外。
+
+    // [EP-MIXER-29] 批量结构变更（装载工程 / 套用路由载荷 / 一步 undo 里改多条路由）时，
+    // 每个成员的 output / send / insert 变化都会触发一次重建；一次装载能连着重建几十次，
+    // 每次都把整张图的插件重新过一遍桥。听感就是打开工程卡顿、播放时爆音，日志里则是
+    // 同一条 "insert ... unavailable" 刷屏。这个作用域把中间重建折叠成最后那一次。
+    //
+    // 只在 UI 线程用（所有结构变更入口都在 UI 线程）；不进音频线程，故无需锁。
+    // 最外层作用域结束时**无条件**补编一次：装载路由载荷时插入槽位可能还没有订阅者
+    // （混音台模型是懒创建的，插入也不是会触发重建的事件），不补这一下槽位就进不了链。
+    // 嵌套时只有最外层编，内层只减计数。
+    int mRebuildSuspendDepth;
+
+    internal IDisposable SuspendRebuild()
+    {
+        mRebuildSuspendDepth++;
+        return new RebuildSuspension(this);
+    }
+
+    sealed class RebuildSuspension(AudioGraph graph) : IDisposable
+    {
+        bool mDisposed;
+
+        public void Dispose()
+        {
+            if (mDisposed)
+                return;
+
+            mDisposed = true;
+
+            if (--graph.mRebuildSuspendDepth == 0)
+                graph.RebuildSnapshot();
+        }
+    }
+
     void RebuildSnapshot()
     {
+        if (mRebuildSuspendDepth > 0)
+            return;
+
         IAudioTrack[] tracks;
         AuxBus[] auxes;
 

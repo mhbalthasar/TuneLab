@@ -103,14 +103,15 @@ internal sealed class Vst3InProcessFactory
 
     static IntPtr ResolveNative(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
     {
-        if (!string.Equals(libraryName, "ownvst3.dll", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(libraryName, "ownvst3", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(libraryName, "ownvst3.dll", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(libraryName, "ownvst3", StringComparison.OrdinalIgnoreCase))
         {
-            return IntPtr.Zero;
+            string? resolved = FindNativeLibrary();
+            return resolved != null ? NativeLibrary.Load(resolved) : IntPtr.Zero;
         }
 
-        string? resolved = FindNativeLibrary();
-        return resolved != null ? NativeLibrary.Load(resolved) : IntPtr.Zero;
+        // 同一个程序集只能装一个 DllImportResolver；JSFX 的 `ysfx` 也搭这趟车。
+        return JsfxNative.Resolve(libraryName, assembly, searchPath);
     }
 
     // 真正加载过的插件给出的"是不是乐器"，优先于静态标记。

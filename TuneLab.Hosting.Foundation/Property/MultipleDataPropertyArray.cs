@@ -71,11 +71,30 @@ public sealed class MultipleDataPropertyArray : IDataPropertyArray
         return hasFirst ? first : fallback;
     }
 
+    // 按原值读的多选合并：口径同 GetValue（缺位 = 该位默认值参与比较），只是各成员不按默认值的类型过滤。
+    public PropertyValue GetRawValue(string token)
+    {
+        if (!TryIndex(token, out var index))
+            return PropertyValue.Null;
+
+        var fallback = index < mElementDefaults.Count ? mElementDefaults[index] : PropertyValue.Null;
+        PropertyValue first = default;
+        bool hasFirst = false;
+        foreach (var array in mArrays)
+        {
+            var value = index < array.Count ? array.GetRawValue(array.Tokens[index]) : fallback;
+            if (!hasFirst) { first = value; hasFirst = true; }
+            else if (!value.Equals(first)) return PropertyValue.Multiple;
+        }
+        return hasFirst ? first : PropertyValue.Null;
+    }
+
     // 写（编辑即补齐）：扇出到所有成员——短于该位的先按各位默认值补齐到该长度、再写入；已有该位的直接写。
     public void SetValue(string token, PropertyValue value)
     {
         if (!TryIndex(token, out var index))
             return;
+        PropertySlot.EnsureStorable(value);
         FanOut(array =>
         {
             for (int k = array.Count; k <= index; k++)
@@ -115,10 +134,17 @@ public sealed class MultipleDataPropertyArray : IDataPropertyArray
     }
 
     // 结构操作扇出：Add 追加到所有成员；Insert 插到能容纳该位的成员（更短的追加到尾）；RemoveAt 删掉拥有该位的成员。
-    public void Add(PropertyValue value) => FanOut(array => array.Add(value));
+    public void Add(PropertyValue value)
+    {
+        PropertySlot.EnsureStorable(value);
+        FanOut(array => array.Add(value));
+    }
 
     public void Insert(int index, PropertyValue value)
-        => FanOut(array => { if (index <= array.Count) array.Insert(index, value); else array.Add(value); });
+    {
+        PropertySlot.EnsureStorable(value);
+        FanOut(array => { if (index <= array.Count) array.Insert(index, value); else array.Add(value); });
+    }
 
     public void RemoveAt(int index)
         => FanOut(array => { if (index < array.Count) array.RemoveAt(index); });

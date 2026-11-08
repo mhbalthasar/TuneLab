@@ -16,6 +16,9 @@ public interface IDataPropertyObject : IDataObject, IReadOnlyNotifiablePropertyO
     IDataPropertyArray Array(string key);
     // 本层叶子读/写（裸 PropertyValue 进出；typed 视图由下方字段扩展提供）。
     new PropertyValue GetValue(string key, PropertyValue defaultValue);
+    // 本层叶子按原值读：不按默认值的类型过滤，缺键（或陈旧 token）= Null。给值类型本就不定的控件用（ComboBox 的选项
+    // 可为任意类型）：不在候选里的值由控件自己的非法值契约兜底，而不是在这里被换成默认值。多选：全等→该值，不等→Multiple。
+    PropertyValue GetRawValue(string key);
     void SetValue(string key, PropertyValue value);
     // 移除本层某键（presence：把 present 翻回 absent）。缺键 = no-op；不下钻。变长键控容器（ExtensibleObjectConfig）删条目用。
     void RemoveValue(string key);
@@ -51,11 +54,31 @@ public static class IDataPropertyObjectExtension
             v => v.ToBoolean(out var value) ? value : defaultValue, value => PropertyValue.Create(value));
     }
 
-    // 裸值字段：读写都是未 coerce 的 PropertyValue（identity 适配器），供值类型不定的控件（如 option 可为任意基础类型的
-    // ComboBox）按原始值绑定。三态（Multiple/Invalid）经 IRawValueProperty.RawValue 由绑定层分派，Display 只收具体值。
+    // 裸值字段：读写都是 PropertyValue（identity 适配器），但**读值仍按默认值的类型过滤**（GetValue 的类型门：存值类型与
+    // 默认值不同即读成默认值）——适合值类型固定、形状由插件定的字段（如画布）。合法取值本就可为多种类型的控件（如选项可混合
+    // 类型的 ComboBox）别用它：会把另一类型的合法值读成默认值，用 RawValueField。三态（Multiple/Invalid）经
+    // IRawValueProperty.RawValue 由绑定层分派，Display 只收具体值。
     public static IDataProperty<PropertyValue> ValueField(this IDataPropertyObject dataObject, string key, PropertyValue defaultValue)
     {
         return new PropertyField<PropertyValue>(dataObject, key, defaultValue, v => v, value => value);
+    }
+
+    // 按原值的字段：同 ValueField，但读值不按默认值的类型过滤（GetRawValue）——没存值才取默认值，存了什么类型都原样读出。
+    // 给 ComboBox 这类选项可为任意类型的控件：只按默认值的类型放行，会把另一类型的合法选项、以及不在候选里要琥珀显示的
+    // 旧值都读成默认值。
+    public static IDataProperty<PropertyValue> RawValueField(this IDataPropertyObject dataObject, string key, PropertyValue defaultValue)
+    {
+        return new RawPropertyField(dataObject, key, defaultValue);
+    }
+
+    class RawPropertyField(IDataPropertyObject dataObject, string key, PropertyValue defaultValue)
+        : IDataObject.Wrapper(dataObject), IDataProperty<PropertyValue>, IRawValueProperty
+    {
+        public PropertyValue RawValue { get { var raw = dataObject.GetRawValue(key); return raw.IsNull() ? defaultValue : raw; } }
+        public PropertyValue Value => RawValue;
+        public PropertyValue GetInfo() => Value;
+        public void SetInfo(PropertyValue value) => dataObject.SetValue(key, value);
+        public void Set(PropertyValue value) => dataObject.SetValue(key, value);
     }
 
     // 字段适配器：借壳节点本身（Head/Commit/DiscardTo/Modified 经 Wrapper 转发到文档撤销根），

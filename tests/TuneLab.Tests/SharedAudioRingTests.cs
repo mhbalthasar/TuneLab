@@ -79,13 +79,51 @@ public class SharedAudioRingTests
 
         Assert.True(ring.TryPublish(3, planes, 2, 128, 1000));
 
-        Assert.True(ring.TryRead(1000, out int slot, out var read, out int ch, out int fr));
+        Assert.True(ring.TryRead(1000, out int slot, out var read, out int ch, out int fr, out int tag));
         Assert.Equal(3, slot);
         Assert.Equal(2, ch);
         Assert.Equal(128, fr);
+        Assert.Equal(0, tag);
         AssertPlanesEqual(expected, read, 2, 128, "single block");
 
         ring.Release();
+    }
+
+    // 回归：两条插入共用同一个环，某一块超时之后，下一块**不能**把上一块的
+    // 输入 / 输出当成自己的。根因是环按 FIFO 取，超时的那块还留在里面；
+    // 没有标签时 A 的输入会被 B 处理、B 的输出会被 A 取走，链上两条插入
+    // 于是互相喂自己上一块的输出 —— 听感就是啸叫 + 卡顿（与插件无关）。
+    [Fact]
+    public void StaleBlocks_AreSkippedByTag_EvenForTheSameSlot()
+    {
+        if (!OnWindows())
+            return;
+        using var ring = SharedAudioRing.Create(Name("tag"), null);
+
+        const int slot = 7;
+        var stale = MakePlanes(2, 64, 11);
+        var target = MakePlanes(2, 64, 22);
+        var later = MakePlanes(2, 64, 33);
+
+        // 同一个槽位：只靠 slot 区分不出来，必须靠 tag。
+        Assert.True(ring.TryPublish(slot, stale, 2, 64, 1000, tag: 11));
+        Assert.True(ring.TryPublish(slot, target, 2, 64, 1000, tag: 22));
+        Assert.True(ring.TryPublish(slot, later, 2, 64, 1000, tag: 33));
+
+        Assert.True(ring.TryReadMatching(22, 1000, out int readSlot, out var read, out int ch, out int fr));
+        Assert.Equal(slot, readSlot);
+        Assert.Equal(2, ch);
+        Assert.Equal(64, fr);
+        AssertPlanesEqual(target, read, 2, 64, "matching block");
+        ring.Release();
+
+        // 22 之后的 33 还在；11 已经作为过期块被丢掉。
+        Assert.True(ring.TryRead(1000, out readSlot, out read, out ch, out fr, out int tag));
+        Assert.Equal(slot, readSlot);
+        Assert.Equal(33, tag);
+        ring.Release();
+
+        Assert.False(ring.TryRead(20, out _, out _, out _, out _, out _));
     }
 
     // ── 生产者 / 消费者对撞（真正的竞态猎场）──
@@ -119,7 +157,7 @@ public class SharedAudioRingTests
         {
             for (int b = 0; b < blocks; b++)
             {
-                if (!consumer.TryRead(5000, out _, out var planes, out int ch, out int fr))
+                if (!consumer.TryRead(5000, out _, out var planes, out int ch, out int fr, out _))
                 {
                     lock (failures)
                         failures.Add($"read timed out at block {b}");
@@ -182,7 +220,7 @@ public class SharedAudioRingTests
 
         long before = ring.TimedOutReads;
 
-        bool ok = ring.TryRead(20, out _, out _, out _, out _);
+        bool ok = ring.TryRead(20, out _, out _, out _, out _, out _);
 
         Assert.False(ok);
         Assert.True(ring.TimedOutReads > before, "timeout should be counted so the host can degrade");
@@ -207,7 +245,7 @@ public class SharedAudioRingTests
         {
             for (int b = 0; b < total; b++)
             {
-                if (!ring.TryRead(5000, out _, out var planes, out int ch, out int fr))
+                if (!ring.TryRead(5000, out _, out var planes, out int ch, out int fr, out _))
                 {
                     Assert.Fail($"read timed out at {b}");
                     return;
@@ -262,8 +300,9 @@ public class SharedAudioRingTests
         Assert.Equal(4, SharedAudioLayout.MaxChannels);
 
         // 头 16 + 4 槽 × (16 头 + 4 × 2048 × 4 音频) = 16 + 4 × 32784 = 131152
-        Assert.Equal(16 + 4 * (16 + 4 * 2048 * 4), SharedAudioLayout.SectionBytes);
-        Assert.Equal(16 + 4 * 2048 * 4, SharedAudioLayout.SlotBytes);
+        // 4096 = "效果器插件缓冲时间"默认 50 ms @44.1k（≈2205 帧）的上界；混音图按 4096 分块。
+        Assert.Equal(16 + 4 * (16 + 4 * 4096 * 4), SharedAudioLayout.SectionBytes);
+        Assert.Equal(16 + 4 * 4096 * 4, SharedAudioLayout.SlotBytes);
     }
 }
 

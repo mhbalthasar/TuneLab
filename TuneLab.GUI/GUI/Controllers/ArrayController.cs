@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Linq;
 using TuneLab.Animation;
 using TuneLab.Foundation;
+using TuneLab.I18N;
 using TuneLab.SDK;
 using TuneLab.GUI.Components;
 using TuneLab.Utils;
@@ -97,7 +98,7 @@ internal abstract class ArrayControllerBase : StackPanel, IElementRowHost
     //   现存位（i < 数据元素数）绑真实 token——身份稳定，中插/删只增删一行；
     //   越界（seed）位（i ≥ 数据元素数）绑 SeedPositionView——读默认、首次写物化整段 seed（presence 语义）。
     // 同 key 同类型复用行仅更参数、key 消失则 dispose、新 key 建、同 key 换类型则换行；仅结构变化时重排布局。
-    // 复合 seed 元素物化前不渲染虚拟行（仅标量 seed 虚拟绑定，见 SeedPositionView）。
+    // 复合 seed 元素同样渲染虚拟行：往下导航经 SeedObjectView / SeedArrayView，读给"没存值"、首次写入物化整段 seed。
     protected void ReconcileRows(IReadOnlyList<IControllerConfig> elements)
     {
         if (mArray == null)
@@ -132,8 +133,6 @@ internal abstract class ArrayControllerBase : StackPanel, IElementRowHost
             }
             else
             {
-                if (cfg is not IValueConfig)
-                    continue; // 复合 seed 元素：物化前不渲染
                 key = SeedKeyPrefix + i;
                 seedDefaults ??= elements.Select(e => e.GetDefaultValue()).ToList();
                 host = new SeedPositionView(mArray, i, seedDefaults);
@@ -546,7 +545,8 @@ internal abstract class ArrayControllerBase : StackPanel, IElementRowHost
 }
 
 // 定长数组：长度 = config 声明数，逐位渲染、不可增删；第 i 位由 Elements[i] 渲染并绑定到 token[i]。
-// 数据应有 Elements.Count 个元素（由「恢复默认」walker 递归 seed）；若短则渲染现有位、不在浏览时写入数据（保 presence）。
+// 数据常比声明短（属性稀疏存储：没编辑过的数组根本不在数据里）：现有位绑真实元素，缺的位（标量与复合都一样）渲染
+// 虚拟行、读默认值，浏览时不写入数据（保 presence），首次编辑才物化整段（见 SeedPositionView）。
 internal sealed class ArrayController : ArrayControllerBase
 {
     public void Apply(ArrayConfig config) => ReconcileRows(config.Elements);
@@ -616,6 +616,9 @@ internal sealed class ListController : ArrayControllerBase
 // 选中态同轨道头：整行底色提亮 + 右缘 3px 强调条（叠在上层、不占布局，选中与否不抖动）。
 sealed class ElementRow : IDisposable
 {
+    // 嵌套面板类元素左侧保留的留白：让元素里再嵌的对象，其折叠三角与引导线仍露在序号条右侧。
+    const double NestedLeftGutter = 8;
+
     public Control Root => mRoot;
     public Type ConfigType => mWidget.ConfigType;
 
@@ -642,7 +645,14 @@ sealed class ElementRow : IDisposable
         var index = new Border { Width = ArrayControlsFactory.StripWidth, Background = Style.HIGH_LIGHT.ToBrush(), Child = mIndexText };
         if (rowHost != null)
             AttachHandle(index, rowHost);
-        mWidget.View.Margin = new(8, 6, 0, 6);
+        // 嵌套面板类元素（对象 / 变长键控）里的字段自带左右 Gutter（那是顶层的版心边距），层层叠加就缩进过多：右侧整个
+        // 抵消，内容与标量元素一样贴着行的右沿；左侧抵消到只剩 NestedLeftGutter——元素里的叶子字段不折叠（嵌套面板没有
+        // 折叠作用域），留白本是空的，但元素里再嵌的对象仍把折叠三角与引导线画在这条留白里，留一点让它们露出来。
+        // 左侧因此伸进序号条底下一截：序号条叠在上面（ZIndex），拖动 / 选中照常。伸出去的部分不挡删除钮（它在 Popup 里）。
+        mWidget.View.Margin = mWidget.CarriesGutter
+            ? new(8 - (ArrayControlsFactory.Gutter - NestedLeftGutter), 6, -ArrayControlsFactory.Gutter, 6)
+            : new(8, 6, 0, 6);
+        index.ZIndex = 1;
         var body = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(index, Avalonia.Controls.Dock.Left);
         body.Children.Add(index);
@@ -897,6 +907,8 @@ internal abstract class ElementWidget : IDisposable
 {
     public abstract Control View { get; }
     public abstract Type ConfigType { get; }
+    // 视图里的字段自带左右 Gutter（嵌套的属性面板 / 键控条目），元素行据此抵消右侧那一份（见 ElementRow）。
+    public virtual bool CarriesGutter => false;
     public abstract void Update(IControllerConfig config);
     public virtual void Dispose() => s.DisposeAll();
 
@@ -926,6 +938,7 @@ internal abstract class ElementWidget : IDisposable
             mController = new SliderController { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch };
             Apply(config);
             mController.BindDataProperty(dataObject.DoubleField(token, config.DefaultValue), s);
+            EditGate.Track<double>(mController, s);
         }
 
         void Apply(SliderConfig config)
@@ -981,9 +994,10 @@ internal abstract class ElementWidget : IDisposable
             if (mIsMultiline)
             {
                 mSingleLine = null;
-                mMultiline = new MultilineTextInput { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch };
+                mMultiline = new MultilineTextInput { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch, DiscardOnEscape = true };
                 mMultiline.SetMaxVisibleLines(config.MaxVisibleLines);
                 mMultiline.BindDataProperty(field, mFieldScope);
+                EditGate.Track(mMultiline, mFieldScope);
                 mHost.Children.Add(mMultiline);
             }
             else
@@ -991,6 +1005,7 @@ internal abstract class ElementWidget : IDisposable
                 mMultiline = null;
                 mSingleLine = new SingleLineTextController { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch, IsPassword = config.IsPassword };
                 mSingleLine.BindDataProperty(field, mFieldScope);
+                EditGate.Track(mSingleLine, mFieldScope);
                 mHost.Children.Add(mSingleLine);
             }
         }
@@ -1017,6 +1032,7 @@ internal abstract class ElementWidget : IDisposable
             mController = new PathPicker { HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch };
             mController.Apply(config);
             mController.BindDataProperty(dataObject.StringField(token, config.DefaultValue), s);
+            EditGate.Track(mController, s);
         }
 
         public override Control View => mController;
@@ -1041,7 +1057,8 @@ internal abstract class ElementWidget : IDisposable
         void BindWith(ComboBoxConfig config)
         {
             mController.SetConfig(config);
-            mController.BindDataProperty(mDataObject.ValueField(mToken, config.DefaultOption.Value), s);
+            mController.BindDataProperty(mDataObject.RawValueField(mToken, config.DefaultOption.Value), s);   // 选项可为任意类型：按原值读，见 RawValueField
+            EditGate.Track(mController, s);
         }
 
         public override Control View => mController;
@@ -1070,6 +1087,7 @@ internal abstract class ElementWidget : IDisposable
         {
             mController = new CheckBox { VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
             mController.BindDataProperty(dataObject.BooleanField(token, config.DefaultValue), s);
+            EditGate.Track(mController, s);
         }
 
         public override Control View => mController;
@@ -1092,6 +1110,7 @@ internal abstract class ElementWidget : IDisposable
 
         public override Control View => mController;
         public override Type ConfigType => typeof(ObjectConfig);
+        public override bool CarriesGutter => true;
         public override void Update(IControllerConfig config) => mController.Reconcile((ObjectConfig)config);
         public override void Dispose()
         {
@@ -1160,6 +1179,7 @@ internal abstract class ElementWidget : IDisposable
 
         public override Control View => mController;
         public override Type ConfigType => typeof(ExtensibleObjectConfig);
+        public override bool CarriesGutter => true;
         public override void Update(IControllerConfig config) => mController.Apply((ExtensibleObjectConfig)config);
         public override void Dispose()
         {
@@ -1175,7 +1195,7 @@ internal abstract class ElementWidget : IDisposable
         public UnknownElement(IControllerConfig config)
         {
             mConfigType = config.GetType();
-            mView = new Label { Content = $"(unsupported element: {mConfigType.Name})", FontSize = 12, Foreground = Style.LIGHT_WHITE.ToBrush(), Margin = new(0, 6) };
+            mView = new Label { Content = string.Format("(Unsupported element type: {0})".Tr("PropertyObjectController"), mConfigType.Name), FontSize = 12, Foreground = Style.LIGHT_WHITE.ToBrush(), Margin = new(0, 6) };
         }
 
         public override Control View => mView;
@@ -1232,6 +1252,10 @@ sealed class SeedPositionView : ForwardingDataObject, IDataPropertyObject
     public PropertyValue GetValue(string key, PropertyValue defaultValue)
         => Real ? mArray.GetValue(mArray.Tokens[mPosition], defaultValue) : defaultValue;
 
+    // 未物化 = 还没有存值（Null），读的一方按缺席回落默认值。
+    public PropertyValue GetRawValue(string key)
+        => Real ? mArray.GetRawValue(mArray.Tokens[mPosition]) : PropertyValue.Null;
+
     public void SetValue(string key, PropertyValue value)
     {
         if (!Real)
@@ -1239,15 +1263,72 @@ sealed class SeedPositionView : ForwardingDataObject, IDataPropertyObject
         mArray.SetValue(mArray.Tokens[mPosition], value);
     }
 
-    // 复合 seed 元素物化前不渲染虚拟行（见 ReconcileRows），故下列导航仅物化后（Real）走到；
-    // 防御：未物化先物化再下钻（标量 seed 流程不会触发）。
-    public IDataPropertyObject Object(string key) { if (!Real) Materialize(); return mArray.Object(mArray.Tokens[mPosition]); }
-    public IDataPropertyArray Array(string key) { if (!Real) Materialize(); return mArray.Array(mArray.Tokens[mPosition]); }
-    public void RemoveValue(string key) { } // seed 位删除由控制器 RemoveRow 处理，标量 seed 流程不触发
+    // 复合 seed 元素（对象 / 数组）往下导航：未物化时给懒视图——只是渲染、浏览不物化（导航本身不弄脏文档），
+    // 首次写入才物化整段 seed、再落到真实节点的同一路径；已物化则直接导航真实节点。
+    public IDataPropertyObject Object(string key)
+        => Real ? mArray.Object(mArray.Tokens[mPosition]) : new SeedObjectView(mArray, FindObject, MaterializeObject);
+    public IDataPropertyArray Array(string key)
+        => Real ? mArray.Array(mArray.Tokens[mPosition]) : new SeedArrayView(mArray, FindArray, MaterializeArray);
+    public void RemoveValue(string key) { } // seed 位删除由控制器 RemoveRow 处理
+
+    IDataPropertyObject? FindObject() => Real ? mArray.Object(mArray.Tokens[mPosition]) : null;
+    IDataPropertyArray? FindArray() => Real ? mArray.Array(mArray.Tokens[mPosition]) : null;
+
+    IDataPropertyObject MaterializeObject()
+    {
+        if (!Real)
+            Materialize();
+        return mArray.Object(mArray.Tokens[mPosition]);
+    }
+
+    IDataPropertyArray MaterializeArray()
+    {
+        if (!Real)
+            Materialize();
+        return mArray.Array(mArray.Tokens[mPosition]);
+    }
 
     readonly IDataPropertyArray mArray;
     readonly int mPosition;
     readonly IReadOnlyList<PropertyValue> mSeedDefaults;
+}
+
+// 未物化的复合 seed 元素内部的懒视图（对象节点）：读一律"没存值"（读方回落默认值，与标量 seed 同口径），写先物化整段
+// seed、再落到真实节点的同一路径。find 解析真实节点（未物化为 null），materialize 物化后返回真实节点；往下导航沿用同一对。
+// 文档身份（Modified / Head……）借外层数组：物化即外层数组的结构变化，面板据此按真实 token 行替换虚拟行。
+sealed class SeedObjectView(IDataPropertyArray identity, Func<IDataPropertyObject?> find, Func<IDataPropertyObject> materialize)
+    : ForwardingDataObject(identity), IDataPropertyObject
+{
+    public IDataPropertyObject Object(string key)
+        => new SeedObjectView(identity, () => find()?.Object(key), () => materialize().Object(key));
+    public IDataPropertyArray Array(string key)
+        => new SeedArrayView(identity, () => find()?.Array(key), () => materialize().Array(key));
+    public PropertyValue GetValue(string key, PropertyValue defaultValue) => find() is { } real ? real.GetValue(key, defaultValue) : defaultValue;
+    public PropertyValue GetRawValue(string key) => find()?.GetRawValue(key) ?? PropertyValue.Null;
+    public void SetValue(string key, PropertyValue value) => materialize().SetValue(key, value);
+    public void RemoveValue(string key) => find()?.RemoveValue(key);
+}
+
+// 同上，数组节点：未物化时是空数组（没有元素），任何结构性写入先物化。结构变化事件借外层数组（物化即其结构变化）。
+sealed class SeedArrayView(IDataPropertyArray identity, Func<IDataPropertyArray?> find, Func<IDataPropertyArray> materialize)
+    : ForwardingDataObject(identity), IDataPropertyArray
+{
+    public int Count => find()?.Count ?? 0;
+    public IReadOnlyList<string> Tokens => find()?.Tokens ?? [];
+    public IModifiedEvent MembershipModified => identity.MembershipModified;
+
+    public IDataPropertyObject Object(string key)
+        => new SeedObjectView(identity, () => find()?.Object(key), () => materialize().Object(key));
+    public IDataPropertyArray Array(string key)
+        => new SeedArrayView(identity, () => find()?.Array(key), () => materialize().Array(key));
+    public PropertyValue GetValue(string key, PropertyValue defaultValue) => find() is { } real ? real.GetValue(key, defaultValue) : defaultValue;
+    public PropertyValue GetRawValue(string key) => find()?.GetRawValue(key) ?? PropertyValue.Null;
+    public void SetValue(string key, PropertyValue value) => materialize().SetValue(key, value);
+    public void RemoveValue(string key) => find()?.RemoveValue(key);
+    public void Insert(int index, PropertyValue value) => materialize().Insert(index, value);
+    public void Add(PropertyValue value) => materialize().Add(value);
+    public void RemoveAt(int index) => find()?.RemoveAt(index);
+    public void Move(int from, int to) => find()?.Move(from, to);
 }
 
 internal static class ArrayControlsFactory

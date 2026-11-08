@@ -30,6 +30,7 @@
 | 5 | `TuneLab/ExperimentalPatchBootstrap.cs` | 整个文件 | 四个转发方法 + `IHostServices` 实现 | 「缝」本身，**尽量只增不改**。 |
 | 6 | `TuneLab/TuneLab.csproj`、`TuneLab.sln` | — | 一条 `ProjectReference` + 一条工程项 | 只加一次。 |
 | 7 | `TuneLab/ExperimentalPatch<功能>.cs`（**新增文件**） | — | 适配器：把宿主 `internal` 类型（`Track` / `Project` / `AudioEngine` …）翻成契约 | **上游没有同名文件，冲突恒为零**。需要宿主内部类型时走这里，别塞进缝文件。 |
+| 8 | `TuneLab/UI/MainWindow/Editor/SideBar/Export/ExportSideBarContentProvider.cs` | 建 content 时 `ExperimentalPatchBootstrap.GetExportOptions()` 一段；`SetProject` 时逐个 `Refresh()` | 导出侧栏的补丁选项挂载点（`ExportOptionsContribution`，EP-MIXER-34） | 没有补丁贡献时整段跳过，侧栏与上游逐项一致。标题/控件/文案都在补丁层。 |
 
 **除这六处 + 新增的适配器文件，宿主其余文件一律不改。** 需要"宿主在别处也通知一下"时，不是去改那个文件——而是把调用点
 放到这六个位置里合适的那一处，或者按 §3/§4 新开一个锚点并**把它登记回本表**。

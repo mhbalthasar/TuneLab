@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using TuneLab.Extensions;
 using TuneLab.Foundation;
 using TuneLab.GUI.Controllers;
@@ -18,12 +19,15 @@ namespace TuneLab.Commands;
 internal static class ExtensionSettingsText
 {
     // 按 "kind:id" / 裸 id / 显示名定位（可用 packageId 消歧；同 id 跨包并存时不猜、要求点明）。
+    // 都不中时再认包 id：`extension list` 最先展示的就是它，调用方最自然拿它来指；包里只有一个带设置的
+    // extension 时无歧义，多个则列出各自的 "kind:id" 要求点名。按包 id 定位成功时另给一句 Hint：这只是兜底，
+    // 包里一旦多出第二个带设置的 extension 就不再成立，要让调用方下次改用 "kind:id"。
     // 错误的 message 不带 "Error: " 前缀——前缀由入口加（agent 入口加、CLI 打 stderr 不冗余）。
-    public static (ExtensionSettingsManager.Entry Entry, CommandError? Error) Resolve(string query, string? packageId)
+    public static (ExtensionSettingsManager.Entry Entry, CommandError? Error, string? Hint) Resolve(string query, string? packageId)
     {
         var entries = ExtensionSettingsManager.GetEntries();
         if (entries.Count == 0)
-            return (default, new CommandError("no_extension_settings", "no installed extension declares its own settings."));
+            return (default, new CommandError("no_extension_settings", "no installed extension declares its own settings."), null);
 
         query = query.Trim();
         packageId = (packageId ?? "").Trim();
@@ -32,19 +36,38 @@ internal static class ExtensionSettingsText
                 || string.Equals(e.ExtensionId, query, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(e.DisplayName, query, StringComparison.OrdinalIgnoreCase))
             .ToList();
+        bool byPackageId = false;
+        if (matches.Count == 0)
+        {
+            matches = entries.Where(e => string.Equals(e.PackageId, query, StringComparison.OrdinalIgnoreCase)).ToList();
+            byPackageId = matches.Count > 0;
+        }
         if (packageId.Length != 0)
             matches = matches.Where(e => string.Equals(e.PackageId, packageId, StringComparison.OrdinalIgnoreCase)).ToList();
 
         if (matches.Count == 0)
             return (default, new CommandError("not_found", string.Format(
                 "no extension with settings matches \"{0}\"{1}. Call list_extension_settings to see the available ones.",
-                query, packageId.Length == 0 ? "" : " in package \"" + packageId + "\"")));
+                query, packageId.Length == 0 ? "" : " in package \"" + packageId + "\"")), null);
+        if (matches.Count > 1 && matches.All(m => string.Equals(m.PackageId, matches[0].PackageId, StringComparison.OrdinalIgnoreCase)))
+            return (default, new CommandError("ambiguous", string.Format(
+                "the package \"{0}\" has more than one extension with settings ({1}). Name one of them.",
+                matches[0].PackageId, string.Join(", ", matches.Select(m => m.ExtensionKey)))), null);
         if (matches.Count > 1)
             return (default, new CommandError("ambiguous", string.Format(
                 "\"{0}\" is provided by more than one package ({1}). Pass packageId to say which one.",
-                query, string.Join(", ", matches.Select(m => m.PackageId)))));
-        return (matches[0], null);
+                query, string.Join(", ", matches.Select(m => m.PackageId)))), null);
+
+        var hint = byPackageId ? string.Format(
+            "Note: \"{0}\" is a package id, not an extension; it was taken to mean that package's only extension with settings, {1}. "
+            + "Pass extension=\"{1}\" next time — a package id stops working as soon as the package has more than one extension with settings.",
+            query, matches[0].ExtensionKey) : null;
+        return (matches[0], null, hint);
     }
+
+    // 结果里带着 Resolve 给的 Hint 时，渲染成末尾单独一行（两条命令共用，措辞只在 Resolve 一处）。
+    public static string HintSuffix(JsonObject data)
+        => data["hint"]?.GetValue<string>() is { } hint ? "\n" + hint : string.Empty;
 
     // 插件声明的 schema（按当刻已存值求值——config 可随值动态显隐）。插件抛错就地捕获、如实回报，不拖垮命令。
     public static (ObjectConfig? Config, string? Error) SchemaOf(ExtensionSettingsManager.Entry entry)
@@ -67,96 +90,8 @@ internal static class ExtensionSettingsText
         public PropertyObject Settings => values;
     }
 
-    // JSON 实参 → 该字段能吃的 PropertyValue，判据【只看字段自己的 config】。
+    // JSON 实参 → 该字段能吃的 PropertyValue：转成中性值后交给 ConfigValues.Check——与脚本 setProperty 同一份口径
+    //（叶子按约束校验、复合字段整体写入并递归校验）。判据【只看字段自己的 config】；调用方须给出按写入后的值求出的 config。
     public static (PropertyValue Value, string? Error) Normalize(IControllerConfig config, JsonElement raw, string key)
-    {
-        switch (config)
-        {
-            case CheckBoxConfig:
-                return JsonScalar.TryBoolean(raw, out var b)
-                    ? (PropertyValue.Create(b), null)
-                    : (default, string.Format("\"{0}\" is a boolean; got {1}.", key, JsonScalar.Text(raw)));
-
-            case SliderConfig slider:
-            {
-                if (!JsonScalar.TryNumber(raw, out var d))
-                    return (default, string.Format("\"{0}\" is a number; got {1}.", key, JsonScalar.Text(raw)));
-                double min = slider.Scale.ToValue(0), max = slider.Scale.ToValue(1);
-                if (d < min || d > max)
-                    return (default, string.Format("{0} is out of range for \"{1}\": allowed [{2}, {3}].",
-                        ConfigText.FormatNum(d), key, ConfigText.FormatNum(min), ConfigText.FormatNum(max)));
-                return (PropertyValue.Create(d), null);
-            }
-
-            case DraggableNumberBoxConfig number:
-            {
-                if (!JsonScalar.TryNumber(raw, out var d))
-                    return (default, string.Format("\"{0}\" is a number; got {1}.", key, JsonScalar.Text(raw)));
-                if (number.Min is { } min && d < min)
-                    return (default, string.Format("{0} is below the minimum {1} for \"{2}\".", ConfigText.FormatNum(d), ConfigText.FormatNum(min), key));
-                if (number.Max is { } max && d > max)
-                    return (default, string.Format("{0} is above the maximum {1} for \"{2}\".", ConfigText.FormatNum(d), ConfigText.FormatNum(max), key));
-                return (PropertyValue.Create(d), null);
-            }
-
-            case ComboBoxConfig combo:
-            {
-                var given = JsonScalar.Text(raw);
-                foreach (var pass in new[] { StringComparison.Ordinal, StringComparison.OrdinalIgnoreCase })
-                    foreach (var option in combo.Items.Leaves())
-                    {
-                        if (option.Value.IsNull())
-                            continue;
-                        if (string.Equals(JsonScalar.Literal(option.Value), given, pass))
-                            return (option.Value, null);   // 值形态照声明原样（可能是文本/数字/布尔）
-                    }
-                return (default, string.Format("\"{0}\" is not an allowed value for \"{1}\": {2}.", given, key, ConfigText.Describe(combo)));
-            }
-
-            // tag 组：JSON 数组，逐个按候选比对（同下拉的宽容口径：先区分大小写、再不区分）；重复的只留第一个
-            //（有序、不重复，见 TagConfig）。整组一个都不能错——错一个就整条拒绝并点名，不悄悄丢掉它写其余的。
-            case TagConfig tags:
-            {
-                if (raw.ValueKind != JsonValueKind.Array)
-                    return (default, string.Format("\"{0}\" is a list of tags; give a JSON array such as [\"a\", \"b\"]. Allowed: {1}.", key, ConfigText.Describe(tags)));
-                var values = new List<PropertyValue>();
-                foreach (var element in raw.EnumerateArray())
-                {
-                    var given = JsonScalar.Text(element);
-                    PropertyValue? match = null;
-                    foreach (var pass in new[] { StringComparison.Ordinal, StringComparison.OrdinalIgnoreCase })
-                    {
-                        foreach (var candidate in tags.Items.Leaves())
-                        {
-                            if (!candidate.Value.IsNull() && string.Equals(JsonScalar.Literal(candidate.Value), given, pass))
-                            {
-                                match = candidate.Value;
-                                break;
-                            }
-                        }
-                        if (match != null)
-                            break;
-                    }
-                    if (match is not { } value)
-                        return (default, string.Format("\"{0}\" is not an allowed tag for \"{1}\": {2}.", given, key, ConfigText.Describe(tags)));
-                    if (!values.Contains(value))
-                        values.Add(value);
-                }
-                return (new PropertyArray(values), null);
-            }
-
-            // 路径也是文本：宿主不校验存不存在（合法与否只有插件知道，见 PathPickerConfig 注释），与手填文本同路。
-            case TextBoxConfig:
-            case PathPickerConfig:
-                return raw.ValueKind is JsonValueKind.True or JsonValueKind.False
-                    ? (default, string.Format("\"{0}\" is text; got a boolean.", key))
-                    : (PropertyValue.Create(JsonScalar.Text(raw)), null);
-
-            case ButtonConfig:
-                return (default, string.Format("\"{0}\" is a button, not a value — it can only be clicked in the Settings window's Extensions page.", key));
-
-            default:
-                return (default, string.Format("\"{0}\" is a grouped/complex field that can't be set here — ask the user to edit it in the Settings window's Extensions page.", key));
-        }
-    }
+        => ConfigValues.Check(config, ConfigText.ToPropertyValue(JsonNode.Parse(raw.GetRawText())), key);
 }

@@ -28,17 +28,24 @@ the txt files just to make the build green:
 2. Intentional **additive** API (new member/type) → plugin-implemented interfaces need a
    DIM default body; declare the signature in `PublicAPI.Unshipped.txt`
    (`dotnet format analyzers <csproj> --diagnostics RS0016`), and call out the new API
-   explicitly when presenting your change.
+   explicitly when presenting your change. If this is the first new API since the last
+   release (Unshipped was empty), also bump `ExtensionManager.SdkVersion` one step and add a
+   "not yet released" row to the version table in the plugin docs.
 3. Intentional **breaking** change (delete/alter a shipped signature) → **stop and ask the
    maintainer first.** Never edit `PublicAPI.Shipped.txt` on your own initiative.
 
 Full evolution rules (interface classification, DTO shape policy, enum tolerance, release
 workflow): `docs/sdk-api-evolution.md`.
 
+When a new member is "a value plus a notification that it changed", check first whether it should be a
+single `IReadOnlyNotifiableProperty<T>` instead of a getter plus an `XChanged` event — the criteria are in
+`docs/sdk-api-evolution.md` (section on how changing values are exposed).
+
 Related invariants: `AssemblyVersion` of both assemblies is pinned to 2.0.0.0 forever (see
 csproj comments — do not "align" it with the release version); the manifest `sdk-version`
-gate (`ExtensionManager.SdkVersion`) is a separate version axis and must be bumped when
-shipping new API.
+gate (`ExtensionManager.SdkVersion`) is a separate version axis that moves **one step per release
+cycle**: bumped with the first new API after a release, not again until the next release
+(`SdkVersionLedgerTests` enforces this).
 
 ## 用户手册
 
@@ -55,7 +62,7 @@ pwsh tools/ScreenshotBot/shoot.ps1     # -> docs/images/manual/*.png + docs/gene
 ```
 
 它用 Avalonia headless + 真 Skia 渲染跑真实的 `App`/`MainWindow`（不开真窗口），数据目录经 `TUNELAB_DATA_DIR`
-重定向到临时沙盒（不读也不写开发机的 `%APPDATA%\TuneLab`）。**改了界面就重跑一次。**
+重定向到临时沙盒（不读也不写开发机的 `%APPDATA%\TuneLab`）。**发版前统一跑一次**——开发期界面还可能再改，每改一次就跑会白跑；改了界面时只记下哪些图过时了，发版前一并重跑。
 原理、怎么加图、已知的坑见 [tools/ScreenshotBot/README.md](tools/ScreenshotBot/README.md)。
 
 ## Release notes 不能出现代码语法
@@ -73,6 +80,23 @@ WAVE_FORMAT_EXTENSIBLE 这类词直接写成正文。其余 Markdown 语法（�
 两道闸：`CIUtils/check-release-notes.py` 用 CommonMark 解析判定（嵌套列表的四空格缩进不会
 误报）；`.github/workflows/check-release-notes.yml` 在 release 发布或正文被编辑时跑它，
 `upload-release.yml` 则对 CI 自动生成的正文用 `--fix` 就地净化。
+
+## Text that agents read
+
+The built-in agent's system prompt (`AgentSideBarContentProvider.SystemPrompt`) and the external-agent
+onboarding text (`ExternalAgentOnboarding`) describe other modules, so a new or renamed command does not
+touch them — they drift silently. Both once said the agent "cannot export audio"; after
+`project export-audio` landed, an external agent still refused to export because the text told it so.
+
+- Write behaviour rules there ("tell me before rendering audio", "don't save unless asked"), never a
+  capability list or "you cannot X". What exists comes from the command registry.
+- A deliberate, permanent boundary (e.g. the agent never reads secrets) belongs in the documentation of
+  the command that enforces it, not in these texts.
+- When you reverse a "we don't do X" decision, grep the repo for its wording — comments and docs repeat it.
+
+`AgentGuidanceTextTests` fails on tool names / `tunelab <group> <verb>` paths that do not exist and on
+negated-capability phrasing. Fix the text, don't widen the allowlist; only runtime-state sentences
+("the bridge is off right now") go there.
 
 ## Conventions
 

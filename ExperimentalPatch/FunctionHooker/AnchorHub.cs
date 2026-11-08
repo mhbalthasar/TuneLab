@@ -37,6 +37,15 @@ internal sealed class AnchorHub(IHostServices host) : IAnchorTable
 
     internal IReadOnlyList<SettingsTabContribution> GetSettingsTabs() => mSettingsTabs.ToArray();
 
+    // 导出侧栏贡献：宿主建侧栏时取一次快照。
+    public IDisposable AddExportOptions(ExportOptionsContribution options)
+    {
+        mExportOptions.Add(options);
+        return new Subscription(() => mExportOptions.Remove(options));
+    }
+
+    internal IReadOnlyList<ExportOptionsContribution> GetExportOptions() => mExportOptions.ToArray();
+
     // 取第一个能给出闪屏的提供者。提供者抛错只记日志、继续问下一个——一个坏补丁不该让所有人没闪屏。
     internal IStartupScreen? CreateStartupScreen()
     {
@@ -94,4 +103,5 @@ internal sealed class AnchorHub(IHostServices host) : IAnchorTable
     readonly List<Func<IStartupScreen>> mStartupScreens = [];
     readonly List<ExperimentalCommand> mCommands = [];
     readonly List<SettingsTabContribution> mSettingsTabs = [];
+    readonly List<ExportOptionsContribution> mExportOptions = [];
 }

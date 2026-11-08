@@ -148,18 +148,21 @@ public partial class MainWindow : Window
             {
                 // 必须先于 SetInfo：恢复出来的工程【保持未保存态】但要带上基准目录，而随后 SetInfo 新建出来的
                 // 音频 part 是靠 ProjectDocument 的 ItemAdded 订阅拿到基准目录的，此刻它必须已经就位。
-                mEditor.Document.SetRecovered(displayName, record.Meta?.OriginalPath);
+                // [EP-MIXER-32]
+                mEditor.Document.SetRecovered(displayName, record.Meta?.OriginalPath, file.BaseHref);
                 if (mEditor.Project == null)
                     return;
 
-                // 恢复和普通打开走同一套工程装载：SetInfo + 导出配置 + epMixer。
-                // 自动保存文件里的 epMixer 是文件内载荷，优先于原工程的 sidecar。
                 var fallbackPath = string.IsNullOrEmpty(record.Meta?.OriginalPath)
                     ? record.FilePath
                     : record.Meta!.OriginalPath;
-                ProjectRecovery.Apply(mEditor.Project, file, fallbackPath);
-                mEditor.Playhead.Pos = Math.Max(0, file.Editor.PlayheadPos);
-                mEditor.Project.Commit();
+                // [EP-MIXER-29] 与普通打开同理：SetInfo 会把十几条轨/插逐条挂回音频图，
+                // 每条都要求编一次图。攒到作用域结束时统一编一次。
+                using (TuneLab.Audio.AudioEngine.SuspendMixerGraphRebuild())
+                {
+                    ProjectRecovery.Apply(mEditor.Project, file, fallbackPath);
+                    mEditor.Project.Commit();
+                }
                 foreach (var part in mEditor.Project.Tracks.SelectMany(track => track.Parts))
                 {
                     if (part is MidiPart midiPart)
@@ -168,6 +171,8 @@ public partial class MainWindow : Window
                         break;
                     }
                 }
+                // 在开了 part 之后：布局里的 effect 参数要对着钢琴窗里的 part 认回。
+                mEditor.RestoreEditorInfo(file.Editor);
             }
             catch (Exception ex)
             {

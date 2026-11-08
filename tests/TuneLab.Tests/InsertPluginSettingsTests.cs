@@ -1,7 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using TuneLab;
+using TuneLab.Audio;
+using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.ExperimentalPatch.InsertHost;
 using Xunit;
 
 namespace TuneLab.Tests;
@@ -25,11 +29,10 @@ public class InsertPluginSettingsTests
     [Fact]
     public void InstrumentsAreNotPartOfTheCatalog()
     {
-        // 5 = 当前格式（P-C2：CLAP 从"只能扫"变成"能插"，旧缓存要整份重扫）。
-        // 旧数字 = 旧格式，整份缓存忽略。
+        // 6 = 当前格式（JSFX 也进目录）。旧数字 = 旧格式，整份缓存忽略。
         WithCache("""
         {
-          "CacheVersion": 5,
+          "CacheVersion": 6,
           "Vst3Paths": [],
           "Vst2Paths": [],
           "LastScanUtc": "2026-10-21 00:00:00Z",
@@ -144,6 +147,162 @@ public class InsertPluginSettingsTests
         {
             try { Directory.Delete(directory, recursive: true); } catch (Exception) { }
         }
+    }
+
+    // VST3 的两套历史 id 形态（路径型 vs bundle 名）必须归一，否则工程里存的短 id
+    // 会命中 x86 副本 —— 而 x64 桥的 LoadLibrary 碰不了 32 位 bundle。
+    [Fact]
+    public void Vst3CopiesNormalizeToTheSameIdAndThe64BitOneWins()
+    {
+        WithCache("""
+        {
+          "CacheVersion": 6,
+          "Vst3Paths": [],
+          "Vst2Paths": [],
+          "LastScanUtc": "2026-11-07 00:00:00Z",
+          "Cache": [
+            {
+              "Format": "VST3",
+              "PluginId": "vst3:C:/Program Files/Common Files/VST3/ChowPhaserStereo.vst3/Contents/x86_64-win/ChowPhaserStereo.vst3",
+              "Name": "ChowPhaserStereo",
+              "Locator": "C:/Program Files/Common Files/VST3/ChowPhaserStereo.vst3/Contents/x86_64-win/ChowPhaserStereo.vst3"
+            },
+            {
+              "Format": "VST3",
+              "PluginId": "vst3:ChowPhaserStereo",
+              "Name": "ChowPhaserStereo",
+              "Locator": "C:/Program Files (x86)/Common Files/VST3/ChowPhaserStereo.vst3/Contents/x86-win/ChowPhaserStereo.vst3"
+            }
+          ]
+        }
+        """, settings =>
+        {
+            var plugin = Assert.Single(settings.CachedPlugins);
+
+            Assert.Equal("vst3:ChowPhaserStereo", plugin.PluginId);
+            Assert.Contains("x86_64-win", plugin.Locator);
+            Assert.True(plugin.IsAvailable);
+            Assert.Null(plugin.UnavailableReason);
+        });
+    }
+
+    [Fact]
+    public void A32BitOnlyVst3CopyIsListedButUnavailable()
+    {
+        WithCache("""
+        {
+          "CacheVersion": 6,
+          "Vst3Paths": [],
+          "Vst2Paths": [],
+          "LastScanUtc": "2026-11-07 00:00:00Z",
+          "Cache": [
+            {
+              "Format": "VST3",
+              "PluginId": "vst3:ChowPhaserStereo",
+              "Name": "ChowPhaserStereo",
+              "Locator": "C:/Program Files (x86)/Common Files/VST3/ChowPhaserStereo.vst3/Contents/x86-win/ChowPhaserStereo.vst3"
+            }
+          ]
+        }
+        """, settings =>
+        {
+            var plugin = Assert.Single(settings.CachedPlugins);
+
+            Assert.False(plugin.IsAvailable);
+            Assert.Contains("32-bit VST3", plugin.UnavailableReason ?? string.Empty);
+        });
+    }
+
+    [Theory]
+    [InlineData(@"C:\Program Files (x86)\Common Files\VST3\X.vst3\Contents\x86-win\X.vst3", true)]
+    [InlineData("C:/Program Files (x86)/Common Files/VST3/X.vst3/Contents/x86-win/X.vst3", true)]
+    [InlineData(@"C:\Program Files\Common Files\VST3\X.vst3\Contents\x86_64-win\X.vst3", false)]
+    [InlineData("", false)]
+    public void Vst3BitnessIsReadFromTheBundlePath(string locator, bool expected)
+        => Assert.Equal(expected, Vst3Backend.Is32BitBundle(locator));
+
+    // 旧缓存中 x64 条目的 PluginId 是完整路径，x86 条目是短 id；工程只存短 id。
+    // 解析必须按 bundle 名找回 x64 条目，而不是精确匹配到 x86 后让 x64 桥去加载它。
+    [Fact]
+    public void ResolvingAProjectIdPrefersThe64BitCacheEntry()
+    {
+        var cache = new List<InsertPluginEntry>
+        {
+            new()
+            {
+                Format = "VST3",
+                PluginId = @"vst3:C:\Program Files\Common Files\VST3\ChowPhaserStereo.vst3\Contents\x86_64-win\ChowPhaserStereo.vst3",
+                Name = "ChowPhaserStereo",
+                Locator = @"C:\Program Files\Common Files\VST3\ChowPhaserStereo.vst3\Contents\x86_64-win\ChowPhaserStereo.vst3",
+                IsAvailable = true,
+            },
+            new()
+            {
+                Format = "VST3",
+                PluginId = "vst3:ChowPhaserStereo",
+                Name = "ChowPhaserStereo",
+                Locator = @"C:\Program Files (x86)\Common Files\VST3\ChowPhaserStereo.vst3\Contents\x86-win\ChowPhaserStereo.vst3",
+                IsAvailable = true,
+            },
+        };
+
+        var plugin = new InsertInstanceFactory()
+            .FindPlugin(new Vst3Backend(), "vst3:ChowPhaserStereo", cache);
+
+        Assert.NotNull(plugin);
+        Assert.Contains("x86_64-win", plugin!.Locator);
+    }
+
+    [Fact]
+    public void AVst3PluginWithoutA64BitCopyIsRejectedWithAnExplicitReason()
+    {
+        var plugin = new InsertPluginInfo
+        {
+            Format = "VST3",
+            PluginId = "vst3:ChowPhaserStereo",
+            Name = "ChowPhaserStereo",
+            Locator = @"C:\Program Files (x86)\Common Files\VST3\ChowPhaserStereo.vst3\Contents\x86-win\ChowPhaserStereo.vst3",
+        };
+
+        var insert = new Vst3Backend().Create(
+            plugin, new InsertSettings { SampleRate = 44100, MaxBlockSize = 1024 }, out var reason);
+
+        Assert.Null(insert);
+        Assert.Contains("32-bit VST3", reason ?? string.Empty);
+    }
+
+    [Fact]
+    public void ScanPicksUpJsfxTextFilesWithoutExecutingThem()
+    {
+        WithSettings(null, bridgeAvailable: false, settings =>
+        {
+            string folder = Environment.GetEnvironmentVariable("TUNELAB_DATA_DIR")!;
+            string jsfxFolder = Path.Combine(folder, "Effects");
+            Directory.CreateDirectory(jsfxFolder);
+
+            File.WriteAllText(Path.Combine(jsfxFolder, "foo.jsfx"), """
+                desc: Scan Test
+                slider1:0<0,1,0.01>Gain
+
+                @init
+                gain = slider1;
+
+                @sample
+                spl0 = spl0 * gain;
+                """);
+
+            settings.SetPaths("VST3", []);
+            settings.SetPaths("VST2", []);
+            settings.SetPaths("CLAP", []);
+            settings.SetPaths("JSFX", [jsfxFolder]);
+
+            var scanned = settings.Scan();
+            var jsfx = Assert.Single(scanned, plugin => plugin.Format == "JSFX");
+
+            Assert.Equal("Scan Test", jsfx.Name);
+            Assert.Equal("jsfx:foo.jsfx", jsfx.PluginId);
+            Assert.True(jsfx.IsAvailable);
+        });
     }
 
     static void WithCache(string json, Action<InsertPluginSettings> assert)

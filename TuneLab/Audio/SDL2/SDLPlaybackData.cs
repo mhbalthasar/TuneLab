@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using SDL2;
 using NAudio.Wave;
+using TuneLab.Foundation;
 
 namespace TuneLab.Audio.SDL2;
 
@@ -21,7 +22,8 @@ internal class SDLPlaybackData
 
     public SDLGlobal.ValueChangeEvent<PlaybackState>? onStateChanged;
 
-    public SDLGlobal.ValueEvent<int>? onSamplesConsumed;
+    // [EP-MIXER-31] 回调前累计的帧数，供宿主把“听到的位置”映射回工程时间轴。
+    public SDLGlobal.ValueEvent<long>? onSamplesConsumed;
 
     public SDLGlobal.VoidEvent? onDevicesUpdated;
 
@@ -46,6 +48,9 @@ internal class SDLPlaybackData
     public string devName = SDLGlobal.PLAYBACK_EMPTY_DEVICE;
 
     public SDL.SDL_AudioSpec spec;
+
+    // [EP-MIXER-31] 已写入设备流的帧数（不含正在写的这一块）。播放头用它对齐"听到的位置"。
+    public long consumedFrames;
 
     // 线程相关
     private Thread producer;
@@ -138,7 +143,8 @@ internal class SDLPlaybackData
             }
 
             // 重新检测音频设备
-            _ = SDL.SDL_GetNumAudioDevices(0);
+            int deviceCount = SDL.SDL_GetNumAudioDevices(0);
+            Log.Info($"SDL: audio driver '{drv}' initialized, {deviceCount} output device(s)");
             onDevicesUpdated?.Invoke();
         }
 
@@ -162,22 +168,45 @@ internal class SDLPlaybackData
             SDL.SDL_CloseAudioDevice(orgId);
         }
 
+        // 先回到"无设备"：下面打开失败时不能留下一个已关闭的 devId。
+        devId = 0;
+        devName = SDLGlobal.PLAYBACK_EMPTY_DEVICE;
+
         if (dev != SDLGlobal.PLAYBACK_EMPTY_DEVICE)
         {
-            // 打开当前设备
+            // [EP-MIXER-31] 打开当前设备。先要求精确匹配宿主请求的块长；部分 WASAPI 设备只接受
+            // 自己的块长（例如 441 帧），这时允许 SDL 改 samples 再试一次。
+            // 只允许 samples 变化：格式/采样率/声道变了宿主就得重采样，这里不做。
+            const int SDL_AUDIO_ALLOW_SAMPLES_CHANGE = 0x8;
+
             uint id;
             if ((id = SDL.SDL_OpenAudioDevice(
                     string.IsNullOrEmpty(dev) ? null : dev,
                     0,
                     ref spec,
-                    out _,
+                    out var obtained,
                     0)) == 0)
             {
-                throw new IOException($"SDL: failed to open audio device \"{dev}\": {SDL.SDL_GetError()}");
+                string firstError = SDL.SDL_GetError();
+                if ((id = SDL.SDL_OpenAudioDevice(
+                        string.IsNullOrEmpty(dev) ? null : dev,
+                        0,
+                        ref spec,
+                        out obtained,
+                        SDL_AUDIO_ALLOW_SAMPLES_CHANGE)) == 0)
+                {
+                    throw new IOException($"SDL: failed to open audio device \"{dev}\": {SDL.SDL_GetError()} (exact spec failed: {firstError})");
+                }
+
+                Log.Info($"SDL: device '{dev}' rejected the exact spec; opened with {obtained.samples} samples instead of {spec.samples}.");
             }
 
+            // 用设备实际接受的 spec 填生产者缓冲区。只允许 samples 变化，
+            // 所以 freq/format/channels 仍是宿主请求值；把 obtained 整体接过来最稳。
+            spec = obtained;
             devId = id;
             devName = dev;
+            consumedFrames = 0;
 
             // 初始化临时浮点数组
             var cnt = spec.samples * spec.channels;
@@ -189,11 +218,8 @@ internal class SDLPlaybackData
             {
                 pcm_buffer = new float[cnt];
             }
-        }
-        else
-        {
-            devId = 0;
-            devName = dev;
+
+            Log.Info($"SDL: opened audio device '{(string.IsNullOrEmpty(dev) ? "<default>" : dev)}' (id={id}, {spec.freq} Hz, {spec.channels} ch, {spec.samples} samples)");
         }
 
         // 通知音频设备已更改
@@ -215,6 +241,18 @@ internal class SDLPlaybackData
         }
     }
 
+    // [EP-MIXER-31] 丢弃当前块并让生产者重新填一块。调用方在暂停/恢复/跳转时用。
+    public void Flush()
+    {
+        mutex.WaitOne();
+        scb.audio_len = 0;
+        scb.audio_pos = 0;
+        mutex.ReleaseMutex();
+
+        // 生产者只在收到 BUFFER_END 时填块；清空后必须再推一次，否则会一直输出静音。
+        NotifyAudioBufferEnd();
+    }
+
     // 消费者
     private void AudioSpecCallback(IntPtr udata, IntPtr stream, int len)
     {
@@ -228,6 +266,9 @@ internal class SDLPlaybackData
         {
             len = Math.Min(len, scb.audio_len);
 
+            // [EP-MIXER-31] 回调前累计的帧数 = 设备已经播完的位置（这一块还没开始播）。
+            long playedFrames = consumedFrames;
+
             // 将缓冲区中的声音写入流
             SDL.SDL_MixAudioFormat(
                 stream,
@@ -240,7 +281,9 @@ internal class SDLPlaybackData
             scb.audio_pos += len;
             scb.audio_len -= len;
 
-            onSamplesConsumed?.Invoke(len / sizeof(float));
+            int frames = len / sizeof(float) / spec.channels;
+            consumedFrames += frames;
+            onSamplesConsumed?.Invoke(playedFrames);
 
             // 判断是否完毕
             if (scb.audio_len == 0)

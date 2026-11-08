@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TuneLab.Extensions;
 using TuneLab.Foundation;
+using TuneLab.GUI.Controllers;
 using TuneLab.SDK;
 
 namespace TuneLab.Commands.Handlers;
@@ -41,7 +42,7 @@ internal sealed class ExtensionSettingsCommand : ICommand
         {
           "type": "object",
           "properties": {
-            "extension": { "type": "string", "description": "Optional: the extension's id (\"<kind>:<id>\" or just the id) or display name, from a prior no-argument call." },
+            "extension": { "type": "string", "description": "Optional: the extension's id (\"<kind>:<id>\" or just the id), display name, or the id of the package that provides it, from a prior no-argument call." },
             "packageId": { "type": "string", "description": "Optional: needed only when two installed packages provide the same extension id (the list shows the packageIds)." }
           },
           "additionalProperties": false
@@ -81,7 +82,7 @@ internal sealed class ExtensionSettingsCommand : ICommand
 
     static CommandResult DescribeExtension(string query, string? packageId)
     {
-        var (entry, resolveError) = ExtensionSettingsText.Resolve(query, packageId);
+        var (entry, resolveError, hint) = ExtensionSettingsText.Resolve(query, packageId);
         if (resolveError is { } error)
             return CommandResult.Fail(error.Code, error.Message);
 
@@ -138,6 +139,7 @@ internal sealed class ExtensionSettingsCommand : ICommand
             ["package"] = ExtensionManager.GetPackageName(entry.PackageId),
             ["packageId"] = entry.PackageId,
             ["fields"] = fields,
+            ["hint"] = hint,
         });
     }
 
@@ -176,11 +178,12 @@ internal sealed class ExtensionSettingsCommand : ICommand
     {
         var displayName = obj["displayName"]!.GetValue<string>();
         if (fields.Count == 0)
-            return string.Format("\"{0}\" declares no settings fields (at the current values).", displayName);
+            return string.Format("\"{0}\" declares no settings fields (at the current values).", displayName) + ExtensionSettingsText.HintSuffix(obj);
 
         var sb = new StringBuilder();
-        sb.Append(string.Format("Settings of \"{0}\" ({1}, package \"{2}\"), {3} field(s). Change one with set_extension_setting.",
-            displayName, obj["extensionKey"]!.GetValue<string>(), obj["package"]!.GetValue<string>(), fields.Count));
+        // 包 id 也列出来：调用方最先在 extension list 里看到的就是它，只给包名会让人拿不准该填哪种写法。
+        sb.Append(string.Format("Settings of \"{0}\" ({1}, package \"{2}\", packageId={3}), {4} field(s). Change one with set_extension_setting.",
+            displayName, obj["extensionKey"]!.GetValue<string>(), obj["package"]!.GetValue<string>(), obj["packageId"]!.GetValue<string>(), fields.Count));
         sb.Append("\nFormat: <key> \"<label>\": <allowed> — current <value>, default <value>");
         foreach (var node in fields)
         {
@@ -208,6 +211,7 @@ internal sealed class ExtensionSettingsCommand : ICommand
                 sb.Append(", default ").Append(ConfigText.FormatValue(field["default"]));
         }
         sb.Append("\n(Fields can appear/disappear depending on other values — re-list after a change if you expect that.)");
+        sb.Append(ExtensionSettingsText.HintSuffix(obj));
         return sb.ToString();
     }
 }
@@ -235,9 +239,9 @@ internal sealed class ExtensionSetSettingCommand : ICommand
         {
           "type": "object",
           "properties": {
-            "extension": { "type": "string", "description": "The extension's id (\"<kind>:<id>\" or just the id) or display name, as listed by list_extension_settings." },
+            "extension": { "type": "string", "description": "The extension's id (\"<kind>:<id>\" or just the id), display name, or the id of the package that provides it, as listed by list_extension_settings." },
             "key": { "type": "string", "description": "The field key exactly as listed." },
-            "value": { "type": ["string", "number", "boolean"], "description": "The new value, matching the field's declared type/range/options." },
+            "value": { "type": ["string", "number", "boolean", "array", "object"], "description": "The new value, matching the field's declared type/range/options. A tags field takes a JSON array of its allowed values, e.g. [\"a\", \"b\"]; a list field takes the whole list as a JSON array and a grouped field a JSON object, shaped as listed." },
             "packageId": { "type": "string", "description": "Optional: needed only when two packages provide the same extension id." }
           },
           "required": ["extension", "key", "value"],
@@ -269,18 +273,19 @@ internal sealed class ExtensionSetSettingCommand : ICommand
                 ["old"] = ConfigText.ToJson(plan.Old),
                 ["new"] = ConfigText.ToJson(plan.Value),
                 ["note"] = message,
+                ["hint"] = plan.Hint,
             });
 
         return await ctx.OnMainThread(() => Apply(plan, message));
     }
 
-    readonly record struct FieldPlan(CommandError? Error, JsonObject? NoOp, ExtensionSettingsManager.Entry Entry, string Key, string Target, PropertyValue Value, PropertyValue Old);
+    readonly record struct FieldPlan(CommandError? Error, JsonObject? NoOp, ExtensionSettingsManager.Entry Entry, string Key, string Target, PropertyValue Value, PropertyValue Old, string? Hint);
 
-    static FieldPlan Fail(string code, string message) => new(new CommandError(code, message), null, default, "", "", default, default);
+    static FieldPlan Fail(string code, string message) => new(new CommandError(code, message), null, default, "", "", default, default, null);
 
     static FieldPlan Plan(string extension, string key, string? packageId, JsonElement raw)
     {
-        var (entry, resolveError) = ExtensionSettingsText.Resolve(extension, packageId);
+        var (entry, resolveError, hint) = ExtensionSettingsText.Resolve(extension, packageId);
         if (resolveError is { } lookupError)
             return Fail(lookupError.Code, lookupError.Message);
 
@@ -311,13 +316,30 @@ internal sealed class ExtensionSetSettingCommand : ICommand
                 "\"{0}\" is a secret field (API key / licence), which the agent is not allowed to set. Ask the user to enter it themselves in the Settings window's Extensions page, under \"{1}\".",
                 fieldKey, entry.DisplayName));
 
-        var (value, valueError) = ExtensionSettingsText.Normalize(fieldConfig!, raw, fieldKey);
+        // 按【写入后的值】重新求 schema 再校验：列表 / 变长键控的逐元素 config 是插件按数据现算的，新值长度、键变了，
+        // 拿旧 schema 校验会对不上（也让"先改模式开关再写开关下的字段"这类依赖关系照常成立）。
+        var values = ExtensionSettingsManager.Load(entry);
+        var candidate = new Map<string, PropertyValue>();
+        foreach (var kv in values)
+            candidate[kv.Key] = kv.Value;
+        candidate[fieldKey] = ConfigText.ToPropertyValue(JsonNode.Parse(raw.GetRawText()));
+        IControllerConfig checkConfig = fieldConfig!;
+        try
+        {
+            var after = ExtensionSettingsText.SchemaOf(entry, new PropertyObject(candidate));
+            if (after.Properties.FirstOrDefault(p => p.Key.Id == fieldKey)?.Value is { } declared)
+                checkConfig = declared;
+        }
+        catch (Exception)
+        {
+            // 插件按候选值求 schema 出错：退回按当前 schema 校验（保存时的回喂另有自己的出错处理）。
+        }
+
+        var (value, valueError) = ExtensionSettingsText.Normalize(checkConfig, raw, fieldKey);
         if (valueError != null)
             return Fail("invalid_value", valueError);
 
-        var values = ExtensionSettingsManager.Load(entry);
-        var old = values.TryGetValue(fieldKey, out var cur) ? cur
-            : fieldConfig is IValueConfig leaf ? leaf.DefaultValue : PropertyValue.Null;
+        var old = values.TryGetValue(fieldKey, out var cur) ? cur : fieldConfig!.GetDefaultValue();
         if (value.Equals(old))
             return new FieldPlan(null, new JsonObject
             {
@@ -326,9 +348,10 @@ internal sealed class ExtensionSetSettingCommand : ICommand
                 ["outcome"] = "unchanged",
                 ["old"] = ConfigText.ToJson(old),
                 ["new"] = ConfigText.ToJson(value),
-            }, default, "", "", default, default);
+                ["hint"] = hint,
+            }, default, "", "", default, default, null);
 
-        return new FieldPlan(null, null, entry, fieldKey, entry.DisplayName + " → " + fieldKey, value, old);
+        return new FieldPlan(null, null, entry, fieldKey, entry.DisplayName + " → " + fieldKey, value, old, hint);
     }
 
     // 落地（主线程）：读全量已存值 → 改一格 → 按【改后值算出的】schema 取密钥集 → 落盘 → ApplyOne 立即回喂。
@@ -358,6 +381,7 @@ internal sealed class ExtensionSetSettingCommand : ICommand
             ["old"] = ConfigText.ToJson(plan.Old),
             ["new"] = ConfigText.ToJson(plan.Value),
             ["note"] = string.IsNullOrEmpty(note) ? null : note,
+            ["hint"] = plan.Hint,
         });
     }
 
@@ -369,7 +393,11 @@ internal sealed class ExtensionSetSettingCommand : ICommand
 
         var extension = obj["extension"]!.GetValue<string>();
         var key = obj["key"]!.GetValue<string>();
+        return RenderOutcome(obj, extension, key) + ExtensionSettingsText.HintSuffix(obj);
+    }
 
+    static string RenderOutcome(JsonObject obj, string extension, string key)
+    {
         switch (obj["outcome"]!.GetValue<string>())
         {
             case "unchanged":

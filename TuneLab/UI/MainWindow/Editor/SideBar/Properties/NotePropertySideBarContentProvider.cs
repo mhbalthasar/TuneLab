@@ -1,4 +1,4 @@
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
 using Avalonia.Layout;
 using System;
 using System.Collections.Generic;
@@ -25,7 +25,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
     public NotePropertySideBarContentProvider()
     {
         // 两面板各一个"标脏→合拍重建"调度器：note 面板（结构=选中集变化整体重绑 SetConfig、值=config 沿链重算
-        // keyed-diff 复用控件）、音素面板（结构=签名/成员变化整面板重建、值=时长/权重值框轻刷新，编辑中经 Suspended 抑制）。
+        // keyed-diff 复用控件）、音素面板（结构=签名/成员变化整面板重建、值=时长/权重值框轻刷新）；窗口编辑中两者都挂起（见 EditGate）。
         // 订阅回调一律只标脏不读数，读取集中在 flush 回调内（settled 状态上执行），见 ViewRefreshScheduler。
         mNoteScheduler = new(RefreshNoteControllerNow, ReconcileNoteControllerNow);
         mPhonemeScheduler = new(RefreshPhonemeControllerNow, RefreshPhonemeValues);
@@ -35,8 +35,13 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
         mNotePropertiesController.ItemContextMenuProvider = BuildNotePropertyContextMenu;
         // 插件按钮执行完 → 重新询问 note 声明（按钮动的是插件状态，面板选项可能随之变）。
         mNotePropertiesController.ButtonActionCompleted += mNoteScheduler.InvalidateValues;
+        // 所在窗口有编辑进行中（拖动 / 键入，任一面板，见 EditGate）时挂起两面板的刷新：值级重算本就由控制器推迟，
+        // 这里把结构级重绑（选中集变化 → SetConfig 整棵重建）与音素面板的整面板重建也留到编辑结束——不在拖动中途
+        // 拆掉正被拖的控件，也不让上方面板增减字段把它挤得跳位置。
+        mNoteScheduler.SuspendWhileEditing(mNotePanel, mLifetime);
+        mPhonemeScheduler.SuspendWhileEditing(mPhonemePanel, mLifetime);
 
-        SideBarSection.Attach(mNotePanel, "Note".Tr(TC.Property));
+        SideBarSection.Attach(mNotePanel, "Note".Tr(TC.Property), lineAbove: false);
         mNoteContent.Children.Add(new Border() { Height = 1, Background = Style.BACK.ToBrush() });
         mNoteContent.Children.Add(SideBarSection.CreateInset());
         mNoteContent.Children.Add(mNotePropertiesController);
@@ -93,7 +98,6 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
         mPhonemeRowsPanel.Children.Clear();
         mPhonemeValueRefreshers.Clear();
         mPhonemePanel.IsVisible = false;
-        mPhonemeScheduler.Suspended = false;   // 在飞编辑的抑制态不跨 part 存留（提交回调随控件树废弃，可能不再触发复位）
         mPhonemeSignature = string.Empty;
     }
 
@@ -130,7 +134,27 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
     {
         if (mPart == null || mNoteData == null)
             return;
-        mNotePropertiesController.Reconcile(mPart.SoundSource.GetNotePropertyConfig(BuildNoteContext()));
+        mNotePropertiesController.Reconcile(SelectedNoteConfig());
+    }
+
+    // 单选的声明就是这个 note 的单 note 声明，与参数栏 lane 同一份、走 part 的缓存（context 完全相同，结果一样）；
+    // 多选是插件合并多个值的地方，照旧现场问。
+    ObjectConfig SelectedNoteConfig()
+        => SingleSelectedNote() is { } note ? mPart!.GetNotePropertyConfig(note) : mPart!.SoundSource.GetNotePropertyConfig(BuildNoteContext());
+
+    IReadOnlyMap<int, ObjectConfig> SelectedPhonemeConfigs()
+        => SingleSelectedNote() is { } note ? mPart!.GetPhonemePropertyConfigs(note) : mPart!.SoundSource.GetPhonemePropertyConfigs(BuildNoteContext());
+
+    INote? SingleSelectedNote()
+    {
+        INote? single = null;
+        foreach (var note in mPart!.Notes.AllSelectedItems())
+        {
+            if (single != null)
+                return null;
+            single = note;
+        }
+        return single;
     }
 
     // 声明面活视图壳（引擎无关、调用级）：note 面板 → 单个所属 part + 各选中 note 列表
@@ -209,16 +233,12 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
 
         return string.Join(";", mPart.Notes.AllSelectedItems().Select(note =>
         {
-            int lead = PhonemeLeadCount(note);
+            int lead = note.PhonemeLeadCount();
             if (note.HasPinnedPhonemes)
                 return "P" + string.Join("|", note.Phonemes.Select((p, i) => p.Symbol.Value + (i < lead ? "<" : ">")));
             return "S" + (note.SynthesizedSyllable is { } s ? string.Join("|", s.AllPhonemes().Select((p, i) => p.Symbol + (i < lead ? "<" : ">"))) : "");
         }));
     }
-
-    // 一个 note 的引导音素个数 = 引导列表长度（结构化、稳定、不由几何派生）。
-    static int PhonemeLeadCount(INote note)
-        => note.HasPinnedPhonemes ? note.LeadingPhonemes.Count : (note.SynthesizedSyllable?.LeadingPhonemes.Count ?? 0);
 
     // 把 note 属性面板绑定到当前选中 note 集合（多选合一）。无选中则盖遮罩。
     // 值的下发/写回/撤销刷新由逐字段绑定承担，选中变化时整体重绑（数据对象变 → SetConfig 重建）。
@@ -245,7 +265,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
         mNotePropertiesController.ButtonScope = "note/" + mPart.RuntimeId + "/" + string.Join(",", mPart.Notes.AllSelectedItems().Select(note => note.RuntimeId));
         // 折叠记忆按「音符面板 + 声源引擎」记：同一引擎的音符字段，收起一次处处收起（见 FieldFolds）。
         mNotePropertiesController.CollapseScope = "note:" + mPart.SoundSource.Kind + ":" + mPart.SoundSource.Type;
-        mNotePropertiesController.SetConfig(mPart.SoundSource.GetNotePropertyConfig(BuildNoteContext()), mNoteData);
+        mNotePropertiesController.SetConfig(SelectedNoteConfig(), mNoteData);
         mNoteContentMask.IsVisible = dataObjects.Count == 0;
         mNoteData.Modified.Subscribe(mNoteScheduler.InvalidateValues, mNoteSub);
     }
@@ -256,7 +276,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
     // 一个选中 note 的音素声明信息：显示音素（钉死则 IPhoneme、否则合成）+ 逐音素 config + 核位置（leadCount）。
     readonly record struct PhonemeNoteInfo(INote Note, bool Pinned, int Count, int LeadCount);
 
-    // 音素面板结构级 flush：整面板重建。编辑中抑制由 mPhonemeScheduler.Suspended 承担（保留脏位，提交复位时补排）。
+    // 音素面板结构级 flush：整面板重建。窗口编辑中经 SuspendWhileEditing 挂起（保留脏位，编辑结束时补排）。
     void RefreshPhonemeControllerNow()
     {
         mPhonemeSub.DisposeAll();
@@ -270,13 +290,13 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
 
         // 音素属性 schema：引擎按核相对 slot 键控授出（键 = 位置 − leadCount，口径见 SDK PhonemeSlots）。
         // 多选合并归引擎（同 GetNotePropertyConfig 契约）——宿主不再拆分 / 挑代表 config，只按 slot 点查 + 并值。
-        var slotConfigs = mPart.SoundSource.GetPhonemePropertyConfigs(BuildNoteContext());
+        var slotConfigs = SelectedPhonemeConfigs();
         var perNote = new List<PhonemeNoteInfo>();
         foreach (var note in mPart.Notes.AllSelectedItems())
         {
             bool pinned = note.HasPinnedPhonemes;
             int count = pinned ? note.PhonemeCount : note.SynthesizedSyllable.PhonemeCount();
-            int leadCount = PhonemeLeadCount(note);   // 核位置：引导音素个数（结构化列表长度）
+            int leadCount = note.PhonemeLeadCount();   // 核位置：引导音素个数（结构化列表长度）
             perNote.Add(new PhonemeNoteInfo(note, pinned, count, leadCount));
             // 钉死/清除音素结构变化 → 重建（即便当前无行也订阅，使后续钉死/清除刷新面板）。两列表各订一次。
             note.LeadingPhonemes.MembershipModified.Subscribe(mPhonemeScheduler.InvalidateStructure, mPhonemeSub);
@@ -321,20 +341,18 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
             {
                 var config = slotConfig!;
                 var poc = new PropertyObjectController() { ShowSeparators = false };   // 分界由行单元统一拥有（见下），控制器不再自吐尾随分隔
+                // 字段折叠记忆按音源 + slot（同音素块的折叠键作前缀，见 PhonemeFoldKey）：与音符面板的字段一样可收起。
+                poc.CollapseScope = PhonemeFoldKey(a);
                 // 按钮作用域 = part + 本行成员 note + slot；执行完重建音素面板（音素 schema 可能随插件状态变）。
                 poc.ButtonScope = "phoneme/" + mPart!.RuntimeId + "/" + string.Join(",", members.Select(m => m.Note.Note.RuntimeId)) + "/" + a;
                 poc.ButtonActionCompleted += mPhonemeScheduler.InvalidateStructure;
-                // 属性行右键 = 钉选项（phoneme scope）+ 既有 slot 动作（拆分/删除）——属性行的右键被本钩子接管后
-                // 不再冒泡到行容器的 ContextMenu，故把 slot 项并进来，避免"点在属性上就丢拆分/删除"。
+                // 属性行右键 = 钉选项（phoneme scope，只给本层直属字段：钉选按顶层键）+ slot 动作（拆分/删除，整块公共项、
+                // 嵌套对象的子字段也继承）——属性行的右键被这两个钩子接管后不再冒泡到行容器的 ContextMenu，故 slot 项并进来，
+                // 避免"点在属性上就丢拆分/删除"。
                 var menuMembers = members;
                 poc.ItemContextMenuProvider = (key, cfg) =>
-                {
-                    var items = new List<Avalonia.Controls.MenuItem>();
-                    if (TryBuildLanePinMenuItem(ParameterPinKind.PhonemeProperty, key, cfg) is { } pin)
-                        items.Add(pin);
-                    items.AddRange(BuildSlotMenuItems(menuMembers));
-                    return items;
-                };
+                    TryBuildLanePinMenuItem(ParameterPinKind.PhonemeProperty, key, cfg) is { } pin ? [pin] : null;
+                poc.ContainerContextMenuProvider = () => BuildSlotMenuItems(menuMembers);
                 controller = poc;
                 if (propMembers.All(m => m.Note.Pinned))
                 {
@@ -379,6 +397,8 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
                 ph => ph.StretchWeight, sp => sp.StretchWeight, WeightConfig));
             DockPanel.SetDock(rightGroup, Dock.Right);
             strip.Children.Add(rightGroup);
+            if (controller != null)
+                strip.Children.Add(BuildPhonemeFoldToggle(a, controller, (EditableLabel)symbolField));
             strip.Children.Add(symbolField);   // 占满左侧
 
             var panel = new StackPanel() { Orientation = Orientation.Vertical };
@@ -407,6 +427,48 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
     // 再把该成员 buffer 值写回该位音素属性，整体提交为一个撤销步。随后 Phonemes.MembershipModified 触发重建 → 该 slot 转真绑定。
     // 音素符号：透明背景的 EditableLabel，铺在顶部色条左侧、靠左显示（长符号有整行宽度容纳）。底色由色条提供。
     // 复用标准 TextInput 编辑（padding 等一致），圆角 2。双击原地改符号，提交即扇出。
+    // 音素块的折叠：只收起色条下的属性面板，色条（符号 / 时长 / 权重）常驻。三角放在色条最左、符号之前（占掉符号左边距的
+    // 那块，符号文字位置基本不动）。按音源 + slot 记进折叠存储（与属性面板字段同一套）：收起了某一位（如核），换选别的
+    // note 仍收着。只有声明了属性的音素块才有它。
+    // 音素块的折叠记忆键（按音源 + slot）；块内字段的折叠键以它为前缀（PropertyObjectController.CollapseScope）。
+    string PhonemeFoldKey(int slot)
+        => "phoneme:" + mPart!.SoundSource.Kind + ":" + mPart.SoundSource.Type + "/@slot/" + slot.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    Control BuildPhonemeFoldToggle(int slot, Control body, EditableLabel symbol)
+    {
+        string key = PhonemeFoldKey(slot);
+        bool collapsed = FieldFoldStore.Current?.IsCollapsed(key) ?? false;
+        body.IsVisible = !collapsed;
+
+        var chevron = new Chevron(8, Colors.White)
+        {
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            IsExpanded = !collapsed,
+        };
+        var toggle = new Border
+        {
+            Width = 16,
+            Margin = new(4, 0, 0, 0),
+            Background = Brushes.Transparent,   // 整块可点
+            Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+            Child = chevron,
+        };
+        toggle.PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(toggle).Properties.IsLeftButtonPressed)
+                return;
+            e.Handled = true;
+            bool collapse = body.IsVisible;
+            body.IsVisible = !collapse;
+            chevron.IsExpanded = !collapse;
+            FieldFoldStore.Current?.SetCollapsed(key, collapse);
+        };
+        DockPanel.SetDock(toggle, Dock.Left);
+        symbol.Padding = new(0, 0, 16, 0);   // 左边距让给三角（4 + 16 ≈ 原来的 16 + 一点）
+        return toggle;
+    }
+
     Control BuildSymbolCell(string displayed, IReadOnlyList<(PhonemeNoteInfo Note, int Index)> members)
     {
         var label = new EditableLabel()
@@ -456,6 +518,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
             DefaultValue = config.DefaultValue,
         };
         box.SetupToolTip(tooltip);
+        EditGate.Track(box, mPhonemeSub);   // 编辑期间所在窗口的属性面板推迟刷新（见 EditGate）
 
         if (members.All(m => m.Note.Pinned))
         {
@@ -472,7 +535,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
         // 含合成音素：合成音素无可绑定的 IDataProperty（值在 SynthesizedPhonemes[] 里、无 .Modified/.Set），又不能一显示就锁定。
         // 故手写"首拖固定"——镜像波形拖拽 op：起手对各成员 LockPhonemes（合成→钉死）+ BeginMergeDirty（只延迟重合成、不抑制
         // 数据通知，钢琴窗据 Notes.Phonemes.Modified 实时重绘）；每帧先取 box.Value 再 DiscardTo(head) 后扇出写回；松手 Commit
-        //（无改 Discard 连带回滚锁定）成一个撤销步。编辑期 mPhonemeScheduler.Suspended 抑制面板重建。锁定提交后转全钉死 → 重建走上面绑定路径。
+        //（无改 Discard 连带回滚锁定）成一个撤销步。编辑期登记到窗口的 EditGate、挂起面板重建。锁定提交后转全钉死 → 重建走上面绑定路径。
         double ReadOf((PhonemeNoteInfo Note, int Index) m)
             => m.Note.Pinned ? field(m.Note.Note.Phonemes[m.Index]).Value : synthValue(m.Note.Note.SynthesizedSyllable.AllPhonemes()[m.Index]);
         void Refresh()
@@ -500,7 +563,6 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
         {
             if (mPart == null)
                 return;
-            mPhonemeScheduler.Suspended = true;
             foreach (var (n, _) in members)
                 n.Note.LockPhonemes();
             mPart.BeginMergeDirty();
@@ -531,8 +593,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
                 mPart.Discard();
             else
                 mPart.Commit();
-            // 复位抑制（编辑期被扣下的脏位自动补排），并显式标结构脏：提交后锁定成立，本 slot 转全钉死绑定路径。
-            mPhonemeScheduler.Suspended = false;
+            // 显式标结构脏（编辑结束、EditGate 放行后执行）：提交后锁定成立，本 slot 转全钉死绑定路径。
             mPhonemeScheduler.InvalidateStructure();
         }, mPhonemeSub);
 
@@ -646,7 +707,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
 
     IMidiPart? mPart = null;
     MultipleDataPropertyObject? mNoteData = null;
-    // 两面板的"标脏→合拍重建"调度器（构造函数初始化）；音素编辑拖动/键入期间经 Suspended 抑制重建。
+    // 两面板的"标脏→合拍重建"调度器（构造函数初始化）；窗口编辑中经 SuspendWhileEditing 挂起。
     readonly ViewRefreshScheduler mNoteScheduler;
     readonly ViewRefreshScheduler mPhonemeScheduler;
     // 音素面板各值框的轻刷新入口：结构级 flush（重建）时重收，值级 flush 逐个调用。
@@ -664,6 +725,7 @@ internal class NotePropertySideBarContentProvider : ISideBarContentProvider
         .WithResponse(DragResponse.Linear(0.01))
         .WithFormat(NumberFormat.Decimals(2));
     readonly DisposableManager s = new();
+    readonly DisposableManager mLifetime = new();   // 随本 provider 同生（不随 part 切换回收）
     readonly DisposableManager mNoteSub = new();
     readonly DisposableManager mPhonemeSub = new();
 }

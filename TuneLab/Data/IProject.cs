@@ -20,6 +20,9 @@ internal interface IProject : IDataObject<ProjectInfo>, ITimeline, IDisposable
     int ExportBitrate { get; set; }
     bool MasterExportEnabled { get; set; }
     int MasterExportChannels { get; set; }
+    // [EP-MIXER-33] 分轨导出是否经过该轨自己的插入链（轨道效果器）。Master 导出始终走完整混音图，
+    // 不受这个开关影响。
+    bool ExportIncludeEffects { get; set; }
     // 与 ITrack.CreatePart / IMidiPart.CreateNote 同形的「建游离实体」入口：AddTrack(info) 是它 + 追加到末尾
     // 的合体，故要「在指定位置按 info 新建」只能经这里再 InsertTrack。
     ITrack CreateTrack(TrackInfo info);
@@ -48,6 +51,7 @@ internal static class IProjectExtension
         Bitrate = project.ExportBitrate,
         MasterExportEnabled = project.MasterExportEnabled,
         MasterExportChannels = project.MasterExportChannels,
+        IncludeEffects = project.ExportIncludeEffects,
     };
 
     public static void SetExportConfig(this IProject project, ExportConfigInfo config)
@@ -63,6 +67,7 @@ internal static class IProjectExtension
         project.ExportBitrate = config.Bitrate;
         project.MasterExportEnabled = config.MasterExportEnabled;
         project.MasterExportChannels = config.MasterExportChannels;
+        project.ExportIncludeEffects = config.IncludeEffects;
     }
 
     public static IEnumerable<IPart> AllParts(this IProject project)

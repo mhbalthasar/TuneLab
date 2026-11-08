@@ -9,6 +9,9 @@ namespace TuneLab.SDK;
 // DisplayText 是 chip 上的文字（为 null 时退化为 Value 的字面量）。分组与分隔线也与 ComboBoxItem 同形。
 // 刻意不复用 ComboBoxItem：两者此刻长得一样，但「从一组值里选一个」与「从一组值里挑若干个」各有自己的演进方向，
 // 绑成同一类型会让任何一边的改动牵连另一边。
+// RS0027 不适用（同 AddableElement）：分组构造与主构造的首参类型不相交（string vs PropertyValue），调用绑定无歧义；
+// 规则防的是给已发布签名追加可选参数，这里两种构造是一起新增的。
+#pragma warning disable RS0027
 public readonly struct TagItem(PropertyValue value, string? displayText = null) : IEquatable<TagItem>
 {
     // 只读（不开 init）：外部初始化器改不出「分组却带值」这类矛盾态，唯一构造路径就是下面几个入口。
@@ -51,6 +54,7 @@ public readonly struct TagItem(PropertyValue value, string? displayText = null) 
         return true;
     }
 }
+#pragma warning restore RS0027
 
 // 标签组：从候选里挑若干个值，以 chip 横排、自动换行。值落为 PropertyArray（元素即所选候选的 Value）。
 //
@@ -70,9 +74,39 @@ public sealed class TagConfig : IValueConfig
     TagConfig Clone() => (TagConfig)MemberwiseClone();
 
     // 构造即拷贝（[.. items]）：与调用方构造后对原 list 的改动无关。
-    public static TagConfig Create(IReadOnlyList<TagItem> items) => new() { Items = [.. items] };
+    // 候选（叶子）的值与默认所选都必须是真实值：Null 不是值（宿主按"没有"处理），Multiple 只是多选读出时"各对象不一致"的
+    // 标记、绝不入存储——两者都是写错了，当场报出来，免得插件运行起来才莫名其妙。分组 / 分隔线自身的 Null 不在此列。
+    public static TagConfig Create(IReadOnlyList<TagItem> items)
+    {
+        EnsureLeafValues(items);
+        return new() { Items = [.. items] };
+    }
 
-    public TagConfig WithDefault(IReadOnlyList<PropertyValue> tags) { var c = Clone(); c.DefaultTags = [.. tags]; return c; }
+    public TagConfig WithDefault(IReadOnlyList<PropertyValue> tags)
+    {
+        foreach (var tag in tags)
+            EnsureRealValue(tag, nameof(tags));
+        var c = Clone();
+        c.DefaultTags = [.. tags];
+        return c;
+    }
+
+    static void EnsureLeafValues(IReadOnlyList<TagItem> items)
+    {
+        foreach (var item in items)
+        {
+            if (item.SubItems is { } subItems)
+                EnsureLeafValues(subItems);
+            else if (!item.IsSeparator)
+                EnsureRealValue(item.Value, nameof(items));
+        }
+    }
+
+    static void EnsureRealValue(PropertyValue value, string parameter)
+    {
+        if (value.IsNull() || value.IsMultiple())
+            throw new ArgumentException("Tag values must be real values: Null means no value, and Multiple only marks differing values when reading a multi-selection.", parameter);
+    }
 
     PropertyValue IValueConfig.DefaultValue => new PropertyArray(DefaultTags);
 }

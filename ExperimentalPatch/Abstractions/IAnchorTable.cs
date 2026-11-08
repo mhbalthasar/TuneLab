@@ -39,4 +39,8 @@ public interface IAnchorTable
     // 登记一页「设置」窗的内容（宿主在打开设置窗时取一次快照，排在宿主自己的 tab 之后）。
     // 与命令不同，这里不急于在启动时登记：宿主取快照发生在打开窗口那一刻，晚登记也会出现。
     IDisposable AddSettingsTab(SettingsTabContribution tab);
+
+    // ── 导出侧栏贡献 ──
+    // 宿主每次建导出侧栏时取一次快照；没有贡献 = 侧栏与上游逐项一致。
+    IDisposable AddExportOptions(ExportOptionsContribution options);
 }

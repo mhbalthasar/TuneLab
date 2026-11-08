@@ -30,11 +30,13 @@ public sealed class InsertPluginPathsPage : UserControl
     const string Vst3Format = "VST3";
     const string Vst2Format = "VST2";
     const string ClapFormat = "CLAP";
+    const string JsfxFormat = "JSFX";
 
     readonly IHostServices mHost;
     readonly ObservableCollection<PathEntry> mVst3 = [];
     readonly ObservableCollection<PathEntry> mVst2 = [];
     readonly ObservableCollection<PathEntry> mClap = [];
+    readonly ObservableCollection<PathEntry> mJsfx = [];
     readonly TextBlock mStatus = new();
     readonly ScanProgressBar mProgress = new();
     ChromeButton mScan = new();
@@ -55,13 +57,16 @@ public sealed class InsertPluginPathsPage : UserControl
         {
             Text = L(
                 "混音台的插入效果从这里找插件。改完路径点「立即扫描」，扫描结果会缓存下来供「添加效果」菜单使用。"
-                + "VST2 / VST3 / CLAP 一律由独立的桥进程加载：插件崩溃或卡死只会让那个插入旁通，不会带走 TuneLab。",
+                + "VST2 / VST3 / CLAP / JSFX 一律由独立的桥进程加载：插件崩溃或卡死只会让那个插入旁通，不会带走 TuneLab。",
                 "The mixer finds insert plugins here. After editing paths, click Scan now — results are cached for the Add effect menu. "
-                + "VST2, VST3 and CLAP always load in a separate bridge process: a plugin crash or hang only bypasses that insert, never takes down TuneLab."),
+                + "VST2, VST3, CLAP and JSFX always load in a separate bridge process: a plugin crash or hang only bypasses that insert, never takes down TuneLab."),
             FontSize = 10.5,
             Foreground = Palette.Brush(Palette.TextLabel, 0.9),
             TextWrapping = TextWrapping.Wrap,
         };
+
+        // 缓冲时间放在最上面：它影响的是"插件能不能稳定跑"，比路径清单更常被调。
+        var bufferSection = BuildBufferSection();
 
         var vst3Section = BuildSection(
             L("VST3 路径", "VST3 paths"),
@@ -88,6 +93,16 @@ public sealed class InsertPluginPathsPage : UserControl
               + "Plugin editors are not available yet: inserted CLAP plugins show the parameter panel."),
             ClapFormat,
             mClap);
+
+        var jsfxSection = BuildSection(
+            L("JSFX 路径", "JSFX paths"),
+            L("扫描只读 .jsfx 文本头，不执行 EEL2；加载与运行由桥进程里的 ysfx 完成。"
+              + "默认包含 TuneLab 的 Effects 目录与 REAPER 的 Effects 目录。",
+              "Scanning only reads the .jsfx text header; EEL2 never runs in TuneLab. Loading and processing "
+              + "happen in the bridge process through ysfx. Defaults include TuneLab's Effects folder and "
+              + "REAPER's Effects folder."),
+            JsfxFormat,
+            mJsfx);
 
         var scan = new ChromeButton
         {
@@ -153,7 +168,7 @@ public sealed class InsertPluginPathsPage : UserControl
             Content = new StackPanel
             {
                 Spacing = 18,
-                Children = { intro, vst3Section, isolationSection, vst2Section, clapSection },
+                Children = { bufferSection, intro, vst3Section, isolationSection, vst2Section, clapSection, jsfxSection },
             },
             Padding = new Thickness(14),
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
@@ -166,6 +181,90 @@ public sealed class InsertPluginPathsPage : UserControl
         grid.Children.Add(footer);
 
         return grid;
+    }
+
+    // 效果器插件缓冲时间（毫秒）。这是本页唯一的"音频参数"：路径决定能扫到什么，
+    // 它决定扫到的东西能不能稳定地跑。宿主按当前采样率折算成设备缓冲尺寸，并同步
+    // 桥进程单块的等待上限；默认 50 ms。
+    Control BuildBufferSection()
+    {
+        var header = new TextBlock
+        {
+            Text = L("效果器插件缓冲时间", "Insert plugin buffer time"),
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = Palette.Brush(Palette.TextLight),
+        };
+
+        var hint = new TextBlock
+        {
+            Text = L(
+                "以毫秒计；按当前采样率折算成设备缓冲尺寸，同时作为桥进程单块的等待上限。"
+                + "加大可减少卡顿，代价是延迟增加。默认 50 ms。",
+                "Measured in milliseconds; converted to the device buffer size at the current sample rate, "
+                + "and used as the bridge's per-block wait limit. Larger values reduce dropouts at the cost of latency. "
+                + "Default 50 ms."),
+            FontSize = 10,
+            Foreground = Palette.Brush(Palette.TextLabel, 0.8),
+            Margin = new Thickness(0, 1, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        var settings = mHost.InsertPlugins;
+        int initial = settings?.BufferMs ?? 50;
+
+        var value = new TextBlock
+        {
+            Text = $"{initial} ms",
+            FontSize = 11,
+            Foreground = Palette.Brush(Palette.TextNormal),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+            MinWidth = 52,
+        };
+
+        var slider = new Slider
+        {
+            Minimum = 10,
+            Maximum = 200,
+            TickFrequency = 5,
+            IsSnapToTickEnabled = true,
+            Value = initial,
+            IsEnabled = settings != null,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
+
+        slider.ValueChanged += (_, _) =>
+        {
+            var target = mHost.InsertPlugins;
+            if (target == null)
+                return;
+
+            int ms = (int)Math.Round(slider.Value);
+            target.BufferMs = ms;
+
+            // 回读一次：宿主可能夹到范围内（例如采样率很高时），让界面显示实际生效值。
+            int actual = target.BufferMs;
+            value.Text = $"{actual} ms";
+
+            if (Math.Abs(slider.Value - actual) > 0.5)
+            {
+                // 避免递归：只在确实需要纠正时回写。
+                slider.Value = actual;
+            }
+        };
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(slider, 0);
+        Grid.SetColumn(value, 1);
+        row.Children.Add(slider);
+        row.Children.Add(value);
+
+        var body = new StackPanel();
+        body.Children.Add(header);
+        body.Children.Add(hint);
+        body.Children.Add(row);
+        return body;
     }
 
     // [VST3-BRIDGE] 隔离状态（只读）。
@@ -186,9 +285,9 @@ public sealed class InsertPluginPathsPage : UserControl
         var hint = new TextBlock
         {
             Text = L(
-                "VST3 / VST2 / CLAP 一样，一律由独立的 64 位桥进程加载 —— 插件崩溃或卡死只会拖垮桥，"
+                "VST3 / VST2 / CLAP / JSFX 一样，一律由独立的 64 位桥进程加载 —— 插件崩溃或卡死只会拖垮桥，"
                 + "TuneLab 与工程不受影响（该插入会旁通）。",
-                "Like VST2, VST3 and CLAP always load in a separate 64-bit bridge process — a plugin crash "
+                "Like VST2, VST3, CLAP and JSFX always load in a separate 64-bit bridge process — a plugin crash "
                 + "or hang only takes down the bridge, not TuneLab (the insert is bypassed instead)."),
             FontSize = 10,
             Foreground = Palette.Brush(Palette.TextLabel, 0.8),
@@ -352,6 +451,10 @@ public sealed class InsertPluginPathsPage : UserControl
         foreach (string path in settings.Paths.TryGetValue(ClapFormat, out var clap) ? clap : [])
             mClap.Add(new PathEntry(path));
 
+        mJsfx.Clear();
+        foreach (string path in settings.Paths.TryGetValue(JsfxFormat, out var jsfx) ? jsfx : [])
+            mJsfx.Add(new PathEntry(path));
+
         mStatus.Text = settings.LastScanText == null
             ? L("尚未扫描", "Not scanned yet")
             : L($"上次扫描：{settings.LastScanText}", $"Last scan: {settings.LastScanText}");
@@ -400,9 +503,11 @@ public sealed class InsertPluginPathsPage : UserControl
             Watermark = OperatingSystem.IsWindows()
                 ? (format == Vst3Format ? @"C:\Program Files\Common Files\VST3"
                     : format == ClapFormat ? @"C:\Program Files\Common Files\CLAP"
+                    : format == JsfxFormat ? @"%APPDATA%\REAPER\Effects"
                     : @"C:\Program Files\VstPlugins")
                 : (format == Vst3Format ? "/usr/lib/vst3"
                     : format == ClapFormat ? "/usr/lib/clap"
+                    : format == JsfxFormat ? "~/.config/REAPER/Effects"
                     : "/usr/lib/vst"),
             FontSize = 10.5,
             Width = 380,
@@ -477,6 +582,7 @@ public sealed class InsertPluginPathsPage : UserControl
         Save(Vst3Format, mVst3);
         Save(Vst2Format, mVst2);
         Save(ClapFormat, mClap);
+        Save(JsfxFormat, mJsfx);
 
         var settings = mHost.InsertPlugins;
         if (settings == null)

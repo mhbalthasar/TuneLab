@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -21,7 +22,12 @@ internal static class AudioEngine
     public static event Action? ProgressChanged;
     public static bool IsPlaying => mAudioSampleProvider.IsPlaying;
     public static INotifiableProperty<int> SampleRate { get; } = new NotifiableProperty<int>(44100);
+    // 播放头显示的位置 = 用户**听到**的位置。它来自 SDL 回调里"写下一块之前已经
+    // 写入设备流的帧数"，而不是预读头；预读头领先设备里还没播完的那一块。
     public static double CurrentTime => mAudioSampleProvider.CurrentTime;
+    // 合成调度用的位置 = 预读头。它必须领先于听到的位置，否则会追着已缓冲的音频
+    // 才开始合成，容易在块边界上供不上。两者差一个（或两个）设备块。
+    public static double SchedulingTime => mAudioSampleProvider.SchedulingTime;
     public static double MasterGain { get; set; } = 0;
 
     // [EP-MIXER-24] 声向法则（roadmap 2.5）。默认线性 = 上游老公式
@@ -35,13 +41,49 @@ internal static class AudioEngine
     }
     public static double EndTime => AudioGraph.EndTime;
     public static INotifiableProperty<int> BufferSize { get; } = new NotifiableProperty<int>(1024);
+
+    // [EP-MIXER-30] 效果器插件缓冲时间（毫秒）→ 设备缓冲采样数。设备缓冲是"一次交给混音图的帧数"，
+    // 也是桥进程一轮 process 的音频时长；毫秒口径与采样率无关，用户不必知道 44.1k/48k 的差别。
+    // 下限 64 帧（低于它的设备缓冲在部分驱动上不可用），上限 65535 帧
+    // （SDL 的 spec.samples 是 ushort；200 ms @ 192 kHz = 38400 也装得下）。
+    public static int SamplesFromMilliseconds(int milliseconds, int sampleRate)
+    {
+        if (sampleRate <= 0)
+            sampleRate = 44100;
+
+        long samples = (long)Math.Round(Math.Clamp(milliseconds, 1, 1000) * (double)sampleRate / 1000.0);
+        return (int)Math.Clamp(samples, 64, 65535);
+    }
+
+    public static int MillisecondsFromSamples(int samples, int sampleRate)
+    {
+        if (sampleRate <= 0)
+            sampleRate = 44100;
+
+        return (int)Math.Round(samples * 1000.0 / sampleRate);
+    }
+
     public static INotifiableProperty<string> CurrentDriver { get; } = new NotifiableProperty<string>(string.Empty);
     public static INotifiableProperty<string> CurrentDevice { get; } = new NotifiableProperty<string>(string.Empty);
-    public static IReadOnlyList<string> GetAllDrivers() => mAudioPlaybackHandler!.GetAllDrivers();
-    public static IReadOnlyList<string> GetAllDevices() => mAudioPlaybackHandler!.GetAllDevices();
+    // 设置窗可能在音频引擎初始化之前被某个扩展打开；null 时返回空/自动，避免动态选项抛 NRE。
+    public static IReadOnlyList<string> GetAllDrivers() => mAudioPlaybackHandler?.GetAllDrivers() ?? Array.Empty<string>();
+    public static IReadOnlyList<string> GetAllDevices() => mAudioPlaybackHandler?.GetAllDevices() ?? new[] { IAudioPlaybackHandler.AutoDeviceName };
 
     public static void Init()
     {
+        // [EP-MIXER-31] 音频优先：进程整体抬到 High（界面线程也随之变快，但真正压过它的是下面
+        // SDL 回调线程的 Highest —— 见 SDLPlaybackHandler.onBufferEnd）。
+        // 失败不致命（受限账户 / 系统策略），只记一条警告。
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            process.PriorityClass = ProcessPriorityClass.High;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning("failed to raise process priority: " + ex.Message);
+        }
+
         mAudioSampleProvider.SampleRate = SampleRate.Value;
         mAudioPlaybackHandler = new SDLPlaybackHandler() { SampleRate = SampleRate.Value, BufferSize = BufferSize.Value, ChannelCount = 2 };
         mAudioPlaybackHandler.Init(mAudioSampleProvider);
@@ -105,6 +147,8 @@ internal static class AudioEngine
     static void OnHandlerCurrentDeviceChanged()
     {
         CurrentDevice.Value = mAudioPlaybackHandler!.CurrentDevice;
+        // 新设备的流从 0 重新计数：播放头重定位到当前听到的位置。
+        mAudioSampleProvider.ResetAfterDeviceChange();
         mAudioPlaybackHandler.Start();
     }
 
@@ -116,18 +160,23 @@ internal static class AudioEngine
     public static void Play()
     {
         mAudioSampleProvider.IsPlaying = true;
+        // IsPlaying 的 setter 已把预读头拉回"听到的位置"；丢掉旧块，让设备从那里重新开始。
+        mAudioPlaybackHandler?.Flush();
         PlayStateChanged?.Invoke();
     }
 
     public static void Pause()
     {
         mAudioSampleProvider.IsPlaying = false;
+        // 暂停要立刻停声：旧块里可能还有最多一个缓冲的音频。
+        mAudioPlaybackHandler?.Flush();
         PlayStateChanged?.Invoke();
     }
 
     public static void Seek(double time)
     {
         mAudioSampleProvider.Seek(time);
+        mAudioPlaybackHandler?.Flush();
         ProgressChanged?.Invoke();
     }
 
@@ -159,6 +208,14 @@ internal static class AudioEngine
         AudioGraph.RebuildMixerGraph();
     }
 
+    // [EP-MIXER-29] 批量结构变更的作用域：用 using 把一段"会改很多通道 output / send / 插入"
+    // 的操作包起来，期间的重建全部攒着，离开作用域时统一编一次图。
+    // 装载工程、套用路由载荷、脚本批量改路由都走这里；不在 UI 线程之外调用。
+    public static IDisposable SuspendMixerGraphRebuild()
+    {
+        return AudioGraph.SuspendRebuild();
+    }
+
     // [EP-MIXER-19] Master 的插入链由工程提供（Project.MasterInserts）：换工程时跟着换。
     public static void SetMasterInserts(DataObjectList<TuneLab.Data.InsertSlot>? inserts)
     {
@@ -177,7 +234,8 @@ internal static class AudioEngine
         ExportTrack(filePath, track, isStereo, SampleRate.Value, AudioEncodeSettings.Wav(16));
     }
 
-    public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo, int outputSampleRate, AudioEncodeSettings settings, IProgress<double>? progress = null, CancellationToken cancellationToken = default, double startTime = 0, double? endTime = null)
+    // [EP-MIXER-33] includeEffects = 分轨导出经过该轨自己的插入链（Master 导出始终走完整图）。
+    public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo, int outputSampleRate, AudioEncodeSettings settings, IProgress<double>? progress = null, CancellationToken cancellationToken = default, double startTime = 0, double? endTime = null, bool includeEffects = false)
     {
         double defaultEndTime = Math.Max(track.EndTime, 0) + 1;
         int startPosition = (Math.Max(startTime, 0) * SampleRate.Value).Floor();
@@ -187,13 +245,22 @@ internal static class AudioEngine
         int channelCount = isStereo ? 2 : 1;
         float[] buffer = new float[length * channelCount];
 
+        // 带效果时走"单轨最小混音图"：音源 → 推子/声像 → 插入链 → 设备出口。
+        // 不带效果保持原来的 AddData 路径，逐样本结果不变（老工程的导出语义不变）。
+        using var effectsRenderer = includeEffects ? new TrackExportRenderer(AudioGraph, track) : null;
+
         // Process in chunks for progress reporting
         int chunkSize = BufferSize.Value;
         for (int chunkStart = startPosition; chunkStart < endPosition; chunkStart += chunkSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
             int chunkEnd = Math.Min(chunkStart + chunkSize, endPosition);
-            AudioGraph.AddData(track, chunkStart, chunkEnd, isStereo, buffer, (chunkStart - startPosition) * channelCount);
+
+            if (effectsRenderer != null)
+                effectsRenderer.Render(chunkStart, chunkEnd, isStereo, buffer, (chunkStart - startPosition) * channelCount);
+            else
+                AudioGraph.AddData(track, chunkStart, chunkEnd, isStereo, buffer, (chunkStart - startPosition) * channelCount);
+
             progress?.Report(length > 0 ? (double)(chunkEnd - startPosition) / length * 0.8 : 0.8);
         }
 
@@ -527,19 +594,34 @@ internal static class AudioEngine
     static void OnBufferSizeModified()
     {
         if (mAudioPlaybackHandler != null)
+        {
             mAudioPlaybackHandler.BufferSize = BufferSize.Value;
+            // 设备被重新打开：流计数从 0 开始，播放头重定位到当前听到的位置。
+            mAudioSampleProvider.ResetAfterDeviceChange();
+            mAudioPlaybackHandler.Flush();
+        }
     }
 
     static void OnCurrentDriverModified()
     {
         SetDriverToPlaybackHandler(); 
         SetDeviceToPlaybackHandler();
+        if (mAudioPlaybackHandler != null)
+        {
+            mAudioSampleProvider.ResetAfterDeviceChange();
+            mAudioPlaybackHandler.Flush();
+        }
         mAudioPlaybackHandler?.Start();
     }
 
     static void OnCurrentDeviceModified()
     {
         SetDeviceToPlaybackHandler();
+        if (mAudioPlaybackHandler != null)
+        {
+            mAudioSampleProvider.ResetAfterDeviceChange();
+            mAudioPlaybackHandler.Flush();
+        }
         mAudioPlaybackHandler?.Start();
     }
 
@@ -570,10 +652,79 @@ internal static class AudioEngine
             return;
 
         var device = devices.Contains(CurrentDevice.Value) ? CurrentDevice.Value : devices[0];
-        if (mAudioPlaybackHandler.CurrentDevice != device)
-            mAudioPlaybackHandler.CurrentDevice = device;
+        try
+        {
+            if (mAudioPlaybackHandler.CurrentDevice != device)
+                mAudioPlaybackHandler.CurrentDevice = device;
+        }
+        catch (Exception ex)
+        {
+            // 选中的设备打不开（WASAPI 的块长/独占模式等）时不能让设置窗口或启动崩掉：
+            // 记日志、回退到自动设备；自动设备也失败就保持无设备（静音），用户还能再选。
+            Log.Error($"failed to set audio device '{device}': {ex.Message}");
+            try
+            {
+                if (mAudioPlaybackHandler.CurrentDevice != devices[0])
+                    mAudioPlaybackHandler.CurrentDevice = devices[0];
+            }
+            catch (Exception fallbackEx)
+            {
+                Log.Error($"failed to fall back to audio device '{devices[0]}': {fallbackEx.Message}");
+            }
+        }
 
         CurrentDevice.Value = mAudioPlaybackHandler.CurrentDevice;
+    }
+
+    // 分轨导出的"单轨最小混音图"渲染器。
+    //
+    // 【为什么不用整张图】整图会把这条轨的 output 路由、send、Master 推子/插入/限幅
+    // 一起带上；分轨要的是"这条通道条自己的输出"。CompileSingleTrack 只编
+    // 音源 → 通道（推子/声像/插入）→ device。
+    //
+    // 【插件实例】与播放共用 InsertInstanceFactory；调用方（Editor）在导出前停播，
+    // 所以这里不会和音频线程同时喂同一个插件。
+    sealed class TrackExportRenderer : IDisposable
+    {
+        readonly Mixer mMixer;
+        readonly float[] mScratch = new float[Mixer.DefaultMaxBlockSize * 2];
+
+        public TrackExportRenderer(AudioGraph graph, IAudioTrack track)
+        {
+            mMixer = new Mixer { LimiterEnabled = false, SampleRate = graph.SampleRate, PanLaw = graph.PanLaw };
+
+            var compiler = new MixerGraphCompiler();
+            mMixer.SetSnapshot(compiler.CompileSingleTrack(graph, track));
+        }
+
+        public void Render(int position, int endPosition, bool isStereo, float[] buffer, int offset)
+        {
+            int channelCount = isStereo ? 2 : 1;
+
+            for (int chunkStart = position; chunkStart < endPosition;)
+            {
+                int n = Math.Min(endPosition - chunkStart, Mixer.DefaultMaxBlockSize);
+                Array.Clear(mScratch, 0, n * 2);
+                mMixer.Render(chunkStart, n, mScratch, 0);
+
+                int write = offset + (chunkStart - position) * channelCount;
+
+                if (isStereo)
+                {
+                    Array.Copy(mScratch, 0, buffer, write, n * 2);
+                }
+                else
+                {
+                    // 与旧路径的单声道下混一致：(L + R) / 2。
+                    for (int i = 0; i < n; i++)
+                        buffer[write + i] = (mScratch[i * 2] + mScratch[i * 2 + 1]) * 0.5f;
+                }
+
+                chunkStart += n;
+            }
+        }
+
+        public void Dispose() { }
     }
 
     class AudioSampleProvider() : IAudioSampleProvider
@@ -581,8 +732,70 @@ internal static class AudioEngine
         public AudioGraph AudioGraph => mAudioGraph;
         public AudioPlayer AudioPlayer => mAudioPlayer;
         public int SampleRate { get => mAudioGraph.SampleRate; set => mAudioGraph.SampleRate = value; }
-        public bool IsPlaying {  get; set; }
-        public double CurrentTime => (double)mGraphPosition / SampleRate;
+
+        public bool IsPlaying
+        {
+            get => mIsPlaying;
+            set
+            {
+                if (mIsPlaying == value)
+                    return;
+                mIsPlaying = value;
+
+                if (value)
+                {
+                    // 恢复播放时从"听到的位置"继续，而不是从预读头继续：预读头领先
+                    // 已缓冲但还没播的音频，直接用它会让恢复后的声音跳过一段。
+                    // 旧块由 AudioEngine.Play 负责 Flush。
+                    lock (mSeekLockObject)
+                    {
+                        mGraphPosition = (int)mPlayedFrames;
+                        mPlaybackStartPosition = (int)mPlayedFrames;
+                        mRebase = true;
+                    }
+                }
+            }
+        }
+
+        // [EP-MIXER-31] 用户听到的位置：由 SDL 回调累计的"已写入设备流"帧数映射回工程时间轴。
+        public double CurrentTime => (double)mPlayedFrames / SampleRate;
+
+        // 预读头：合成调度、效果图排序用。它领先 CurrentTime 一个（或两个）设备块。
+        public double SchedulingTime => (double)mGraphPosition / SampleRate;
+
+        // 播放头对齐：SDL 回调在写下一块之前给出 playedFrames（已经播完的绝对帧数）。
+        // 跳转/恢复后第一次回调把 handler 的绝对帧数重定位到工程时间轴。
+        public void OnSamplesConsumed(long playedFrames)
+        {
+            // 暂停/停止时设备可能还在消耗已缓冲的块；播放头应停在听到的位置，不跟着走。
+            if (!mIsPlaying)
+                return;
+
+            lock (mSeekLockObject)
+            {
+                if (mRebase || playedFrames < mHandlerBase)
+                {
+                    mHandlerBase = playedFrames;
+                    mPlayedBase = mPlaybackStartPosition;
+                    mRebase = false;
+                }
+
+                mPlayedFrames = mPlayedBase + (playedFrames - mHandlerBase);
+                if (mPlayedFrames < mPlaybackStartPosition)
+                    mPlayedFrames = mPlaybackStartPosition;
+            }
+        }
+
+        // 设备/驱动/块长变了：设备流从 0 重新计数，播放头要从"当前听到的位置"重定位。
+        public void ResetAfterDeviceChange()
+        {
+            lock (mSeekLockObject)
+            {
+                mGraphPosition = (int)mPlayedFrames;
+                mPlaybackStartPosition = (int)mPlayedFrames;
+                mRebase = true;
+            }
+        }
 
         public void Read(float[] buffer, int offset, int count)
         {
@@ -613,12 +826,21 @@ internal static class AudioEngine
             lock (mSeekLockObject)
             {
                 mGraphPosition = (int)(time * SampleRate);
+                mPlaybackStartPosition = mGraphPosition;
+                mPlayedFrames = mGraphPosition;
+                mRebase = true;
             }
         }
 
         readonly AudioPlayer mAudioPlayer = new();
         readonly AudioGraph mAudioGraph = new();
         int mGraphPosition = 0;
+        int mPlaybackStartPosition = 0;
+        long mPlayedFrames = 0;
+        long mPlayedBase = 0;
+        long mHandlerBase = 0;
+        bool mRebase = true;
+        bool mIsPlaying = false;
         readonly object mSeekLockObject = new();
 
         // 预览音作为"直接混进 Master 输入"的音源。懒建（一次），之后每块复用同一个对象。

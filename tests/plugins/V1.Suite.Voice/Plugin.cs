@@ -59,8 +59,9 @@ public sealed class SuiteVoiceEngine : IVoiceSynthesisEngine, IExtensionSettings
 
         var selected = context.Parts.Select(p => p.PartProperties).Merge().GetValue("speakers", PropertyObject.Empty);
         var map = new OrderedMap<PropertyKey, AutomationConfig>();
+        // 混音轨不指定颜色：条数随所选 speaker 变，交给宿主按调色板分配、各条不撞色（演示 Color 默认 = 宿主分配）。
         foreach (var id in InCatalogOrder(selected, kSpeakers))
-            map.Add((id, SpeakerName(id)), AutomationConfig.Create(0, 100).WithColor("#73E5A5").WithDefault(0));
+            map.Add((id, SpeakerName(id)), AutomationConfig.Create(0, 100).WithDefault(0));
         // 音色 tag：每选一个派生一条强度曲线，**按 tag 的顺序**排——拖动调序后参数面板的曲线顺序随之变，
         // 用来观察 tag 组是有序的。
         foreach (var timbre in SelectedTimbres(context))
@@ -230,6 +231,14 @@ public sealed class SuiteVoiceEngine : IVoiceSynthesisEngine, IExtensionSettings
             [
                 SliderConfig.Linear(0.2, 0, 1),
                 SliderConfig.Linear(0.8, 0, 1),
+            ]));
+
+        // ④-F 定长数组 layers，元素是对象（ArrayConfig[ObjectConfig]）：absent → 2 行虚拟行、各显示默认值，
+        //   编辑任一行里的任一字段即物化整段（复合 seed 元素的懒视图，见宿主 SeedPositionView / SeedObjectView）。
+        map.Add(("layers", "Layers"), ArrayConfig.Create(
+            [
+                ObjectConfig.Create(new OrderedMap<PropertyKey, IControllerConfig> { { ("gain", "Gain"), SliderConfig.Linear(0.5, 0, 1) }, { ("name", "Name"), TextBoxConfig.Create("A") } }),
+                ObjectConfig.Create(new OrderedMap<PropertyKey, IControllerConfig> { { ("gain", "Gain"), SliderConfig.Linear(0.3, 0, 1) }, { ("name", "Name"), TextBoxConfig.Create("B") } }),
             ]));
 
         // ④-E note 级 tag 组 moods（TagConfig）：12 个候选（≥ 10 → + 菜单出搜索框）、默认已选 calm；

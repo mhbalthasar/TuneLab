@@ -36,6 +36,15 @@ public class TagConfigTests
         Assert.Equal(L("c", "a", "b"), TagModel.Read(node, "tags", A()));
     }
 
+    // 存值不是数组（非法数据，如旧版本留下的对象）：按缺省处理，显示声明的默认值，而不是显示成"一个都没选"。
+    [Fact]
+    public void ReadFallsBackToDefaultWhenStoredValueIsNotAnArray()
+    {
+        var node = new DataPropertyObject();
+        node.SetValue("tags", PropertyValue.Create(PropertyObject.Empty));
+        Assert.Equal(L("a"), TagModel.Read(node, "tags", A("a")));
+    }
+
     // ===== 增删挪 =====
 
     [Fact]
@@ -129,6 +138,12 @@ public class TagConfigTests
     public void FormatValueRendersArrays()
         => Assert.Equal("[\"a\", 1]", ConfigText.FormatValue(new PropertyArray([V("a"), PropertyValue.Create(1)])));
 
+    // 命令的 Data 里存 ToJson 转出的原始值、渲染时再经 FormatValue(JsonNode) 转回：数组若转不回来，
+    // tag 字段的当前值就显示成 "(none)"。
+    [Fact]
+    public void RenderingFromJsonKeepsArrays()
+        => Assert.Equal("[\"a\", 1]", ConfigText.FormatValue(ConfigText.ToJson(new PropertyArray([V("a"), PropertyValue.Create(1)]))));
+
     [Fact]
     public void NormalizeMatchesCandidatesKeepsOrderAndDropsDuplicates()
     {
@@ -153,7 +168,7 @@ public class TagConfigTests
     {
         using var raw = JsonDocument.Parse("\"power\"");
         var (_, error) = ExtensionSettingsText.Normalize(TagConfig.Create(Catalog), raw.RootElement, "timbre");
-        Assert.Contains("give a JSON array", error);
+        Assert.Contains("give an array", error);
     }
 
     // ===== 片段预设：整值写入（有序、空选择也能清空）=====
@@ -170,5 +185,22 @@ public class TagConfigTests
 
         PartPresets.ApplyProperties(config, new PropertyObject(new Map<string, PropertyValue> { { "timbre", A() } }), node);
         Assert.Empty(TagModel.Read(node, "timbre", A("resonant")));   // 显式空选择，不回落默认
+    }
+
+    // ===== 候选值与默认所选必须是真实值（Null / Multiple 当场报错）=====
+
+    [Fact]
+    public void CreateRejectsNullOrMultipleCandidateValues()
+    {
+        Assert.Throws<System.ArgumentException>(() => TagConfig.Create([new TagItem(PropertyValue.Null, "none")]));
+        Assert.Throws<System.ArgumentException>(() => TagConfig.Create([new TagItem("G", [PropertyValue.Multiple])]));
+        TagConfig.Create([new TagItem("G", ["a"]), TagItem.Separator(), "b"]);   // 分组 / 分隔线自身的 Null 不算
+    }
+
+    [Fact]
+    public void WithDefaultRejectsNullOrMultiple()
+    {
+        Assert.Throws<System.ArgumentException>(() => TagConfig.Create(Catalog).WithDefault([PropertyValue.Null]));
+        Assert.Throws<System.ArgumentException>(() => TagConfig.Create(Catalog).WithDefault([PropertyValue.Multiple]));
     }
 }

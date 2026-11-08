@@ -31,6 +31,10 @@ internal interface IAudioPlaybackHandler
     void Start();
     void Stop();
 
+    // [EP-MIXER-31] 丢弃当前已填充但尚未播完的块。暂停/恢复/跳转时用：否则播放头已回到“听到的位置”，
+    // 设备却还在播旧块，声音会滞后一个缓冲。
+    void Flush();
+
     IReadOnlyList<string> GetAllDevices();
     IReadOnlyList<string> GetAllDrivers();
 }

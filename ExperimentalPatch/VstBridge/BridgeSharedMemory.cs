@@ -36,9 +36,11 @@ public static class SharedAudioLayout
     // 而将来要做"提前一块流水、把桥的调度延迟藏掉"时协议一行都不用改。
     public const int SlotCount = 4;
 
-    // 上限：2048 帧 × 4 声道（主 L/R + 侧链 L/R）。宿主设备块长通常 512~1024，留一倍余量。
+    // 上限：4096 帧 × 4 声道（主 L/R + 侧链 L/R）。宿主设备块长由「效果器插件缓冲时间」
+    // 决定（默认 50 ms ≈ 2205 帧 @44.1k），而混音图内部按 Mixer.DefaultMaxBlockSize = 4096
+    // 分块，所以桥单次最多收到 4096 帧。超过 2048 的旧上限会让 50 ms 缓冲直接失败。
     // 超了不是"凑合写进去"，而是拒绝——共享区大小是定死的，越界写就是踩别人的内存。
-    public const int MaxBlockFrames = 2048;
+    public const int MaxBlockFrames = 4096;
 
     // [EP-MIXER-27] 2 → 4：第 3/4 条平面是 VST2 的侧链输入（第 3 条起就是键，见 SIDECHAIN.md §2）。
     //
@@ -68,9 +70,14 @@ unsafe struct BlockHeader
     [FieldOffset(4)] public int Frames;
     [FieldOffset(8)] public int Channels;
 
-    // 预留。曾经放"本块是否旁通"，后来删了：旁通的正确做法是**根本不发起往返**
-    // （见 VstBridgeClient.SendProcess），让不需要过桥的音频白白跑一趟没有意义。
-    [FieldOffset(12)] public int Reserved;
+    // 本块的往返标签。宿主每发一块就 +1，桥原样回传；宿主只认自己刚发的那个标签。
+    //
+    // 【为什么必须有它】环是**所有插入共用**的 FIFO。一旦某一块在 20ms 内没等到结果
+    // （桥在开界面 / GC / 插件卡了一下），那块输入还留在环里；下一次请求会把**上一条
+    // 插入的输入**当成自己的输入处理，输出也会被下一条插入当成自己的结果。两条插入
+    // 之间于是形成"互相喂自己上一块输出"的环路 —— 听感就是啸叫 + 卡顿，而且与插件
+    // 本身无关（任何有增益的插件都会把这个环放大）。标签让两端都能丢掉过期的块。
+    [FieldOffset(12)] public int Tag;
 }
 
 // 段头：两个单调递增的序号（配合 SlotCount 做环形）。
@@ -211,7 +218,7 @@ public sealed unsafe class SharedAudioRing : IDisposable
     /// 返回 false = 消费者迟迟不归还缓冲区（桥卡死 / 已退出）——调用方应当把
     /// 对应的插入摘掉，因为环已经对不上步了，继续发只会越来越乱。
     /// </summary>
-    public bool TryPublish(int slot, float[][] planes, int channels, int frames, int waitMs)
+    public bool TryPublish(int slot, float[][] planes, int channels, int frames, int waitMs, int tag = 0)
     {
         if (channels <= 0 || frames <= 0 || channels > SharedAudioLayout.MaxChannels
             || frames > SharedAudioLayout.MaxBlockFrames)
@@ -233,7 +240,7 @@ public sealed unsafe class SharedAudioRing : IDisposable
         header->Slot = slot;
         header->Frames = frames;
         header->Channels = channels;
-        header->Reserved = 0;
+        header->Tag = tag;
 
         float* audio = (float*)(mBlocks + index * SharedAudioLayout.SlotBytes + SharedAudioLayout.BlockAudioOffset);
 
@@ -267,11 +274,13 @@ public sealed unsafe class SharedAudioRing : IDisposable
     /// 取生产者已发布、且本消费者还没取走的最早一块。
     /// 返回 false = 超时（没数据），此时 out 参数无意义。
     /// </summary>
-    public bool TryRead(int waitMs, out int slot, out float[][] planes, out int channels, out int frames)
+    public bool TryRead(int waitMs, out int slot, out float[][] planes, out int channels, out int frames,
+        out int tag)
     {
         slot = 0;
         channels = 0;
         frames = 0;
+        tag = 0;
         planes = [];
 
         long next = Volatile.Read(ref mHeader->ReadSeq);
@@ -288,6 +297,7 @@ public sealed unsafe class SharedAudioRing : IDisposable
         slot = header->Slot;
         frames = Math.Min(header->Frames, SharedAudioLayout.MaxBlockFrames);
         channels = Math.Min(header->Channels, SharedAudioLayout.MaxChannels);
+        tag = header->Tag;
 
         // 平面缓冲：借调用方的（PluginHost 每个槽位备好的那份），零分配。
         float* audio = (float*)(mBlocks + index * SharedAudioLayout.SlotBytes + SharedAudioLayout.BlockAudioOffset);
@@ -305,6 +315,63 @@ public sealed unsafe class SharedAudioRing : IDisposable
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// 取标签等于 <paramref name="tag"/> 的那一块；路上遇到标签不匹配的（上一次超时留下的
+    /// 过期块）就 <see cref="Release"/> 掉继续找。返回 true 时调用方仍然负责 Release。
+    ///
+    /// 【为什么两端都要用它】超时会让环里留下"没人要的块"。如果只是跳过不释放，环会被
+    /// 堵死；如果释放了却把内容当自己的，就会串台。标签是唯一能把"这是谁的块"说清的东西。
+    /// </summary>
+    public bool TryReadMatching(int tag, int waitMs, out int slot, out float[][] planes,
+        out int channels, out int frames)
+    {
+        slot = 0;
+        channels = 0;
+        frames = 0;
+        planes = [];
+
+        long start = Stopwatch.GetTimestamp();
+
+        while (true)
+        {
+            int remaining = waitMs;
+
+            if (waitMs > 0)
+            {
+                long elapsedMs = elapsed(start);
+                if (elapsedMs >= waitMs)
+                    return false;
+
+                remaining = (int)Math.Max(1, waitMs - elapsedMs);
+            }
+
+            if (!TryRead(remaining, out int readSlot, out var readPlanes, out int readChannels,
+                out int readFrames, out int readTag))
+            {
+                return false;
+            }
+
+            if (readTag == tag)
+            {
+                slot = readSlot;
+                planes = readPlanes;
+                channels = readChannels;
+                frames = readFrames;
+                return true;
+            }
+
+            // 过期块：它不是这次请求的输入 / 输出，丢掉，别让它堵住环。
+            Release();
+
+            // waitMs = 0 时 TryRead 只做一轮自旋；如果已经追平到写序号，就没必要再空转。
+            if (waitMs == 0
+                && Volatile.Read(ref mHeader->WriteSeq) <= Volatile.Read(ref mHeader->ReadSeq))
+            {
+                return false;
+            }
+        }
     }
 
     /// <summary>把刚取走的那块归还给环形（推进 ReadSeq）。</summary>

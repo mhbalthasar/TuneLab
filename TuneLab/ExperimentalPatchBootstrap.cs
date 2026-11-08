@@ -76,6 +76,32 @@ internal static class ExperimentalPatchBootstrap
     }
 
     // 退出收尾调用（App 的 desktop.Exit），须早于宿主引擎销毁。
+    // [EP-MIXER-34] 导出侧栏的补丁选项（目前只有“包含轨道效果器”）。没有补丁/没有贡献 = 空表。
+    public static IReadOnlyList<ExportOptionsContribution> GetExportOptions()
+    {
+        try
+        {
+            return PatchHost.GetExportOptions();
+        }
+        catch (Exception ex)
+        {
+            HostLog.Error("Experimental patch export options failed: " + ex);
+            return [];
+        }
+    }
+
+    // 效果器插件缓冲时间（毫秒）：补丁设置的真源在 insert-plugins.json。
+    // 宿主只经这里读取/应用，不再往宿主 settings.json 里加补丁专用键。
+    public static int InsertBufferMs => InsertPluginSettings.ReadBufferMs();
+
+    public static event Action<int>? InsertBufferMsChanged
+    {
+        add => InsertPluginSettings.BufferMsChanged += value;
+        remove => InsertPluginSettings.BufferMsChanged -= value;
+    }
+
+    public static void ApplyInsertBuffer() => InsertPluginSettings.ApplyBufferFromSettings();
+
     public static void Stop()
     {
         mMixerModel?.Dispose();
@@ -155,6 +181,18 @@ internal static class ExperimentalPatchBootstrap
         // 与打开的工程无关，所以做成静态单例而不随工程重建。
         public IInsertPluginSettings InsertPlugins => sInsertPlugins;
 
+        // [EP-MIXER-33] 分轨导出开关落在工程上；补丁侧只经这里读写当前工程。
+        public bool ExportIncludeEffects
+        {
+            get => CurrentEditor()?.Project?.ExportIncludeEffects ?? true;
+            set
+            {
+                var project = CurrentEditor()?.Project;
+                if (project != null)
+                    project.ExportIncludeEffects = value;
+            }
+        }
+
         // 主窗口快捷键：补丁的窗口（混音台）没有焦点时，按键只会到主窗口。
         public void RegisterShortcut(string gesture, Action action)
         {
@@ -221,6 +259,13 @@ internal static class ExperimentalPatchBootstrap
         static HostServices()
         {
             Audio.InsertInstanceFactory.PluginCacheProvider = () => sInsertPlugins.CachedPlugins;
+
+            // 重开工程时缓存里没有的插件要按路径重新定位；工厂和后端共用同一份清单。
+            var factory = Audio.InsertInstanceFactory.Shared;
+            factory.Vst3Paths = sInsertPlugins.Paths["VST3"];
+            factory.Vst2Paths = sInsertPlugins.Paths["VST2"];
+            factory.ClapPaths = sInsertPlugins.Paths["CLAP"];
+            factory.JsfxPaths = sInsertPlugins.Paths["JSFX"];
         }
 
         const string Prefix = "[ExperimentalPatch] ";

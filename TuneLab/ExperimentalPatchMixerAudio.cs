@@ -150,6 +150,36 @@ internal sealed class MixerGraphCompiler
         return snapshot;
     }
 
+    // 分轨导出专用：只编"一条轨 → device"的最小图。
+    //
+    // 为什么要单独编而不是复用整张图：导出只要这条轨自己的通道输出（推子、声像、
+    // 插入链），不要它的 output 路由、不要 send、不要 Master 推子/插入/限幅。
+    // 直接连到 device sink 正好是"通道条出口"；Master 节点仍要有一个（引擎要求），
+    // 但它没有任何输入，不会污染输出。
+    //
+    // 与整图共用同一个 InsertInstanceFactory：导出用的插件实例就是播放用的那个，
+    // 不会为了导出重新加载插件。调用方负责在导出期间停播，避免两个线程同时喂同一实例。
+    public MixSnapshot CompileSingleTrack(AudioGraph graph, IAudioTrack track)
+    {
+        sInsertFactory.SampleRate = graph.SampleRate;
+        sInsertFactory.MaxBlockSize = Mixer.DefaultMaxBlockSize;
+
+        var builder = new MixGraphBuilder();
+
+        // 引擎要求恰好一个 Master；这里它只是占位（没有输入、没有输出）。
+        builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(null), null, []);
+        var device = builder.AddNode("device", MixNodeKind.Device);
+
+        // ignoreMuteSolo: 导出分轨与旧路径 AddData 一致 —— 静音/solo 不改变导出内容。
+        var state = new TrackChannelState(track, ignoreMuteSolo: true);
+        var chain = BuildInserts("track-export", track.Inserts);
+        var node = builder.AddNode("track-export", MixNodeKind.Track, state, new TrackMixSource(graph, track), chain);
+
+        builder.Connect(node, device);
+
+        return builder.Build();
+    }
+
     // [EP-MIXER-27] 把数据里的 SidechainId 翻成引擎的侧链边。
     //
     // 【id 空间】模型侧是 "track:N" / "aux-N"，引擎节点是 "track-N" / "aux-N"。
@@ -389,10 +419,12 @@ internal sealed class SendEdgeGain(Send send) : IMixEdgeGain
 internal sealed class TrackChannelState : IMixChannelState
 {
     readonly IAudioTrack mTrack;
+    readonly bool mIgnoreMuteSolo;
 
-    public TrackChannelState(IAudioTrack track)
+    public TrackChannelState(IAudioTrack track, bool ignoreMuteSolo = false)
     {
         mTrack = track;
+        mIgnoreMuteSolo = ignoreMuteSolo;
     }
 
     // 由 RefreshSolo 每块写一次。
@@ -406,7 +438,9 @@ internal sealed class TrackChannelState : IMixChannelState
 
     // 与旧路径 MixData 的判据**逐字一致**：`!IsSolo && (IsMute || hasSolo)` 才跳过。
     // 注意上游的既有语义：solo 会盖过同一条轨的 mute（solo 时不看 IsMute）——照抄，不"修正"。
-    public bool IsSilent => !mTrack.IsSolo && (mTrack.IsMute || (HasSolo && !mTrack.IsSoloSafe));
+    public bool IsSilent => mIgnoreMuteSolo
+        ? false
+        : !mTrack.IsSolo && (mTrack.IsMute || (HasSolo && !mTrack.IsSoloSafe));
 
     // 输入级：读的是数据槽位（活值，不重建图）。
     public double TrimDb => mTrack.TrimDb;

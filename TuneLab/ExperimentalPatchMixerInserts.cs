@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
@@ -43,6 +44,7 @@ internal sealed class InsertInstanceFactory
     readonly Vst3Backend mVst3 = new();
     readonly Vst2Backend mVst2 = new();
     readonly ClapBackend mVstClap = new();
+    readonly JsfxBackend mJsfx = new();
 
     // 宿主当前的采样率 / 块长。插件的 Initialize 要它们，所以必须在建实例前知道。
     // 由 MixerGraphCompiler.Compile 每次编译时按当前图刷新（见那里的注释：这两个值曾长期停在默认值上，
@@ -63,9 +65,12 @@ internal sealed class InsertInstanceFactory
     // 用户配的 CLAP 扫描路径（默认 = 三平台的标准位置，见 ClapPaths）。
     public IReadOnlyList<string> ClapPaths { get; set; } = InsertPluginSettings.DefaultClapPaths;
 
+    // 用户配的 JSFX 扫描路径（TuneLab Effects + REAPER Effects + 用户自定义）。
+    public IReadOnlyList<string> JsfxPaths { get; set; } = InsertPluginSettings.DefaultJsfxPaths;
+
     // 当前可用的格式（菜单里的第一级）。VST3 可用性取决于隔离宿主（64 位桥）在不在，
-    // VST2 取决于桥可执行文件在不在（Windows-only），CLAP 同样取决于桥（纯 C ABI，无额外 native）。
-    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3, mVst2, mVstClap };
+    // VST2 取决于桥可执行文件在不在（Windows-only），CLAP / JSFX 同样取决于桥。
+    public IReadOnlyList<IInsertBackend> Backends => new IInsertBackend[] { mVst3, mVst2, mVstClap, mJsfx };
 
     // 图侧（MixerGraphCompiler）与工程侧（MixerPersistence 落盘）共用**同一个**工厂：
     // 插件实例里存着用户的参数与 state，各建一份就会"图里在跑、落盘是空的"。
@@ -310,31 +315,25 @@ internal sealed class InsertInstanceFactory
     // 按 PluginId 在扫描缓存里找。缓存可能比工程旧（用户卸了插件）——
     // 找不到就如实说""找不到了""，不猜一个相似的。
     InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId)
+        => FindPlugin(backend, pluginId, PluginCacheProvider?.Invoke());
+
+    // internal 而不是 private：TuneLab.Tests 要覆盖"旧路径型 id → 新 64 位缓存"的解析，
+    // 而这条逻辑没有别的稳定入口；显式传缓存也避免测试去改全局 PluginCacheProvider。
+    // 程序集本身 internal，这不是公开契约。
+    internal InsertPluginInfo? FindPlugin(IInsertBackend backend, string pluginId,
+        IReadOnlyList<InsertPluginEntry>? cached)
     {
         // 1) 先查扫描缓存（有 Locator，且与菜单同源）。
-        var cached = PluginCacheProvider?.Invoke();
-
         if (cached != null)
         {
-            foreach (var entry in cached)
-            {
-                if (!string.Equals(entry.Format, backend.FormatName, StringComparison.OrdinalIgnoreCase))
-                    continue;
+            var candidates = cached
+                .Where(entry => string.Equals(entry.Format, backend.FormatName, StringComparison.OrdinalIgnoreCase))
+                .Select(ToPluginInfo)
+                .Where(plugin => Matches(plugin, pluginId))
+                .ToList();
 
-                if (!string.Equals(entry.PluginId, pluginId, StringComparison.Ordinal))
-                    continue;
-
-                return new InsertPluginInfo
-                {
-                    Format = entry.Format,
-                    PluginId = entry.PluginId,
-                    Name = entry.Name,
-                    Vendor = entry.Vendor,
-                    Category = entry.Category,
-                    Locator = entry.Locator,
-                    IsInstrument = entry.IsInstrument,
-                };
-            }
+            if (candidates.Count > 0)
+                return ChooseBest(candidates, pluginId);
         }
 
         // 2) 缓存里没有（从没扫过 / 缓存被清）→ 退回按目录枚举。
@@ -349,18 +348,77 @@ internal sealed class InsertInstanceFactory
 
         var paths = string.Equals(backend.FormatName, Vst2Backend.FormatName, StringComparison.OrdinalIgnoreCase)
             ? Vst2Paths
-            : Vst3Paths;
+            : string.Equals(backend.FormatName, JsfxBackend.FormatName, StringComparison.OrdinalIgnoreCase)
+                ? JsfxPaths
+                : Vst3Paths;
 
         // probeInstruments: false —— 这里只要 Locator。true 会把每个插件都加载一遍，
         // 而这段代码在**每次编译音频图**时都会跑（挂一个效果器就编译一次），
         // 让它去加载几百个插件等于把 UI 冻住好几秒。
-        foreach (var plugin in backend.ListPlugins(paths, probeInstruments: false))
-        {
-            if (plugin.PluginId == pluginId)
-                return plugin;
-        }
+        var scanned = backend.ListPlugins(paths, probeInstruments: false)
+            .Where(plugin => Matches(plugin, pluginId))
+            .ToList();
 
-        return null;
+        return scanned.Count > 0 ? ChooseBest(scanned, pluginId) : null;
+    }
+
+    static InsertPluginInfo ToPluginInfo(InsertPluginEntry entry) => new()
+    {
+        Format = entry.Format,
+        PluginId = entry.PluginId,
+        Name = entry.Name,
+        Vendor = entry.Vendor,
+        Category = entry.Category,
+        Locator = entry.Locator,
+        IsInstrument = entry.IsInstrument,
+        IsAvailable = entry.IsAvailable,
+        UnavailableReason = entry.UnavailableReason,
+    };
+
+    // VST3 的工程 id 可能是 bundle 名（vst3:X），也可能是完整扫描写下的路径型 id
+    // （vst3:C:\...\X.vst3）。两种都要能找回同一条缓存，否则老工程一开就是"插件没了"。
+    // 同时按 bundle 名匹配，让 64 位副本可以接管只写了短 id 的工程。
+    static bool Matches(InsertPluginInfo plugin, string pluginId)
+    {
+        if (string.Equals(plugin.PluginId, pluginId, StringComparison.Ordinal))
+            return true;
+
+        if (!string.Equals(plugin.Format, "VST3", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        string wanted = Vst3Key(pluginId);
+
+        if (wanted.Length == 0)
+            return false;
+
+        return string.Equals(Vst3Key(plugin.PluginId), wanted, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(Vst3Key(plugin.Locator), wanted, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(plugin.Name, wanted, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // 同名的 64/32 位副本：永远先选 64 位 —— x64 桥的 LoadLibrary 碰不了 x86 bundle。
+    // 只有 32 位副本时仍返回它，让 Vst3Backend.Create 给出明确原因，而不是含糊的"插件没反应"。
+    static InsertPluginInfo ChooseBest(IReadOnlyList<InsertPluginInfo> candidates, string pluginId)
+        => candidates
+            .OrderBy(plugin => plugin.Format == "VST3" && Vst3Backend.Is32BitBundle(plugin.Locator))
+            .ThenByDescending(plugin => plugin.IsAvailable)
+            .ThenByDescending(plugin => string.Equals(plugin.PluginId, pluginId, StringComparison.Ordinal))
+            .First();
+
+    static string Vst3Key(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string text = value.StartsWith("vst3:", StringComparison.OrdinalIgnoreCase) ? value[5..] : value;
+        text = text.Replace('/', '\\');
+
+        int at = text.IndexOf(".vst3\\", StringComparison.OrdinalIgnoreCase);
+
+        if (at >= 0)
+            text = text[..(at + ".vst3".Length)];
+
+        return Path.GetFileNameWithoutExtension(text);
     }
 }
 

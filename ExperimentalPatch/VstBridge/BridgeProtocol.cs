@@ -30,7 +30,14 @@ public static class BridgeProtocol
     // 为什么必须抬版本：旧桥按 2 声道布局算槽位大小，新宿主按 4 声道写 ——
     // 能连上、能握手，然后按错的步长解读同一段内存，症状是爆音或整段错位。
     // 所以 Hello 里校验版本，不匹配就拒绝（见 BridgeSession.HandleHello）。
-    public const int ProtocolVersion = 2;
+    //
+    // [啸叫] 2 → 3：ProcessRequest 增加 Tag，块头的 Reserved 改成 Tag。旧桥不认这个
+    // 字段，会把超时留下的过期块当成新块处理（两条插入互相喂上一块输出 = 啸叫）。
+    //
+    // [缓冲] 3 → 4：MaxBlockFrames 2048 → 4096（默认 50 ms 缓冲 @44.1k ≈ 2205 帧，
+    // 混音图内部又按 4096 分块）。旧桥按 2048 算槽位大小，新宿主按 4096 写 —— 同一类
+    // 布局错位，必须在 Hello 握手时拒绝。
+    public const int ProtocolVersion = 4;
 
     // 约定：一条消息 = 4 字节小端长度 + UTF-8 JSON。
     // 上限 16 MB：足够装一个自己的大 state chunk，也挡住了"长度头读坏了当巨长"这种事故。
@@ -48,6 +55,9 @@ public static class PluginFormats
 
     // CLAP。纯 C ABI：不需要 per-RID 的 native 宿主库，桥自己就能加载 .clap。
     public const string Clap = "clap";
+
+    // JSFX。桥通过 ysfx 的 C ABI 加载 .jsfx 文本；宿主只负责枚举文件与路径设置。
+    public const string Jsfx = "jsfx";
 }
 
 public enum BridgeMessageKind
@@ -153,6 +163,11 @@ public sealed class LoadPluginMessage
     [JsonPropertyName("pluginId")]
     public string? PluginId { get; init; }
 
+    // JSFX 的 import 根目录（用户配置的 Effects 目录）。VST2 / VST3 / CLAP 不用。
+    // 缺省 null：桥会让 ysfx 按 .jsfx 文件自身的位置猜。
+    [JsonPropertyName("importRoot")]
+    public string? ImportRoot { get; init; }
+
     [JsonPropertyName("sampleRate")]
     public double SampleRate { get; init; }
 
@@ -254,6 +269,11 @@ public sealed class ProcessRequest
 
     [JsonPropertyName("bypass")]
     public bool Bypass { get; init; }
+
+    // 本块的往返标签（见 BlockHeader.Tag）。桥只处理标签对得上的那块输入，
+    // 过期的（上一次超时留下的）直接丢掉；输出原样带回同一个标签。
+    [JsonPropertyName("tag")]
+    public int Tag { get; init; }
 }
 
 public sealed class ProcessResult

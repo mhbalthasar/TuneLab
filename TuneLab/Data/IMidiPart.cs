@@ -1,4 +1,4 @@
-using DynamicData;
+﻿using DynamicData;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -31,12 +31,21 @@ internal interface IMidiPart : IPart, IDataObject<MidiPartInfo>
     // 自动化轨集合因参数 commit 而变（条件轨随值显隐）：UI 收到重建参数栏/默认值面板。仅实际变化时触发。
     // 属性 lane 集合（见 NoteLaneConfigs / PhonemeLaneConfigs）的增删也并入本事件（同一批 UI 消费者：tabbar / 渲染器）。
     IActionEvent AutomationConfigsModified { get; }
-    // 参数面板 note 属性 lane 集合（物化缓存）：用户钉选 ∩ 当前 note 属性 config 的有界数值条目，按声明序。
-    // 值本体在各 note.Properties 里按 id 存取；本集合只承载呈现口径（量程/默认值/格式/轨色）。
+    // 参数面板 note 属性 lane 集合（物化缓存）：用户钉选 ∩ 各 note 声明里有界数值条目的并集，按首见顺序。
+    // 只决定有哪些 lane 与轨色；条目里的量程是首见声明的，逐段的形状按各自 note 取（TryGetNoteLaneShape）。
+    // 值本体在各 note.Properties 里按 id 存取。
     IReadOnlyOrderedMap<PropertyKey, LaneEntry> NoteLaneConfigs { get; }
-    // 参数面板 phoneme 属性 lane 集合（物化缓存）：用户钉选 ∩ 逐音素 config 并集里的有界数值条目（同 id 取首见声明）。
-    // 值本体在各钉死音素的 Properties 里按 id 存取（合成音素无属性、显示默认值）；voice 专属（instrument 恒空）。
+    // 参数面板 phoneme 属性 lane 集合（物化缓存）：用户钉选 ∩ 各 note 逐 slot 音素声明的并集（同 id 取首见声明）。
+    // 逐段形状按各自 note 与 slot 取（TryGetPhonemeLaneShape）。值本体在各钉死音素的 Properties 里按 id 存取
+    //（合成音素无属性、显示默认值）；voice 专属（instrument 恒空）。
     IReadOnlyOrderedMap<PropertyKey, LaneEntry> PhonemeLaneConfigs { get; }
+    // 单 note 的声明（context 只含这一个 note，即侧栏单选的那一份），按 note 缓存、part 任何数据变化即整体作废、用到再问。
+    ObjectConfig GetNotePropertyConfig(INote note);
+    IReadOnlyMap<int, ObjectConfig> GetPhonemePropertyConfigs(INote note);
+    // 某个 note（的第 index 个显示音素）在 id 这条 lane 上的形状：按它自己的声明取。该 note 没声明这个字段
+    //（或不是有界数值）返回 false = 这一段不画、不可写。形状不带轨色。
+    bool TryGetNoteLaneShape(INote note, string id, out LaneEntry shape);
+    bool TryGetPhonemeLaneShape(INote note, int index, string id, out LaneEntry shape);
     // 钉选变更后由动作方调用：重算两 scope 的 lane 集合，实变则经 AutomationConfigsModified 通知 UI。
     void RefreshPinnedLaneConfigs();
     // 当前声明面里【可钉选】的属性（有 lane 资格的 note / phoneme 属性）：钉选的外部面要报出"此刻能钉什么"，
@@ -741,6 +750,16 @@ internal static class IMidiPartExtension
         {
             automations.Add(kvp.Key, new() { DefaultValue = part.Automations[kvp.Key].DefaultValue.GetInfo(), Points = kvp.Value });
         }
+        // 效果链整条带上（实例 id 沿用：各子段是独立的 part，链内唯一不冲突，颤音对效果器轨的影响表按 id 随之重连），
+        // 各效果器的自动化轨与分段轨同 part 级一样裁到子段、换到子段起点。
+        var effects = new List<EffectInfo>();
+        foreach (var effect in part.Effects)
+        {
+            var info = effect.GetInfo();
+            info.Automations = RangeAutomations(effect.Automations, start, end);
+            info.PiecewiseAutomations = RangePiecewiseAutomations(effect.PiecewiseAutomations, start, end);
+            effects.Add(info);
+        }
         return new MidiPartInfo()
         {
             // 提取的子段为全新独立 part：锚点落在子段起点、无前向裁剪（StartOffset 默认 0）、长度 = end - start。
@@ -753,7 +772,26 @@ internal static class IMidiPartExtension
             Pitch = new PitchInfo { Segments = parameters.Pitch },
             Notes = notes,
             Vibratos = vibratos,
-            Automations = automations
+            Automations = automations,
+            PiecewiseAutomations = RangePiecewiseAutomations(part.PiecewiseAutomations, start, end),
+            Effects = effects,
         };
+    }
+
+    static Map<string, AutomationInfo> RangeAutomations(IReadOnlyDataObjectMap<string, IAutomation> automations, double start, double end)
+    {
+        var map = new Map<string, AutomationInfo>();
+        foreach (var kvp in automations)
+            map.Add(kvp.Key, new() { DefaultValue = kvp.Value.DefaultValue.GetInfo(), Points = kvp.Value.RangeInfo(start, end) });
+        return map;
+    }
+
+    // 分段轨：落在子段里的各段（换到子段起点）。子段里没有段的轨也按键留着（空轨），同 part 上的存法。
+    static Map<string, PiecewiseAutomationInfo> RangePiecewiseAutomations(IReadOnlyDataObjectMap<string, IPiecewiseAutomation> automations, double start, double end)
+    {
+        var map = new Map<string, PiecewiseAutomationInfo>();
+        foreach (var kvp in automations)
+            map.Add(kvp.Key, new PiecewiseAutomationInfo { Segments = kvp.Value.RangeInfo(start, end) });
+        return map;
     }
 }

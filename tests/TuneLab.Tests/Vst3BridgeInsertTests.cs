@@ -34,7 +34,8 @@ public class Vst3BridgeInsertTests
         public int AllocateSlot() => mNextSlot++;
 
         public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock,
-            bool bypass, string format = PluginFormats.Vst2, string? pluginId = null) => null;
+            bool bypass, string format = PluginFormats.Vst2, string? pluginId = null,
+            string? importRoot = null) => null;
 
         public List<int> Unloaded { get; } = [];
         public bool UnloadBlocking(int slot)
@@ -206,7 +207,8 @@ public class Vst3BridgeInsertTests
         public bool EnsureStartedBlocking() => true;
         public int AllocateSlot() => 1;
         public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock,
-            bool bypass, string format = PluginFormats.Vst2, string? pluginId = null) => null;
+            bool bypass, string format = PluginFormats.Vst2, string? pluginId = null,
+            string? importRoot = null) => null;
         public bool UnloadBlocking(int slot) => true;
         public bool SendProcess(int slot, float[][] inPlanes, float[][] outPlanes, int channels, int frames, bool bypass) => false;
         public byte[]? GetStateBlocking(int slot) => null;

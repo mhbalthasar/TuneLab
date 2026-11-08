@@ -156,7 +156,7 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         return true;
     }
 
-    public bool Process(int slotNumber, bool bypass, out int frames, out int channels)
+    public bool Process(int slotNumber, bool bypass, int tag, out int frames, out int channels)
     {
         frames = 0;
         channels = 0;
@@ -164,7 +164,8 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
         if (!mSlots.TryGetValue(slotNumber, out var slot))
             return false;
 
-        if (mIn == null || !mIn.TryRead(0, out _, out var inPlanes, out int ch, out int fr))
+        // 只认 tag 对得上的输入；超时留下的过期块直接丢弃（见 BlockHeader.Tag）。
+        if (mIn == null || !mIn.TryReadMatching(tag, 0, out _, out var inPlanes, out int ch, out int fr))
             return false;
 
         frames = fr;
@@ -175,7 +176,7 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
             if (bypass || slot.Bypassed)
             {
                 // 直通：输入原样发回去。
-                mOut?.TryPublish(slotNumber, inPlanes, ch, fr, 1000);
+                mOut?.TryPublish(slotNumber, inPlanes, ch, fr, 1000, tag);
                 return true;
             }
 
@@ -221,7 +222,7 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
             if (!ok)
             {
                 // 插件炸了：这一块直通，用户至少还听得见原来的东西。
-                mOut?.TryPublish(slotNumber, inPlanes, ch, fr, 1000);
+                mOut?.TryPublish(slotNumber, inPlanes, ch, fr, 1000, tag);
                 return false;
             }
 
@@ -234,7 +235,7 @@ internal sealed class Vst3PluginHost : IBridgePluginHost
                 slot.PublishPlanes[1][i] = float.IsFinite(ro) ? ro : 0f;
             }
 
-            mOut?.TryPublish(slotNumber, slot.PublishPlanes, 2, n, 1000);
+            mOut?.TryPublish(slotNumber, slot.PublishPlanes, 2, n, 1000, tag);
             return true;
         }
         catch (Exception)

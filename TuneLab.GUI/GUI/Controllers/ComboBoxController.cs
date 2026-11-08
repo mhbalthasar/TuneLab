@@ -74,7 +74,7 @@ internal class ComboBoxController : DropDown, IDataValueController<PropertyValue
                 PlaceholderText = literal;
                 PlaceholderForeground = Style.SYNTHESIS_DEGRADED.ToBrush();
                 WarningMarker = true;
-                this.SetupToolTip(string.Format("Stored value \"{0}\" is not among the current options.\nThe plugin decides how to treat it (usually as default).\nSelect an option to overwrite it.".Tr(this), literal));
+                this.SetupToolTip(string.Format("Current value \"{0}\" is not among the options.\nSelecting any option replaces it.".Tr(this), literal));
             }
             SelectedIndex = -1;
         }
@@ -114,7 +114,7 @@ internal class ComboBoxController : DropDown, IDataValueController<PropertyValue
                 items.Add(new DropDownItem() { Text = option.DisplayText ?? string.Empty, IsSeparator = true });
             else if (option.SubItems is not null)
                 items.Add(new DropDownItem() { Text = option.ShowText(), Children = BuildItems(option.SubItems) });
-            else
+            else if (option.IsListed())   // 与 Leaves() 同口径跳过，菜单序与叶子序才对得上
                 items.Add(new DropDownItem() { Text = option.ShowText(), Tag = option.Value });
         }
         return items;

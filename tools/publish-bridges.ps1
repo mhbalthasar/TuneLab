@@ -13,6 +13,7 @@
 #   pwsh tools/publish-bridges.ps1                                  # Windows 开发默认：win-x86 + win-x64
 #   pwsh tools/publish-bridges.ps1 -Configuration Release
 #   pwsh tools/publish-bridges.ps1 -AppOutput "D:\TuneLab"
+#   pwsh tools/publish-bridges.ps1 -YsfxNativeDir "..\ysfx_lib\artifacts"  # 同时补 JSFX 运行时
 #   pwsh tools/publish-bridges.ps1 -AppOutput workspace -Runtime linux-x64   # CI：按目标 RID 发一份
 #
 # [P5.3] -Runtime 给了就只发"该目标平台需要的桥"：
@@ -24,7 +25,11 @@ param(
     [string]$Configuration = "Debug",
     [string]$AppOutput = "",
     [string]$Runtime = "",
-    [string]$Dotnet = "dotnet"
+    [string]$Dotnet = "dotnet",
+    # ysfx_lib 的产物目录（可选）。里面可以直接放 ysfx.tlhost.dll /
+    # libysfx.tlhost.so / libysfx.tlhost.dylib，也可以按 <rid>/ 分子目录。
+    # 没给时退回 ExperimentalPatch/InsertHost/Native/<rid>/。
+    [string]$YsfxNativeDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +81,33 @@ foreach ($bridge in $bridges) {
 
     if ($LASTEXITCODE -ne 0) {
         throw "publish failed: $($bridge.Project) [$($bridge.Rid)]"
+    }
+
+    # JSFX 的 native 运行时（ysfx）不是 .NET 程序集，不会跟着 publish 出来。
+    # 32 位桥不声明 JSFX；只给 64 位桥补。
+    if ($bridge.Rid -ne "win-x86") {
+        $ysfxName = if ($bridge.Rid -like "win-*") { "ysfx.tlhost.dll" }
+            elseif ($bridge.Rid -like "osx-*") { "libysfx.tlhost.dylib" }
+            else { "libysfx.tlhost.so" }
+
+        $candidates = @()
+
+        if ($YsfxNativeDir) {
+            $candidates += Join-Path $YsfxNativeDir $ysfxName
+            $candidates += Join-Path (Join-Path $YsfxNativeDir $bridge.Rid) $ysfxName
+        }
+
+        $candidates += Join-Path $repo "ExperimentalPatch/InsertHost/Native/$($bridge.Rid)/$ysfxName"
+
+        $ysfx = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        if ($ysfx) {
+            Copy-Item $ysfx $target -Force
+            Write-Host "  + $ysfxName (from $ysfx)"
+        }
+        else {
+            Write-Warning "ysfx runtime not found for $($bridge.Rid); JSFX will stay unavailable until $ysfxName is placed in $target"
+        }
     }
 }
 

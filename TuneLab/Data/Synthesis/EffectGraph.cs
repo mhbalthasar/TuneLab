@@ -700,7 +700,9 @@ internal sealed class EffectGraph : IDisposable
 
     void SortByPlaybackProximity(List<EffectNode> nodes)
     {
-        double currentTime = AudioEngine.CurrentTime;
+        // [EP-MIXER-31] 排序按预读头（SchedulingTime）：它才是接下来要渲染的位置；
+        // CurrentTime 是听到的位置，晚一个缓冲。
+        double currentTime = AudioEngine.SchedulingTime;
         // 播放线之后的段优先（升序最早开始）；其后是线前的段（降序最晚开始，离播放线最近）。
         nodes.Sort((a, b) =>
         {
