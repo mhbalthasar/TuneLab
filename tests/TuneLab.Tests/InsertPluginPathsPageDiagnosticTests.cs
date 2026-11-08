@@ -1,20 +1,22 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.VisualTree;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.Patches.Mixer;
-using TuneLab.ExperimentalPatch.Patches.Mixer.Controls;
+using TuneLab.GUI.Components;
 using Xunit;
 
 namespace TuneLab.Tests;
 
 // 回归测试：插件扫描设置页的每个格式区块（VST3/VST2/CLAP/JSFX）都必须有
-// 「+ 添加路径」按钮。曾有反馈 JSFX 区块缺按钮——按钮是 BuildSection 统一生成的，
-// 该测试保证任何后续重构都不会把某一个格式的入口悄悄丢掉。
+// 「+ 添加路径」按钮（页面上以 Tag="add-path" 标记）。曾有反馈 JSFX 区块缺按钮——
+// 按钮是 BuildSection 统一生成的，该测试保证后续重构不会把某个格式的入口悄悄丢掉。
+// 同时守卫页面宽度：内容不得比设置窗（800 逻辑像素宽，内容区约 580）更宽，否则右缘被裁。
 public class InsertPluginPathsPageDiagnosticTests
 {
     class StubHost : IHostServices
@@ -34,24 +36,21 @@ public class InsertPluginPathsPageDiagnosticTests
         var page = new InsertPluginPathsPage(new StubHost());
 
         // 视觉树要在挂到根之后才物化（ContentPresenter 是挂载时才展开的）。
-        var window = new Window { Width = 900, Height = 700, Content = page };
+        var window = new Window { Width = 800, Height = 720, Content = page };
         window.Show();
 
-        var buttons = new List<string>();
-        Collect(page, buttons, 0);
+        var addButtons = page.GetVisualDescendants()
+            .OfType<TuneLab.GUI.Components.Button>()
+            .Count(b => (b.Tag as string) == "add-path");
+        Assert.Equal(4, addButtons);
 
-        var adds = buttons.FindAll(t => t.Contains("添加路径") || t.Contains("Add path"));
-        Assert.Equal(4, adds.Count);
+        // 宽度诊断：页面必须被窗口约束住（历史上内容曾比窗口宽，右缘被裁掉）。
+        Assert.True(page.Bounds.Width <= 800, $"page width {page.Bounds.Width} exceeds window width 800");
+        var scroll = page.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+        if (scroll != null)
+            Assert.True(scroll.Extent.Width <= scroll.Viewport.Width + 1,
+                $"scroll content {scroll.Extent.Width} wider than viewport {scroll.Viewport.Width}");
 
         window.Close();
-    }
-
-    static void Collect(Visual visual, List<string> into, int depth)
-    {
-        if (visual is ChromeButton button)
-            into.Add(button.Text ?? "");
-
-        foreach (var child in visual.GetVisualChildren())
-            Collect(child, into, depth + 1);
     }
 }
