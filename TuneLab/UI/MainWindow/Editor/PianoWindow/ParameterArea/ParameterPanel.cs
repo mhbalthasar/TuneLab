@@ -206,6 +206,12 @@ internal sealed class ParameterPanel : AutomationRenderer.IDependency, Parameter
                         return (kvp.Key.DisplayText ?? kvp.Key.Id, ColorUtils.ParseOrFallback(kvp.Value.Color));
                 }
                 return (key.Id, Style.LIGHT_WHITE);
+            case AutomationSource.Insert:
+                // [EP-MIXER-AUTO] 插入参数自动化："FX 名 · 参数名"，色与 lane 同源（BuildLaneConfig）。
+                if (InsertAutomationCatalog.TryResolveEntry(part, key.Id, out var insertSlot, out var insertEntry))
+                    return (InsertAutomationCatalog.DisplayName(insertSlot, insertEntry),
+                        ColorUtils.ParseOrFallback(InsertAutomationCatalog.BuildLaneConfig(insertEntry, key.Id).Color));
+                return (key.Id, Style.LIGHT_WHITE);
             default:
                 return (key.Id, Style.LIGHT_WHITE);
         }

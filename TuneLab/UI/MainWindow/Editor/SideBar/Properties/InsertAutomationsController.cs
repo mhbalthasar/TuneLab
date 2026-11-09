@@ -269,6 +269,9 @@ internal class InsertAutomationsController : StackPanel
         {
             ParamId = key,
             BaseValue = parameter.CurrentValue,   // 基值 = 当前参数值（叠加的起点）
+            // 量程抄自活实例：钢琴窗 lane 的值轴 / 钳位不依赖实例活着（重开工程也能画轴）。
+            MinValue = parameter.MinValue,
+            MaxValue = parameter.MaxValue,
             Points = [],
         });
         slot.Automations.Add(key, entry);

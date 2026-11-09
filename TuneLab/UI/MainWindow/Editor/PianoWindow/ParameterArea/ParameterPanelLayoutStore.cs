@@ -42,6 +42,10 @@ internal static class ParameterPanelLayoutStore
                     return null;
                 var slot = effects[key.EffectIndex];
                 return new() { Source = EffectSource, Id = key.Id, EffectId = slot.Id, EffectIndex = key.EffectIndex, EffectType = slot.Type };
+            case AutomationSource.Insert:
+                // [EP-MIXER-AUTO] 插入参数：key.Id = "{slotId}:{paramId}"，slotId 全工程稳定，
+                // 直接按 id 存取即可（不依赖 part 的链）。
+                return new() { Source = InsertSource, Id = key.Id };
             default:
                 return null;
         }
@@ -72,6 +76,10 @@ internal static class ParameterPanelLayoutStore
                 if (info.EffectIndex >= 0 && info.EffectIndex < effects.Count && effects[info.EffectIndex].Type == info.EffectType)
                     return AutomationKey.Effect(info.EffectIndex, info.Id);
                 return null;
+            case InsertSource:
+                // [EP-MIXER-AUTO] 插入参数按 id 认回：当前 part 所在轨音流是否流经该槽位由
+                // IsEffectiveAutomation（路由层）判定，这里只还原 key。
+                return AutomationKey.Insert(info.Id);
             default:
                 // 不认识的来源（更新版本写的）：跳过这一条，不让它挡住整份布局。
                 return null;
@@ -82,4 +90,5 @@ internal static class ParameterPanelLayoutStore
     const string EffectSource = "effect";
     const string NoteLaneSource = "noteLane";
     const string PhonemeLaneSource = "phonemeLane";
+    const string InsertSource = "insert";
 }

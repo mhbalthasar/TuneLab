@@ -461,6 +461,8 @@ internal static class MixerPersistence
             {
                 ParamId = info.ParamId,
                 BaseValue = info.BaseValue,
+                MinValue = info.MinValue,
+                MaxValue = info.MaxValue,
                 Points = info.Points.Select(p => new AutomationAnchorDto { Pos = p.X, Value = p.Y }).ToList(),
             });
         }
@@ -483,6 +485,8 @@ internal static class MixerPersistence
             {
                 ParamId = dto.ParamId,
                 BaseValue = dto.BaseValue,
+                MinValue = dto.MinValue,
+                MaxValue = dto.MaxValue,
                 Points = dto.Points?.Select(p => new Point(p.Pos, p.Value)).ToList() ?? [],
             });
             slot.Automations.Add(dto.ParamId, entry);
@@ -608,6 +612,10 @@ internal static class MixerPersistence
 
         // 叠加基值（见 InsertSlotAutomation 的加性语义）。
         public double BaseValue { get; set; }
+
+        // 参数量程（lane 值轴 / 钳位用；建条目时从活实例抄的）。
+        public double MinValue { get; set; }
+        public double MaxValue { get; set; }
 
         // 偏移曲线锚点：Pos = 工程绝对 tick，Value = 偏移量。
         // 【为什么不是 Foundation.Point】Point 的坐标是公共**字段**，System.Text.Json

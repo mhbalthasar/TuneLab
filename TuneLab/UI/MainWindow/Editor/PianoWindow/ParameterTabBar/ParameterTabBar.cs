@@ -137,6 +137,8 @@ internal class ParameterTabBar : Panel
     {
         mAutomationButtons.Clear();
         mAutomationLayout.Children.Clear();
+        // 插入自动化条目的订阅随重置重挂（part 切换 / 条目增删都会走这里）。
+        mInsertSubscriptions.DisposeAll();
 
         if (Part == null)
             return;
@@ -147,6 +149,57 @@ internal class ParameterTabBar : Panel
         AddLaneButtons(Part.PhonemeLaneConfigs, AutomationKey.PhonemeLane);
         for (int i = 0; i < Part.Effects.Count; i++)
             AddAutomationGroup(Part.Effects[i].AutomationConfigs, i, ref firstGroup);
+        AddInsertAutomationGroup(ref firstGroup);
+    }
+
+    // [EP-MIXER-AUTO] 插入效果器参数自动化一组：当前轨道音流所经通道上**已建**条目的全部参数。
+    // 与 voice/effect 不同，轨集合不在 part 上声明 —— 曲线由效果器侧栏「添加自动化」创建，
+    // 钢琴窗只负责编辑与显示；条目增删发生在侧栏，这里订阅各槽位 Automations.MapModified
+    // 触发重建（订阅随每次重置收掉重挂，不随 part 泄漏）。
+    void AddInsertAutomationGroup(ref bool firstGroup)
+    {
+        var part = Part;
+        if (part == null || part.Track.Project is not Project project)
+            return;
+
+        var insertButtons = new List<AutomationKey>();
+        foreach (var channel in InsertAutomationsController.CollectFlowChannels(part.Track, project))
+        {
+            foreach (var slot in channel.Slots())
+            {
+                slot.Automations.MapModified.Subscribe(OnAutomationConfigsChanged, mInsertSubscriptions);
+
+                foreach (var kvp in slot.Automations)
+                {
+                    var key = AutomationKey.Insert(InsertAutomationCatalog.MakeKeyId(slot.Id, long.Parse(kvp.Key)));
+                    insertButtons.Add(key);
+                    if (!mCacheParameterButtons.TryGetValue(key, out var button))
+                    {
+                        button = new ParameterButton(ColorUtils.ParseOrFallback(InsertAutomationCatalog.BuildLaneConfig(kvp.Value, key.Id).Color),
+                            InsertAutomationCatalog.DisplayName(slot, kvp.Value)) { Margin = new(6, 0) };
+                        var captured = key;
+                        button.StateChangeAsked += (state) => StateChangeAsked?.Invoke(captured, state);
+                        mCacheParameterButtons.Add(key, button);
+                    }
+                    else
+                    {
+                        // 条目基值 / 活实例参数名可能已变：缓存按钮就地对齐。
+                        button.Color = ColorUtils.ParseOrFallback(InsertAutomationCatalog.BuildLaneConfig(kvp.Value, key.Id).Color);
+                        button.Text = InsertAutomationCatalog.DisplayName(slot, kvp.Value);
+                    }
+                    mAutomationButtons.Add(key, button);
+                    mAutomationLayout.Children.Add(button);
+                }
+            }
+        }
+
+        if (insertButtons.Count == 0)
+            return;
+
+        // 组间分隔符（本组总是最后一个）；前面没有任何组时不插。
+        if (!firstGroup)
+            mAutomationLayout.Children.Insert(mAutomationLayout.Children.Count - insertButtons.Count, CreateSeparator());
+        firstGroup = false;
     }
 
     // 属性 lane 按钮（note 组在前、phoneme 组随后）：与 voice 轨同源（钉选的声源属性），故并入 voice 组尾部、不插分隔符。
@@ -257,6 +310,10 @@ internal class ParameterTabBar : Panel
             SyncKey(AutomationKey.PhonemeLane(kvp.Key.Id));
         for (int i = 0; i < Part.Effects.Count; i++)
             Sync(Part.Effects[i].AutomationConfigs, i);
+
+        // [EP-MIXER-AUTO] 插入自动化的按钮态（按钮集合本身已含本组）。
+        foreach (var key in mAutomationButtons.Keys.Where(k => k.IsInsert).ToList())
+            SyncKey(key);
     }
 
     void OnPartChanged()
@@ -282,6 +339,8 @@ internal class ParameterTabBar : Panel
     readonly ParameterButton mPitchButton;
     readonly OrderedMap<AutomationKey, ParameterButton> mAutomationButtons = new();
     readonly Map<AutomationKey, ParameterButton> mCacheParameterButtons = new();
+    // 插入自动化条目的 MapModified 订阅：随每次 ResetAutomationButtons 收掉重挂（见 AddInsertAutomationGroup）。
+    readonly DisposableManager mInsertSubscriptions = new();
 
     readonly IDependency mDependency;
     readonly DisposableManager s = new();

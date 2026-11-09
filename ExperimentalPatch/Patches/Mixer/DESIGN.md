@@ -1640,7 +1640,7 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 仍然开放（实现到那一步再定，不阻塞现在）：
 
 - AUX 条是否要换色（改名已落地，见 §6.8；现在是自动命名 + 固定 AUX 色）。
-- 插入效果是否需要参数自动化（v1 只存 state，不做曲线）。
+- ~~插入效果是否需要参数自动化（v1 只存 state，不做曲线）~~ **已实现**，见 §14。
 - 分轨导出是否要跑完整混音链（现在是原始干声 stem，见 §3.8）。
 
 ## 13. v1 已定稿、v2 不改的部分
@@ -1656,6 +1656,31 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 | 通道条与窗口骨架 | `MixerChannelStrip.cs`、`MixerWindow.cs` |
 | v2 新增控件：`StripButton`（`Send N` / `FX N`）、`OutputSelector`（output 行）、`SendGainSlider`（send 增益） | `Patches/Mixer/Controls/` |
 | v2 浮窗：send 列表、插入效果列表 | `SendPopupWindow.cs`、`FxPopupWindow.cs` |
+
+## 14. 插入参数自动化（EP-MIXER-AUTO，已实现）
+
+把通道插入效果器的参数交给时间曲线，分两期落地。接驳点带 `EP-MIXER-AUTO` / `EP-MIXER-2期` 标记。
+
+### 14.1 数据与语义（一期）
+
+| 项 | 决定 |
+|---|---|
+| 存哪 | `InsertSlot.Automations`（`DataObjectMap<string, InsertSlotAutomation>`），随槽位 undo / 落盘（`InsertDto.Automations`，锚点用带属性的 `AutomationAnchorDto`——`Foundation.Point` 是字段型 JSON 会丢） |
+| 曲线存什么 | **偏移量**（叠加语义）：生效值 = clamp(基值 + Hermite(偏移)(tick), 参数 Min, Max)。曲线 `Automation.DefaultValue` 恒 0，"零点 = 不干预" |
+| 时间空间 | 锚点 Pos 是**工程绝对 tick**（Master / AUX 链不属于任何 part） |
+| 基值 | = 面板当前值；自动化激活期间面板改动写基值（不直接写插件），叠加关系不变。插件 GUI 里的改动拦不住、会被覆盖（v1 已知限制） |
+| 音频路径 | `MixerAutomation.Binding`：编译期（图构建）冻结锚点快照，每块块首求值推送（值变才推、失败下块重试）；`Curve.Modified` → 快照重建。时间映射走 `Mixer.TimeMapper`（tempo / 采样率变化由 `ProjectDocument` 重建） |
+| 条目从哪建 | 效果器侧栏「添加自动化」三级菜单（音流通道 → FX → 线性参数）。选择型参数不进菜单：JSFX 用 `ysfx_slider_is_enum`，CLAP 用 `CLAP_PARAM_IS_STEPPED`；VST2/VST3 无元数据，暂报线性 |
+
+### 14.2 钢琴窗 lane（二期）
+
+- **key 形状**：`AutomationKey.Insert("{slotId}:{paramId}")`——slotId 全工程唯一、通道归属由槽位自带，全工程按槽位 id 找回（`InsertAutomationCatalog`）。`EffectIndex` 恒 -1。
+- **适配视图** `InsertAutomationView`：参数区整个工作在 part 相对 tick 空间、lane 值轴要显示**实参**（钳位后的基值+偏移），视图做两重翻译——tick 平移（±part.Pos，live 读）、值空间（呈现 DefaultValue = 基值本尊，渲染器的"锚点绝对值 = 锚点偏移 + DefaultValue"口径正好落在加性语义上）。`GetValues = clamp(基值 + Hermite(偏移))`，**与音频线程逐位同一公式**——画出来的就是听到的。
+- **无状态**：视图不订阅任何事件、可随用随建（渲染器每帧只走静态 `Evaluate`，不建实例）。锚点以 `PresentedAnchor`（`AnchorPoint` 的 Pos/Value/IsSelected 已 virtual）live 投影，选中态转发回存储锚点，跨手势与既有轨一致。
+- **路由**：`IMidiPartExtension` 的 `TryGetSourceConfig` / `GetEffectiveAutomation` / `GetFinalAutomationValues` 各加 Insert 分支；条目由侧栏创建，钢琴窗**只编辑不创建**（`AddEffectiveAutomation` 对 Insert 直接返回已存在的）。
+- **lane config**：值轴 = 参数量程（建条目时从活实例抄进 `MinValue/MaxValue` 落盘——重开工程、图未编译时轴也正确）；颜色按 keyId 的稳定哈希从调色板取（`TrackColors.PickBySeed`；`string.GetHashCode` 进程随机化，不能用）。
+- **UI 接线**：tab 栏在 voice/effect 之后加一组（当前轨道音流所经通道上已建条目），订阅各槽位 `Automations.MapModified` 随重置重挂；vibrato ghost / 关联颤音对 Insert 排除（颤音是声源装饰）；面板布局按 `"insert"` 来源持久化。
+- **已知限制**：清空（Clear）沿用既有轨语义（区域两端补默认锚点）；基值改动使钳位段形状轻微变化（与一期一致）。
 
 
 

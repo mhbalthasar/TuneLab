@@ -79,6 +79,21 @@ internal static class TrackColors
         return Assign(paired, occupied);
     }
 
+    // [EP-MIXER-AUTO] 按种子确定取色：插入参数自动化的 lane 没有"声明序"可依
+    //（条目按需创建），用 keyId 的**稳定**哈希（string.GetHashCode 每次进程随机化，不能用）
+    // 在调色板里取 —— 同一条 lane 每次同色。
+    public static string PickBySeed(string seed)
+    {
+        uint hash = 2166136261;
+        foreach (char c in seed)
+        {
+            hash ^= c;
+            hash *= 16777619;
+        }
+
+        return Palette[hash % Palette.Length];
+    }
+
     // 从固定调色板挑与已占用色相距离最远的色（灰/近灰的占用色无稳定色相，忽略）。全占满后仍取距离最大者（可重复）。
     public static string Pick(IReadOnlyList<string> occupiedColors)
     {

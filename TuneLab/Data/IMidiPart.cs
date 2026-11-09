@@ -134,7 +134,7 @@ internal static class IMidiPartExtension
     // 属性 lane（note/phoneme）是独立来源（数据在 note.Properties / phoneme.Properties、非时间曲线）：
     // automation 路由一律不认它——即便 lane id 与某条 automation id 同名，也不得互相兜底（Source 参与 key 相等比较）。
 
-    // 从对应来源（voice / 某 effect）取该 key 的 config（不分 kind），不存在返回 false。
+    // 从对应来源（voice / 某 effect / 某条插入效果器参数）取该 key 的 config（不分 kind），不存在返回 false。
     static bool TryGetSourceConfig(IMidiPart part, AutomationKey key, out AutomationConfig config)
     {
         if (key.IsLane)
@@ -147,6 +147,19 @@ internal static class IMidiPartExtension
         {
             if (key.EffectIndex < part.Effects.Count)
                 return part.Effects[key.EffectIndex].AutomationConfigs.TryGetValue(key.Id, out config!);
+            config = null!;
+            return false;
+        }
+
+        // [EP-MIXER-AUTO] 插入效果器参数：条目存在即有效（config 现建，值轴 = 参数量程）。
+        if (key.IsInsert)
+        {
+            if (InsertAutomationCatalog.TryResolveEntry(part, key.Id, out var slot, out var entry))
+            {
+                config = InsertAutomationCatalog.BuildLaneConfig(entry, key.Id);
+                return true;
+            }
+
             config = null!;
             return false;
         }
@@ -202,11 +215,20 @@ internal static class IMidiPartExtension
         throw new ArgumentException(string.Format("Automation {0} is not effective!", key.Id));
     }
 
-    // 取已存在的自动化数据对象（voice 或对应 effect），不存在返回 null。
+    // 取已存在的自动化数据对象（voice、对应 effect 或插入效果器参数），不存在返回 null。
+    // 插入来源返回适配视图（part 相对 tick + 实参值空间，见 InsertAutomationView）；
+    // 视图无状态可随用随建，调用方按手势持有即可。
     public static IAutomation? GetEffectiveAutomation(this IMidiPart part, AutomationKey key)
     {
         if (key.IsNoteLane)
             return null;
+
+        if (key.IsInsert)
+        {
+            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out var slot, out var entry)
+                ? new InsertAutomationView(part, entry)
+                : null;
+        }
 
         if (key.IsEffect)
         {
@@ -219,10 +241,15 @@ internal static class IMidiPartExtension
     }
 
     // 取或创建自动化数据对象（按需在对应来源里 Add）。
+    // 插入来源**不在此创建**：条目由效果器侧栏的「添加自动化」建（要问活实例拿参数清单与
+    // 量程），钢琴窗只编辑已存在的轨 —— 返回 null 时绘制操作自然不进入。
     public static IAutomation? AddEffectiveAutomation(this IMidiPart part, AutomationKey key)
     {
         if (key.IsNoteLane)
             return null;
+
+        if (key.IsInsert)
+            return part.GetEffectiveAutomation(key);
 
         if (key.IsEffect)
             return key.EffectIndex < part.Effects.Count ? part.Effects[key.EffectIndex].AddAutomation(key.Id) : null;
@@ -279,6 +306,14 @@ internal static class IMidiPartExtension
         if (key.IsLane)
             return new double[ticks.Count];
 
+        // [EP-MIXER-AUTO] 插入来源：没有 vibrato 可叠，原始曲线 = 终值。
+        if (key.IsInsert)
+        {
+            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out _, out var entry)
+                ? InsertAutomationView.Evaluate(part, entry, ticks)
+                : new double[ticks.Count];
+        }
+
         if (key.IsEffect)
         {
             if (key.EffectIndex < part.Effects.Count)
@@ -314,10 +349,18 @@ internal static class IMidiPartExtension
     }
 
     // 最终曲线取值：voice 与 effect 均为自身曲线 + 该轨的 vibrato 偏移。note lane 非时间曲线，不在此取值。
+    // 插入来源没有 vibrato 可叠（颤音是声源的装饰，与通道 FX 无关），终值 = 原始曲线。
     public static double[] GetFinalAutomationValues(this IMidiPart part, IReadOnlyList<double> ticks, AutomationKey key)
     {
         if (key.IsLane)
             return new double[ticks.Count];
+
+        if (key.IsInsert)
+        {
+            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out _, out var entry)
+                ? InsertAutomationView.Evaluate(part, entry, ticks)
+                : new double[ticks.Count];
+        }
 
         if (key.IsEffect)
         {

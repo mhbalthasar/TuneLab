@@ -533,7 +533,9 @@ internal partial class AutomationRenderer : View
         // 分段轨的 ghost 在无值段断开——**这本身就是"此处颤音不生效"的可见化**：颤音只作用于有值段
         //（NaN 段无基线可叠，见 GetFinalAutomationValues），没有 ghost 就是没有东西可叠。
         // band 轨（退化量程）值轴无意义，ghost 与关联都无从表达，排除在外。
-        if (activeContinuous || (activePiecewise && !activeBand))
+        // [EP-MIXER-AUTO] 插入参数自动化同样排除：vibrato 是声源装饰，与通道 FX 无关
+        //（GetAmplitude 对 Insert key 恒 0，画了 ghost 也只是主曲线的无意义重影）。
+        if ((activeContinuous || (activePiecewise && !activeBand)) && !active.IsInsert)
         {
             foreach (var vibrato in Part.Vibratos)
             {
