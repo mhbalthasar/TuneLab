@@ -1194,6 +1194,11 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
     {
         mOwner = owner;
         mOwner.Project.MasterPhaseInvert.Modified.Subscribe(OnPhaseInvertModified);
+
+        // 与轨道 / AUX 同一套订阅：成员增删（包括 undo / redo 撤回来的）都从这里出发
+        // 重建图 + 通知界面。轨道走 track.Inserts.MembershipModified，Master 的槽位
+        // 挂在 Project 上，所以订阅 Project.MasterInserts。
+        mOwner.Project.MasterInserts.MembershipModified.Subscribe(RaiseRoutingChanged);
     }
 
     public MixerChannelKind Kind => MixerChannelKind.Master;
@@ -1249,7 +1254,7 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
         set
         {
             if (value.Kind is MixerOutputKind.Device or MixerOutputKind.Cable)
-                mOwner.RaiseRoutingChanged();
+                RaiseRoutingChanged();
         }
     }
 
@@ -1316,6 +1321,7 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
     public void Dispose()
     {
         mOwner.Project.MasterPhaseInvert.Modified.Unsubscribe(OnPhaseInvertModified);
+        mOwner.Project.MasterInserts.MembershipModified.Unsubscribe(RaiseRoutingChanged);
     }
 
     public event Action? StateChanged;
@@ -1355,9 +1361,8 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
         project.MasterInserts.Add(slot);
         project.Commit();
 
-        // 成员变化没有经过 MembershipModified 的订阅（Master 不在 Tracks/Auxes 里），
-        // 所以这里自己重建图 + 通知界面。
-        mOwner.RaiseRoutingChanged();
+        // 成员变化由上面的 MembershipModified 订阅统一处理（重建图 + 通知界面），
+        // 与轨道 / AUX 的 AddInsert 同一条路 —— 这里不再手动发一遍。
 
         return new InsertSlotAdapter(slot, mOwner.InsertFactory, mOwner.RaiseRoutingChanged);
     }
@@ -1373,7 +1378,7 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
         project.MasterInserts.Remove(adapter.Slot);
         project.Commit();
 
-        mOwner.RaiseRoutingChanged();
+        // 同 AddInsert：通知交给 MembershipModified 订阅。
     }
 
     // Master 的插入链顺序调整（与轨道 / AUX 同一套语义）。
@@ -1411,7 +1416,18 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
             project.Commit();
         }
 
+        RaiseRoutingChanged();
+    }
+
+    // 与 MixerChannelBase.RaiseRoutingChanged 同一语义：结构变化 = 重建图 + 通知界面。
+    // Master 不在 Tracks/Auxes 里、没有 MembershipModified 订阅可搭车，所以增删 / 移动
+    // 插入都要在这里把两件事都做了：模型级的（重建图）+ 实例级的（订阅了**这条通道**的
+    // 界面 —— 通道条的 FX 计数、FX 浮窗的行列表）。以前只发了模型级：在 Master 上删除
+    // 插入后浮窗的行不消失、FX 计数永远停在 0，要重开窗口才刷新。
+    void RaiseRoutingChanged()
+    {
         mOwner.RaiseRoutingChanged();
+        RoutingChanged?.Invoke();
     }
 
     readonly MixerModelAdapter mOwner;

@@ -118,6 +118,43 @@ public class MixerModelAdapterTests
         }
     }
 
+    // Master 的插入增删（以及 undo / redo 撤回来的）必须发**这条通道**的 RoutingChanged：
+    // 通道条的 FX 计数与 FX 浮窗订阅的都是实例事件（轨道那边是 InsertList 的
+    // MembershipModified 订阅在发同一个方法）。以前 Master 只发模型级事件 ——
+    // 删除插入后浮窗的行不消失、FX 计数永远停在 0，要重开窗口才刷新。
+    [Fact]
+    public void MasterInserts_RaiseTheChannelRoutingChanged()
+    {
+        var (document, project, model) = Create(Track("t1"));
+
+        using (model)
+        {
+            var master = model.Master;
+            var format = model.InsertFormats.First();
+
+            int routing = 0;
+            master.RoutingChanged += () => routing++;
+
+            var insert = master.AddInsert(format);
+            Assert.Single(master.Inserts);
+            Assert.True(routing >= 1, "adding a master insert must raise the channel RoutingChanged");
+
+            master.RemoveInsert(insert);
+            Assert.Empty(master.Inserts);
+            Assert.True(routing >= 2, "removing a master insert must raise the channel RoutingChanged");
+
+            // undo / redo 动的是同一份列表：通知必须跟着走，否则撤完之后
+            // 界面（浮窗 / FX 计数）与音频图都是旧的。
+            document.Undo();
+            Assert.Single(master.Inserts);
+            Assert.True(routing >= 3, "undo must raise the channel RoutingChanged for master inserts");
+
+            document.Redo();
+            Assert.Empty(master.Inserts);
+            Assert.True(routing >= 4, "redo must raise the channel RoutingChanged for master inserts");
+        }
+    }
+
     [Fact]
     public void StateChanged_FiresWhenTrackIsEditedElsewhere()
     {
