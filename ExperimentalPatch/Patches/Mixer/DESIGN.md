@@ -1679,7 +1679,11 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 - **无状态**：视图不订阅任何事件、可随用随建（渲染器每帧只走静态 `Evaluate`，不建实例）。锚点以 `PresentedAnchor`（`AnchorPoint` 的 Pos/Value/IsSelected 已 virtual）live 投影，选中态转发回存储锚点，跨手势与既有轨一致。
 - **路由**：`IMidiPartExtension` 的 `TryGetSourceConfig` / `GetEffectiveAutomation` / `GetFinalAutomationValues` 各加 Insert 分支；条目由侧栏创建，钢琴窗**只编辑不创建**（`AddEffectiveAutomation` 对 Insert 直接返回已存在的）。
 - **lane config**：值轴 = 参数量程（建条目时从活实例抄进 `MinValue/MaxValue` 落盘——重开工程、图未编译时轴也正确）；颜色按 keyId 的稳定哈希从调色板取（`TrackColors.PickBySeed`；`string.GetHashCode` 进程随机化，不能用）。
-- **UI 接线**：tab 栏在 voice/effect 之后加一组（当前轨道音流所经通道上已建条目），订阅各槽位 `Automations.MapModified` 随重置重挂；vibrato ghost / 关联颤音对 Insert 排除（颤音是声源装饰）；面板布局按 `"insert"` 来源持久化。
+- **UI 接线**：tab 栏在 voice/effect 之后加一组（当前轨道音流所经通道上已建条目）。两条订阅：**链成员变化**
+  （轨道 / AUX / Master 的 `Inserts` MembershipModified——混音台后挂或删 FX、undo 都要立刻反映）与各槽位
+  `Automations.MapModified`（条目增删），都随每次重置收掉重挂；vibrato ghost / 关联颤音对 Insert 排除
+  （颤音是声源装饰）；面板布局按 `"insert"` 来源持久化。**已知限制**：音流图本身变化（改 output / 增删 send）
+  不触发本组重建，下次切 part 才刷新（侧栏同款行为）。
 - **已知限制**：清空（Clear）沿用既有轨语义（区域两端补默认锚点）；基值改动使钳位段形状轻微变化（与一期一致）。
 
 

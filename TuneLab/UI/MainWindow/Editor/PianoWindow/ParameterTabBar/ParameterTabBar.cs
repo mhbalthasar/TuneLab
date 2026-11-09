@@ -162,6 +162,14 @@ internal class ParameterTabBar : Panel
         if (part == null || part.Track.Project is not Project project)
             return;
 
+        // 链成员变化（混音台挂 / 删 FX、undo/redo）也必须重建：下面的条目订阅只覆盖
+        // "上一次重置时已存在的槽位"，而真实顺序常常是「先打开工程（那时没 FX）→ 再挂
+        // FX → 再加自动化」——不订阅成员变化，后挂的槽位永远进不了本组。
+        SubscribeInsertMembership((DataObjectList<InsertSlot>)part.Track.Inserts);
+        SubscribeInsertMembership((DataObjectList<InsertSlot>)project.MasterInserts);
+        foreach (var aux in project.Auxes)
+            SubscribeInsertMembership((DataObjectList<InsertSlot>)aux.Inserts);
+
         var insertButtons = new List<AutomationKey>();
         foreach (var channel in InsertAutomationsController.CollectFlowChannels(part.Track, project))
         {
@@ -200,6 +208,12 @@ internal class ParameterTabBar : Panel
         if (!firstGroup)
             mAutomationLayout.Children.Insert(mAutomationLayout.Children.Count - insertButtons.Count, CreateSeparator());
         firstGroup = false;
+    }
+
+    // 一个链的成员变化 → 重建本栏（槽位在本组里既是订阅源、也是条目来源）。
+    void SubscribeInsertMembership(DataObjectList<InsertSlot> slots)
+    {
+        slots.MembershipModified.Subscribe(OnAutomationConfigsChanged, mInsertSubscriptions);
     }
 
     // 属性 lane 按钮（note 组在前、phoneme 组随后）：与 voice 轨同源（钉选的声源属性），故并入 voice 组尾部、不插分隔符。
