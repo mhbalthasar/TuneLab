@@ -43,7 +43,6 @@ internal class InsertAutomationsController : StackPanel
 
         Children.Add(BuildHeader());
         Children.Add(mRows);
-        Children.Add(mHint);
     }
 
     // 与 EffectsController 同一套目标下发（EffectsSideBarContentProvider 调）。
@@ -57,7 +56,6 @@ internal class InsertAutomationsController : StackPanel
     // ── 静态结构 ──
 
     readonly StackPanel mRows = new() { Orientation = Orientation.Vertical };
-    readonly TextBlock mHint = new();
     IReadOnlyList<IMidiPart> mParts = [];
     readonly DisposableManager s = new();
 
@@ -66,9 +64,10 @@ internal class InsertAutomationsController : StackPanel
 
     Control BuildHeader()
     {
+        // 侧栏的分组标题沿用 AttributeController 那套字面（小字、分组线上方）。
         var title = new TextBlock
         {
-            Text = "插入参数自动化".Tr(TC.Property),
+            Text = "轨道效果器".Tr(TC.Property),
             FontSize = 12,
             FontWeight = FontWeight.SemiBold,
             Foreground = Style.LIGHT_WHITE.ToBrush(),
@@ -103,13 +102,7 @@ internal class InsertAutomationsController : StackPanel
         mAddButton!.IsVisible = singleTrack;
 
         if (!singleTrack)
-        {
-            mHint.Text = "多选的 part 不在同一条轨道上，无法确定音频流向。".Tr(TC.Property);
-            mHint.IsVisible = mParts.Count > 0;
             return;
-        }
-
-        mHint.IsVisible = false;
 
         var project = track!.Project as Project;
         if (project == null)
@@ -133,12 +126,6 @@ internal class InsertAutomationsController : StackPanel
                     mRows.Children.Add(view.Root);
                 }
             }
-        }
-
-        if (mRows.Children.Count == 0)
-        {
-            mHint.Text = "还没有自动化的参数。点「+ 添加自动化」从音频流经的效果器里选一个线性参数。".Tr(TC.Property);
-            mHint.IsVisible = true;
         }
     }
 
@@ -200,7 +187,7 @@ internal class InsertAutomationsController : StackPanel
 
         if (channels.Count == 0)
         {
-            menu.Items.Add(DisabledItem("当前轨道的音频没有流经任何带效果器的通道".Tr(TC.Property)));
+            menu.Items.Add(DisabledItem("(No Effects)"));
             return menu;
         }
 
@@ -385,18 +372,22 @@ internal class InsertAutomationsController : StackPanel
             mSlot = slot;
             mEntry = entry;
 
-            var name = new TextBlock
+            // 行样式沿用侧栏字段行的那套 TuneLab 控件：Label（文字居中、过长省略）+
+            // TuneLab Button（BorderItem/TextItem 配色），不用 Avalonia 原生样式。
+            var name = new Label
             {
-                Text = EntryName(),
-                FontSize = 11,
-                Foreground = Style.LIGHT_WHITE.ToBrush(),
-                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-                Margin = new(8, 0, 8, 0),
+                Height = 30,
+                FontSize = 12,
+                VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                Foreground = Style.TEXT_LABEL.ToBrush(),
+                Content = EntryName(),
+                Padding = new(24, 0),
             };
 
             var remove = MakeTextButton("✕", 24);
             remove.Height = 22;
             remove.VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center;
+            remove.Margin = new(0, 0, 24, 0);
             remove.Clicked += () => Removed?.Invoke(mSlot, mEntry);
 
             var header = new DockPanel { Height = 30, LastChildFill = true };
