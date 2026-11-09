@@ -26,7 +26,7 @@ internal interface IBridgeChannel
     int AllocateSlot();
 
     LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass,
-        string format = PluginFormats.Vst2, string? pluginId = null, string? importRoot = null);
+        string format = PluginFormats.Vst2, string? pluginId = null, string? importRoot = null, bool probeOnly = false);
 
     bool UnloadBlocking(int slot);
 

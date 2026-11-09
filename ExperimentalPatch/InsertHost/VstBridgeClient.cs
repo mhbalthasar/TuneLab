@@ -362,10 +362,11 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 
     // 加载插件并拿回它的元数据（名字/厂商/延迟/声道数）。
     // 返回 null = 管道断了 / 桥没起来；Ok=false = 插件自己拒绝（原因在 Reason）。
-    // format：PluginFormats.Vst2（缺省）/ Vst3。桥据此选宿主实现。
+    // format：PluginFormats.Vst2（缺省）/ Vst3 / Clap / Jsfx。桥据此选宿主实现。
+    // probeOnly：只验证（JSFX 不跑 @init），扫描用；见 LoadPluginMessage.ProbeOnly。
     public async Task<LoadPluginResultMessage?> TryLoadAsync(int slot, string pluginPath, double sampleRate,
         int maxBlock, bool bypass, CancellationToken cancellation = default, string format = PluginFormats.Vst2,
-        string? pluginId = null, string? importRoot = null)
+        string? pluginId = null, string? importRoot = null, bool probeOnly = false)
     {
         if (!IsRunning)
             return null;
@@ -384,6 +385,7 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
             SampleRate = sampleRate,
             MaxBlock = maxBlock,
             Bypass = bypass,
+            ProbeOnly = probeOnly,
         });
 
         try
@@ -632,10 +634,10 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
         => RunTimed("the bridge handshake", () => EnsureStartedAsync(), StartTimeout, false);
 
     public LoadPluginResultMessage? LoadBlocking(int slot, string path, double sampleRate, int maxBlock, bool bypass,
-        string format = PluginFormats.Vst2, string? pluginId = null, string? importRoot = null)
+        string format = PluginFormats.Vst2, string? pluginId = null, string? importRoot = null, bool probeOnly = false)
         => RunTimed("loading the plugin",
             () => TryLoadAsync(slot, path, sampleRate, maxBlock, bypass, format: format, pluginId: pluginId,
-                importRoot: importRoot),
+                importRoot: importRoot, probeOnly: probeOnly),
             LoadTimeout, (LoadPluginResultMessage?)null);
 
     public bool UnloadBlocking(int slot)

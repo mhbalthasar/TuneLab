@@ -177,6 +177,17 @@ public sealed class LoadPluginMessage
     // 初始旁通态。之后旁通只在 ProcessRequest 里带（每块一个布尔，比"改旁通"消息快）。
     [JsonPropertyName("bypass")]
     public bool Bypass { get; init; }
+
+    // true = 只验证能不能用，不跑插件的初始化代码。
+    //
+    // 现在只有 JSFX 认这个字段：扫描时要知道"这个 .jsfx 文件 ysfx 到底加载/编译得动吗、
+    // 是不是 2 进 2 出"，但不该为了回答这个问题把每个文件的 @init 都执行一遍
+    // （@init 是用户代码：读采样文件、开大缓冲都可能有）。探针只到"编译通过、引脚对"为止。
+    //
+    // 其他格式忽略这个字段（它们没有"不跑 init"这个概念）。旧桥反序列化时也忽略未知字段，
+    // 于是退化成一次完整的加载 —— 结论仍然正确，只是慢一点。
+    [JsonPropertyName("probe")]
+    public bool ProbeOnly { get; init; }
 }
 
 public sealed class LoadPluginResultMessage

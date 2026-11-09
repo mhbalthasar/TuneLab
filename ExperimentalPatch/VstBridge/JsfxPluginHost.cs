@@ -33,6 +33,52 @@ internal sealed unsafe class JsfxPluginHost : IBridgePluginHost
         bool HasEditor, bool NeedsOpenGl) Load(
         LoadPluginMessage request, out int inputChannels, out int outputChannels)
     {
+        // 加载 / 编译期间收集 ysfx 自己的错误信息（见 OnYsfxLog）。finally 兜住所有返回路径：
+        // 插件跑起来之后每一块出的错不该再进托管回调。
+        sLastLog = null;
+        sCapturing = true;
+
+        try
+        {
+            return LoadCore(request, out inputChannels, out outputChannels);
+        }
+        finally
+        {
+            sCapturing = false;
+        }
+    }
+
+    // 桥是单线程的（见类注释），这些静态字段不需要线程同步。
+    static readonly JsfxNative.LogReporter sLogReporter = OnYsfxLog;
+    static volatile bool sCapturing;
+    static string? sLastLog;
+
+    // ysfx 日志回调。只留 error：warning 里有"缺 desc"这类噪音，会把真正的失败原因挤掉。
+    static void OnYsfxLog(IntPtr userdata, int level, IntPtr message)
+    {
+        try
+        {
+            if (!sCapturing || level < 2 || message == IntPtr.Zero)
+                return;
+
+            string? text = Marshal.PtrToStringUTF8(message);
+
+            if (!string.IsNullOrEmpty(text))
+                sLastLog = text;
+        }
+        catch (Exception)
+        {
+            // 这是从 native 里调过来的：抛出去 = 直接崩桥。日志而已，吞掉。
+        }
+    }
+
+    // "（ysfx 的原因）"后缀。没有就退化成空串。
+    static string LogSuffix() => string.IsNullOrEmpty(sLastLog) ? string.Empty : ": " + sLastLog;
+
+    (bool Ok, string? Reason, string? Name, string? Vendor, int LatencySamples, bool IsSynth,
+        bool HasEditor, bool NeedsOpenGl) LoadCore(
+        LoadPluginMessage request, out int inputChannels, out int outputChannels)
+    {
         inputChannels = 0;
         outputChannels = 0;
 
@@ -57,6 +103,9 @@ internal sealed unsafe class JsfxPluginHost : IBridgePluginHost
 
         try
         {
+            // 失败原因（缺 import、EEL2 第几行）由 ysfx 自己说出来，比"加载失败"有用得多。
+            JsfxNative.ysfx_set_log_reporter(config, sLogReporter);
+
             // 先按文件位置猜 Data / Effects 根，再用宿主显式给的 import 根覆盖。
             // 这样 @serialize 之外的文件函数仍能按 JSFX 的目录约定找到 Data。
             JsfxNative.ysfx_guess_file_roots(config, request.Path);
@@ -76,14 +125,14 @@ internal sealed unsafe class JsfxPluginHost : IBridgePluginHost
             {
                 JsfxNative.ysfx_free(fx);
                 JsfxNative.ysfx_config_free(config);
-                return Fail("ysfx could not load the JSFX file");
+                return Fail("ysfx could not load the JSFX file" + LogSuffix());
             }
 
             if (!JsfxNative.ysfx_compile(fx, 0))
             {
                 JsfxNative.ysfx_free(fx);
                 JsfxNative.ysfx_config_free(config);
-                return Fail("the JSFX did not compile (see the bridge log for the EEL2 error)");
+                return Fail("the JSFX did not compile" + LogSuffix());
             }
 
             uint inputs = JsfxNative.ysfx_get_num_inputs(fx);
@@ -101,7 +150,12 @@ internal sealed unsafe class JsfxPluginHost : IBridgePluginHost
 
             JsfxNative.ysfx_set_sample_rate(fx, sampleRate);
             JsfxNative.ysfx_set_block_size(fx, (uint)maxFrames);
-            JsfxNative.ysfx_init(fx);
+
+            // 扫描探针：到这里就够了 —— 文件加载得动、EEL2 编译得过、引脚是 2 进 2 出。
+            // 有意不跑 ysfx_init：@init 是用户代码（有的在里面读采样文件、开大缓冲），
+            // 扫描时挨个执行既慢，又给桥（正跑着用户的音频）添上一个本来没有的崩溃面。
+            if (!request.ProbeOnly)
+                JsfxNative.ysfx_init(fx);
 
             bool hasEditor = HasGfxSection(fx);
 

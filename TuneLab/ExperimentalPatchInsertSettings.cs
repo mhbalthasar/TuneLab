@@ -324,17 +324,21 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
             onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
             .Select(ToEntry));
 
-        // JSFX：宿主只读 .jsfx 文本头（desc / @gfx），不执行 EEL2；加载在桥里由 ysfx 做。
+        // JSFX：宿主只读 .jsfx 文本头（desc / author / @gfx），不执行 EEL2；加载在桥里由 ysfx 做。
+        // 扫描时每个文件都在桥里真探一遍（JsfxBackend 的 probe：加载 + 编译 + 引脚必须 2 进 2 出）。
         int jsfxBase = vst3Paths.Count + vst2Paths.Count + clapPaths.Count;
 
-        entries.AddRange(sJsfxBackend.ListPlugins(jsfxPaths, (index, _, directory) =>
+        var jsfxEntries = sJsfxBackend.ListPlugins(jsfxPaths, (index, _, directory) =>
             {
                 currentDirectory = directory;
                 currentDone = jsfxBase + index;
                 progress?.Report(new InsertScanProgress(jsfxBase + index, total, directory));
             },
             onDetail: name => progress?.Report(new InsertScanProgress(currentDone, total, currentDirectory, name)))
-            .Select(ToEntry));
+            .Select(ToEntry)
+            .ToList();
+
+        AddUsableJsfx(entries, jsfxEntries);
 
         // 同一台机器上"同一个插件装了两份"很常见（系统目录一份 + 自己的收藏目录一份，
         // 或者 x64 / x86 各一份）。它们的 PluginId 相同 —— 而 PluginId 正是工程里存的标识，
@@ -356,6 +360,29 @@ internal sealed class InsertPluginSettings : IInsertPluginSettings
         mLastScanText = DateTime.Now.ToString("G");
 
         return entries;
+    }
+
+    // JSFX 的取舍：只有 ysfx 真正能用（加载 + 编译 + 2 进 2 出）的文件才进清单。
+    // 结论在 JsfxBackend.ListPlugins 的探针里（条目上的 IsAvailable / UnavailableReason）。
+    //
+    // 与其它格式不同：VST2 目录里放错格式的 dll 仍然列出来、菜单里灰掉并写出原因
+    // （用户据此发现自己把插件放错了，是可操作的）；JSFX 探不过时原因通常没有可操作性
+    // （EEL2 编不过、缺 import、只处理控制信号），所以按用户要求**不显示**，只记日志。
+    internal static void AddUsableJsfx(List<InsertPluginEntry> entries, List<InsertPluginEntry> jsfxEntries)
+    {
+        var unusable = jsfxEntries.Where(entry => !entry.IsAvailable).ToList();
+
+        if (unusable.Count > 0)
+        {
+            // 不显示 ≠ 不告知：日志里留一份"哪些文件被排除了、为什么"，出问题时能查。
+            string sample = string.Join("; ", unusable.Take(8)
+                .Select(entry => entry.Name + " (" + (entry.UnavailableReason ?? "unavailable") + ")"));
+
+            HostLog.Info($"insert-plugins: left out {unusable.Count} JSFX file(s) ysfx cannot use: {sample}"
+                + (unusable.Count > 8 ? "; ..." : string.Empty));
+        }
+
+        entries.AddRange(jsfxEntries.Where(entry => entry.IsAvailable));
     }
 
     // 按 (格式, PluginId) 去重。PluginId 是工程里持久化的标识，所以"同名同格式"的两条

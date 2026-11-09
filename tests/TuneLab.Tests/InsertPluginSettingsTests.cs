@@ -305,6 +305,40 @@ public class InsertPluginSettingsTests
         });
     }
 
+    // JSFX 探不过的不进清单（也进不了缓存 / 菜单）—— 见 JsfxBackend 的扫描探针
+    // 与 InsertPluginSettings.AddUsableJsfx。其它格式的"不可用"仍然保留
+    // （菜单灰掉并带原因，用户能据此发现自己放错了插件），所以这里只断言 JSFX 的取舍。
+    [Fact]
+    public void UnusableJsfxEntriesAreLeftOutOfTheCatalog()
+    {
+        var jsfx = new List<InsertPluginEntry>
+        {
+            new()
+            {
+                Format = "JSFX",
+                PluginId = "jsfx:good.jsfx",
+                Name = "Good",
+                Locator = "good.jsfx",
+            },
+            new()
+            {
+                Format = "JSFX",
+                PluginId = "jsfx:mod.jsfx",
+                Name = "Mod",
+                Locator = "mod.jsfx",
+                IsAvailable = false,
+                UnavailableReason = "JSFX inserts require 2 inputs and 2 outputs (this one declares 0/0)",
+            },
+        };
+
+        var entries = new List<InsertPluginEntry>();
+
+        InsertPluginSettings.AddUsableJsfx(entries, jsfx);
+
+        var kept = Assert.Single(entries);
+        Assert.Equal("jsfx:good.jsfx", kept.PluginId);
+    }
+
     static void WithCache(string json, Action<InsertPluginSettings> assert)
     {
         WithSettings(json, bridgeAvailable: false, assert);

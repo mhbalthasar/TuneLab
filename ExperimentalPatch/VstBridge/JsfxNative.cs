@@ -114,6 +114,15 @@ internal static unsafe class JsfxNative
     public static extern void ysfx_guess_file_roots(IntPtr config,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string sourcePath);
 
+    // ysfx 的日志回调（`ysfx_log_level`：0 = info、1 = warning、2 = error）。
+    // 搭建它的目的只有一个：加载/编译失败时把 ysfx 自己那句话（"cannot find import: xxx"、
+    // "file.jsfx:12: syntax error"）带回来，而不是只给宿主一句"load 失败"。
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void LogReporter(IntPtr userdata, int level, IntPtr message);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void ysfx_set_log_reporter(IntPtr config, LogReporter? reporter);
+
     // ── 实例 ──
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
