@@ -6,6 +6,7 @@ using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.InsertHost;
 using TuneLab.ExperimentalPatch.MixerEngine;
+using TuneLab.Foundation;
 using HostLog = TuneLab.Foundation.Log;
 
 namespace TuneLab.Audio;
@@ -276,6 +277,9 @@ internal sealed class InsertInstanceFactory
         // 槽位被释放了，失败标记也跟着走（重加同一个槽位是新的 id）。
         ClearFailure(slotId);
 
+        // [EP-MIXER-AUTO] 自动化登记同样随槽位走（下一次编译按数据重建）。
+        mAutomations.Remove(slotId);
+
         if (!mLive.Remove(slotId, out var insert))
             return;
 
@@ -296,6 +300,72 @@ internal sealed class InsertInstanceFactory
         foreach (var id in mLive.Keys.ToArray())
             Release(id);
     }
+
+    // ── [EP-MIXER-AUTO] 参数自动化登记与"面板改基值"的接管 ──
+
+    // 编译期登记：slotId → (参数 id → 冻结绑定的宿主侧实现)。绑定的曲线快照自己会跟着
+    // 数据换（曲线编辑不必重建图），这张表只回答"这个槽位的这个参数有没有被自动化接管"。
+    readonly Dictionary<string, Dictionary<long, MixerAutomation.Binding>> mAutomations = [];
+
+    internal void RegisterAutomations(string slotId, IReadOnlyList<MixerAutomation.Binding> bindings)
+    {
+        var map = new Dictionary<long, MixerAutomation.Binding>(bindings.Count);
+
+        foreach (var binding in bindings)
+            map[long.Parse(binding.Entry.ParamId)] = binding;
+
+        mAutomations[slotId] = map;
+    }
+
+    internal bool IsParameterAutomated(string slotId, long paramId)
+        => mAutomations.TryGetValue(slotId, out var map) && map.ContainsKey(paramId);
+
+    // 自动化接管期间的参数面板写入：value 解释为**基值**（叠加关系见 InsertSlotAutomation），
+    // 并立刻把有效值（基值 + 当前曲线偏移，钳位）推一次 —— 停止时没有"下一块"，不能等。
+    // 返回 false = 该参数没有被自动化接管，调用方走原来的直写路径。
+    public bool TryWriteAutomatedParameter(string slotId, long paramId, double value)
+    {
+        if (!mAutomations.TryGetValue(slotId, out var map) || !map.TryGetValue(paramId, out var binding))
+            return false;
+
+        binding.Entry.BaseValue.Set(value);
+
+        double tick = AutomationTickProvider?.Invoke() ?? 0;
+        binding.Push(binding.Evaluate(tick));
+        return true;
+    }
+
+    // 自动化接管期间的一次"拖基值"= 一步 undo：面板在滑杆的按下 / 松开处调用这一对。
+    // 没有被接管的槽位返回 no-op 作用域（调用方不用区分）。
+    public IDisposable BeginParameterEdit(string slotId)
+    {
+        if (!mAutomations.TryGetValue(slotId, out var map) || map.Count == 0)
+            return new NoOpScope();
+
+        var entry = map.Values.First().Entry;
+        entry.BeginMergeNotify();
+        return new MergeCommitScope(entry);
+    }
+
+    sealed class NoOpScope : IDisposable
+    {
+        public void Dispose() { }
+    }
+
+    // merge 作用域收口：EndMergeNotify（合并期间的变化归并成一步）+ Commit（推进撤销栈）。
+    // 与 MixerChannelStrip 推子那一路的 EditSession 同一形状。
+    sealed class MergeCommitScope(DataObject data) : IDisposable
+    {
+        public void Dispose()
+        {
+            data.EndMergeNotify();
+            data.Commit();
+        }
+    }
+
+    // "当前播放位置在乐谱上的 tick"。由宿主在工程装载 / tempo 变化时设置
+    //（与 Mixer.TimeMapper 同一处接线）；null = 没有工程上下文，按 tick 0 处理。
+    public static Func<double>? AutomationTickProvider { get; set; }
 
     // ── 内部 ──
 

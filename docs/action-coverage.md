@@ -97,7 +97,7 @@
 一行一个入口。**入口**列是这个文件里的稳定 key（菜单项取显示名字面量、按钮/开关取变量名；同名的按出现
 次序加 `#2`），**不带行号**——行号天天变，那样这张表会因为无关改动天天红。
 
-**176 个入口**：`action` 32 · `command` 15 · `script` 73 · `pending` 0 · `dialog` 35 · `internal` 19 · `by-design` 2 · `todo` 0
+**179 个入口**：`action` 32 · `command` 15 · `script` 75 · `pending` 0 · `dialog` 35 · `internal` 20 · `by-design` 2 · `todo` 0
 
 #### TuneLab/App.axaml.cs
 
@@ -321,6 +321,14 @@
 | up | button | `script` | 效果器链重排：part 的 effects 顺序 |
 | down | button | `script` | 同上 |
 | remove | button | `script` | part.removeEffect |
+
+#### TuneLab/UI/MainWindow/Editor/SideBar/Properties/InsertAutomationsController.cs
+
+| 入口 | 种类 | 裁决 | 说明 |
+|---|---|---|---|
+| add | button | `internal` | 点开「通道 → FX → 参数」三级菜单（真正的入口是参数菜单项那一行）；混音图的插入参数自动化是 [EP-MIXER-AUTO] 的补丁功能，动作面暂不开口 |
+| parameter.Name | menu | `script` | 选定参数即在对应 InsertSlot 上落一条自动化条目（随工程保存、进撤销栈） |
+| remove | button | `script` | 删除该条自动化（InsertSlot.Automations 成员） |
 
 #### TuneLab/UI/MainWindow/Editor/SideBar/Properties/NotePropertySideBarContentProvider.cs
 

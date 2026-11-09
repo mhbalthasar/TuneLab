@@ -204,6 +204,7 @@ public sealed class ClapBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
                 MaxValue = p.Max,
                 DefaultValue = p.DefaultValue,
                 CurrentValue = p.Value,
+                IsDiscrete = p.IsDiscrete,
             }).ToList();
         }
     }

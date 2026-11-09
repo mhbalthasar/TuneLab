@@ -31,6 +31,10 @@ internal class ProjectDocument : DataDocument
             // 把新的 MasterChannelState 建出来。
             AudioEngine.SetMasterPhaseInvert(null);
             AudioEngine.SetMasterInserts(null);
+
+            // [EP-MIXER-AUTO] 时间换算一并摘掉（订阅、换算器、"当前 tick"提供者都随工程走）。
+            UnwireAutomationTimeMapper();
+
             Project?.Detach();
             Project?.Dispose();
         });
@@ -46,6 +50,9 @@ internal class ProjectDocument : DataDocument
             // 指针一空，master 节点就没有插入实例，Master 轨 FX 的「界面」键永远是灰的。
             AudioEngine.SetMasterPhaseInvert(Project?.MasterPhaseInvert);
             AudioEngine.SetMasterInserts(Project?.MasterInserts);
+
+            // [EP-MIXER-AUTO] 换算器 + "当前 tick"提供者跟随当前工程；tempo / 采样率变化时重建。
+            WireAutomationTimeMapper();
         });
 
         mProject.When(project => project.Tracks.ItemAdded).Subscribe(track =>
@@ -161,4 +168,38 @@ internal class ProjectDocument : DataDocument
     Head mLastSavedHead;
     readonly Holder<Project> mProject = new();
     readonly ActionEvent mProjectNameChanged = new();
+
+    // [EP-MIXER-AUTO] 插入参数自动化的时间接线（tempo / 采样率订阅）。
+    readonly DisposableManager mTimeSubscriptions = new();
+
+    void WireAutomationTimeMapper()
+    {
+        UnwireAutomationTimeMapper();
+
+        var project = Project;
+        if (project == null)
+            return;
+
+        void Refresh()
+        {
+            AudioEngine.SetTimeMapper(MixerAutomation.CreateTimeMapper(project));
+            InsertInstanceFactory.AutomationTickProvider =
+                () => project.TempoManager.GetTick(AudioEngine.CurrentTime);
+        }
+
+        Refresh();
+
+        // tempo 任何变化（拖动 / 增删 / undo）都重建：换算器持的是不可变快照，
+        // 重建 = 换一个引用，音频线程无感切到新的一份。
+        project.TempoManager.Modified.Subscribe(Refresh, mTimeSubscriptions);
+        AudioEngine.SampleRate.Modified.Subscribe(Refresh, mTimeSubscriptions);
+    }
+
+    void UnwireAutomationTimeMapper()
+    {
+        mTimeSubscriptions.DisposeAll();
+
+        AudioEngine.SetTimeMapper(null);
+        InsertInstanceFactory.AutomationTickProvider = null;
+    }
 }

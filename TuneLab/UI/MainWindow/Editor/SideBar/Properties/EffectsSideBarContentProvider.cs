@@ -26,6 +26,7 @@ internal class EffectsSideBarContentProvider : ISideBarContentProvider
     public EffectsSideBarContentProvider()
     {
         mContent.Children.Add(mEffectsController);
+        mContent.Children.Add(mInsertAutomationsController);
     }
 
     public void SetParts(IReadOnlyList<IMidiPart> parts, PartPanelSource source)
@@ -39,6 +40,11 @@ internal class EffectsSideBarContentProvider : ISideBarContentProvider
         // 没有目标 part 时整块不显示（效果链是挂在 part 上的，没有 part 就没有「加效果器」可言）。
         mEffectsController.IsVisible = parts.Count > 0;
         mEffectsController.SetParts(parts);
+
+        // [EP-MIXER-AUTO] 插入参数自动化（通道 FX 的曲线）与效果链同一批目标。
+        mInsertAutomationsController.IsVisible = parts.Count > 0;
+        mInsertAutomationsController.SetParts(parts);
+
         RaiseTitleChanged();
     }
 
@@ -50,6 +56,7 @@ internal class EffectsSideBarContentProvider : ISideBarContentProvider
 
     readonly StackPanel mContent = new() { Orientation = Orientation.Vertical };
     readonly EffectsController mEffectsController = new();
+    readonly InsertAutomationsController mInsertAutomationsController = new();
     IReadOnlyList<IMidiPart> mParts = [];
     PartPanelSource mSource = PartPanelSource.Current;
     readonly DisposableManager s = new();

@@ -11,13 +11,19 @@ namespace TuneLab.Data;
 internal class Automation : DataObject, IAutomation
 {
     public IActionEvent<double, double> RangeModified => mRangeModified;
-    public IMidiPart Part => mPart;
+
+    // part 只是"这份曲线挂在谁身上"的上下文（渲染器拿它做 tempo / 相对 tick 换算）。
+    // 插入效果器的参数自动化（InsertSlot.Automations）复用本类的曲线数学，但它不挂在
+    // 任何 part 上（Master / AUX 链是工程级的）——那里 part 为 null，锚点直接存工程绝对 tick。
+    // 经 IAutomation 接口读 Part 的路径只来自 part 数据（part 恒非空）；插入自动化用具体类型。
+    public IMidiPart? Part => mPart;
+    IMidiPart IAutomation.Part => mPart!;
     public IReadOnlyList<AnchorPoint> Points => mPoints;
     public DataStruct<double> DefaultValue { get; }
 
     IDataProperty<double> IAutomation.DefaultValue => DefaultValue;
 
-    public Automation(MidiPart part, AutomationInfo info)
+    public Automation(IMidiPart? part, AutomationInfo info, IDataObject? parent = null) : base(parent)
     {
         mPart = part;
         // RangeModified 只表"锚点几何区间变更"，不并入默认值平移（保其本义、避免 ±∞ 哨兵耦合）。
@@ -264,5 +270,5 @@ internal class Automation : DataObject, IAutomation
 
     readonly DataList<AnchorPoint> mPoints;
     readonly ActionEvent<double, double> mRangeModified = new();
-    readonly IMidiPart mPart;
+    readonly IMidiPart? mPart;
 }

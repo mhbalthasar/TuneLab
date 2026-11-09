@@ -409,6 +409,13 @@ public sealed class ParameterInfo
     // VST2 没有这个概念，桥那边填与 Value 同值即可。
     [JsonPropertyName("defaultValue")]
     public double DefaultValue { get; init; }
+
+    // [EP-MIXER-AUTO] true = 选择型参数（枚举 / 步进）：不进插入参数自动化。
+    // 缺省 false = 线性：旧桥没有这个字段，反序列化保持初值 —— 优雅降级成"全部可自动化"。
+    // JSFX 用 ysfx_slider_is_enum、CLAP 用 CLAP_PARAM_IS_STEPPED 填；VST3 的 vendored
+    // 包装层拿不到 stepCount（native ABI 没带）、VST2 没有参数元数据，两者暂报 false。
+    [JsonPropertyName("isDiscrete")]
+    public bool IsDiscrete { get; init; }
 }
 
 public sealed class ParameterListMessage

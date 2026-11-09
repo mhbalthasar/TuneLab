@@ -157,6 +157,7 @@ public sealed class JsfxBridgeInsert : IMixInsert, IParameterInsert, IRuntimeIns
                 MaxValue = p.Max,
                 DefaultValue = p.DefaultValue,
                 CurrentValue = p.Value,
+                IsDiscrete = p.IsDiscrete,
             }).ToList();
         }
     }

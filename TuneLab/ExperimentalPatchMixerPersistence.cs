@@ -338,6 +338,9 @@ internal static class MixerPersistence
             // [EP-MIXER-27] 侧链源。老工程没有 → 空串 = 没有侧链。
             slot.SidechainId.SetInfo(dto.SidechainId ?? string.Empty);
 
+            // [EP-MIXER-AUTO] 参数自动化。老工程没有这个键 → 原样没有。
+            ApplyAutomations(slot, dto.Automations);
+
             if (!string.IsNullOrEmpty(dto.State))
             {
                 try
@@ -435,10 +438,55 @@ internal static class MixerPersistence
 
                 // [EP-MIXER-27] 侧链源（空串 = 没有，写成 null 让老版本忽略）
                 SidechainId = slot.SidechainId.Value is { Length: > 0 } sidechain ? sidechain : null,
+
+                // [EP-MIXER-AUTO] 参数自动化（没有就写 null：老版本 / 老工程兼容）。
+                Automations = ToAutomationDtos(slot),
             });
         }
 
         return list;
+    }
+
+    static List<InsertAutomationDto>? ToAutomationDtos(InsertSlot slot)
+    {
+        if (slot.Automations.Count == 0)
+            return null;
+
+        var list = new List<InsertAutomationDto>(slot.Automations.Count);
+
+        foreach (var kvp in slot.Automations)
+        {
+            var info = kvp.Value.GetInfo();
+            list.Add(new InsertAutomationDto
+            {
+                ParamId = info.ParamId,
+                BaseValue = info.BaseValue,
+                Points = info.Points.Select(p => new AutomationAnchorDto { Pos = p.X, Value = p.Y }).ToList(),
+            });
+        }
+
+        return list;
+    }
+
+    static void ApplyAutomations(InsertSlot slot, List<InsertAutomationDto>? dtos)
+    {
+        if (dtos == null || dtos.Count == 0)
+            return;
+
+        foreach (var dto in dtos)
+        {
+            if (string.IsNullOrEmpty(dto.ParamId) || slot.Automations.ContainsKey(dto.ParamId))
+                continue;
+
+            var entry = new InsertSlotAutomation(slot, dto.ParamId);
+            entry.SetInfo(new InsertSlotAutomationInfo
+            {
+                ParamId = dto.ParamId,
+                BaseValue = dto.BaseValue,
+                Points = dto.Points?.Select(p => new Point(p.Pos, p.Value)).ToList() ?? [],
+            });
+            slot.Automations.Add(dto.ParamId, entry);
+        }
     }
 
     static MixerPin ParsePin(string? value)
@@ -549,6 +597,28 @@ internal static class MixerPersistence
 
         // [EP-MIXER-27] 侧链源通道 id（"track:7" / "aux-1"）。null / 空 = 没有侧链。
         public string? SidechainId { get; set; }
+
+        // [EP-MIXER-AUTO] 参数自动化条目。null / 空 = 没有（老工程没有这个键 → 走默认）。
+        public List<InsertAutomationDto>? Automations { get; set; }
+    }
+
+    sealed class InsertAutomationDto
+    {
+        public string ParamId { get; set; } = string.Empty;
+
+        // 叠加基值（见 InsertSlotAutomation 的加性语义）。
+        public double BaseValue { get; set; }
+
+        // 偏移曲线锚点：Pos = 工程绝对 tick，Value = 偏移量。
+        // 【为什么不是 Foundation.Point】Point 的坐标是公共**字段**，System.Text.Json
+        // 默认不序列化字段 —— 落盘会静默丢成 (0,0)。这里用带属性的 DTO 承载。
+        public List<AutomationAnchorDto>? Points { get; set; }
+    }
+
+    sealed class AutomationAnchorDto
+    {
+        public double Pos { get; set; }
+        public double Value { get; set; }
     }
 
     class RouteDto

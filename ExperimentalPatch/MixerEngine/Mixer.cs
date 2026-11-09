@@ -46,6 +46,16 @@ public sealed class Mixer
     // 放在 Runtime 里音频线程少一次间接跳转。
     public int SeekOffset => mRuntime?.SeekOffset ?? 0;
 
+    // [EP-MIXER-AUTO] 采样位置 → tick 的换算器。宿主在工程装载 / tempo 变化时换入新的
+    //（不可变快照包一层）；null = 没有自动化要跑。volatile 读：音频线程每块一次。
+    volatile IMixTimeMapper? mTimeMapper;
+
+    public IMixTimeMapper? TimeMapper
+    {
+        get => mTimeMapper;
+        set => mTimeMapper = value;
+    }
+
     public void SetSnapshot(MixSnapshot? snapshot)
     {
         mRuntime = snapshot == null ? null : new Runtime(snapshot, mMaxBlockSize, SampleRate);
@@ -138,6 +148,20 @@ public sealed class Mixer
     void RenderChunk(Runtime runtime, int position, int count, float[] output, int outputOffset, IMixSource? masterInput)
     {
         var nodes = runtime.Snapshot.Nodes;
+
+        // [EP-MIXER-AUTO] 插入参数自动化：块首应用一次。位置 → tick 走宿主给的换算器
+        //（不可变 tempo 快照，与播放头同一套换算 —— 时间戳因此与乐谱对齐，不经过墙钟）。
+        // 精度 = 一个音频块；块内不细分（块的典型时长见宿主的缓冲设置）。
+        // 【实时纪律】无自动化时一次空判断；有绑定时也只做引用读 + 委托调用，零分配。
+        var automations = runtime.Snapshot.Automations;
+        var mapper = mTimeMapper;
+
+        if (automations.Count > 0 && mapper != null)
+        {
+            double tick = mapper.PositionToTick(position);
+            for (int i = 0; i < automations.Count; i++)
+                automations[i].Apply(tick);
+        }
 
         // 1) 清空所有节点的缓冲（含 sink：sink 也用自己的缓冲，最后统一混进输出）。
         for (int i = 0; i < nodes.Count; i++)

@@ -650,6 +650,9 @@ internal sealed unsafe class ClapPluginHost : IBridgePluginHost
                     Max = info.MaxValue,
                     Value = value,
                     DefaultValue = info.DefaultValue,
+
+                    // [EP-MIXER-AUTO] CLAP_PARAM_IS_STEPPED（1<<4）= 选择型：不进参数自动化。
+                    IsDiscrete = (info.Flags & ClapNative.ParamIsStepped) != 0,
                 });
             }
         }

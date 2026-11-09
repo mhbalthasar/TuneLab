@@ -30,6 +30,10 @@ public sealed class MixGraphBuilder
         // 记在目标侧而不是源侧，是因为延迟公式要用目标的 down[] 与 before(D,k)。
         internal readonly List<SidechainDraft> SidechainEdges = [];
 
+        // [EP-MIXER-AUTO] 本节点插入链上的参数自动化绑定。音频线程每块开头统一应用
+        //（Mixer.RenderChunk 拿得到块首位置，节点处理拿不到 —— 见 MixAutomationBinding）。
+        internal readonly List<MixAutomationBinding> Automations = [];
+
         internal NodeDraft(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
             IReadOnlyList<IMixInsert> inserts)
         {
@@ -39,6 +43,9 @@ public sealed class MixGraphBuilder
             Source = source;
             Inserts = inserts;
         }
+
+        // [EP-MIXER-AUTO] 给本节点挂插入参数自动化绑定（编译期调用，见 MixAutomationBinding）。
+        public void AddAutomations(IEnumerable<MixAutomationBinding> bindings) => Automations.AddRange(bindings);
 
         // 本节点的插入链延迟之和（音频线程每块现读一次太贵，建图时算一次就够：
         // 换插件 / 改 lookahead 会重建图，见 §3.7 与 §5.7）。
@@ -361,7 +368,8 @@ public sealed class MixGraphBuilder
                 sidechainOutputs[i], sidechainByInsert[i]));
         }
 
-        return new MixSnapshot(nodes, nodes[topoIndex[master]], maxLatency, sidechainBufferCount);
+        return new MixSnapshot(nodes, nodes[topoIndex[master]], maxLatency, sidechainBufferCount,
+            [.. mNodes.SelectMany(n => n.Automations)]);
     }
 
     // 供 UI 用：在现有图上再加一条 from → to，会不会成环？

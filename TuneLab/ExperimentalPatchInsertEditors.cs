@@ -91,7 +91,9 @@ internal static class InsertEditorHost
             return;
         }
 
-        var window = InsertParameterWindow.Create(title, insert);
+        // [EP-MIXER-AUTO] slotId 随面板走：自动化接管期间的参数写入要按 (槽位, 参数)
+        // 找到条目改基值（见 InsertInstanceFactory.TryWriteAutomatedParameter）。
+        var window = InsertParameterWindow.Create(title, insert, slotId);
         sParameterWindows[slotId] = window;
 
         window.Closed += (_, _) => sParameterWindows.Remove(slotId);

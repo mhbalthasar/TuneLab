@@ -273,6 +273,10 @@ internal class AudioGraph()
     public bool TryGetChannelTruePeakDb(string channelId, out double truePeakDb)
         => mMixer.TryGetTruePeakDb(channelId, out truePeakDb);
 
+    // [EP-MIXER-AUTO] 插入参数自动化的"位置 → tick"换算器（工程装载 / tempo 变化时换入；
+    // 实现必须持不可变快照 —— 见 Mixer.TimeMapper 的线程约定）。
+    public void SetTimeMapper(IMixTimeMapper? mapper) => mMixer.TimeMapper = mapper;
+
     void ApplyPreviewAndMasterGain(int count, float[] buffer, int offset, IMixSource masterInput)
     {
         masterInput.AddData(0, count, buffer, offset, 1f, 1f);

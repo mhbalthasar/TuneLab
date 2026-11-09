@@ -18,12 +18,17 @@ public sealed class MixSnapshot
     // Runtime 按它分配缓冲；退化图因此一块都不分配。
     public int SidechainBufferCount { get; }
 
+    // [EP-MIXER-AUTO] 插入参数自动化绑定（全图拍平，跨节点聚合）。
+    // 空表 = 图里没有任何参数自动化：音频线程每块开头判一次空就完事。
+    public IReadOnlyList<MixAutomationBinding> Automations { get; }
+
     internal MixSnapshot(IReadOnlyList<MixNode> nodes, MixNode master, int maxLatencySamples,
-        int sidechainBufferCount = 0)
+        int sidechainBufferCount = 0, IReadOnlyList<MixAutomationBinding>? automations = null)
     {
         Nodes = nodes;
         Master = master;
         MaxLatencySamples = maxLatencySamples;
         SidechainBufferCount = sidechainBufferCount;
+        Automations = automations ?? [];
     }
 }

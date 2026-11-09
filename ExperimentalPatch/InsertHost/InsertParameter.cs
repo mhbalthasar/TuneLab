@@ -21,4 +21,9 @@ public sealed class InsertParameter
     public double DefaultValue { get; set; }
 
     public double CurrentValue { get; set; }
+
+    // [EP-MIXER-AUTO] true = 选择型参数（枚举 / 步进）：不进插入参数自动化。
+    // 缺省 false = 线性；VST3 的 vendored 包装层拿不到 stepCount、VST2 没有参数元数据，
+    // 两者暂报 false（见桥协议 ParameterInfo.IsDiscrete 的注释）。
+    public bool IsDiscrete { get; set; }
 }

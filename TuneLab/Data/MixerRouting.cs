@@ -144,6 +144,10 @@ internal class InsertSlot : DataObject
     // 空串而不是 null：DataString 不接受 null（DataProperty<T> 的 T : notnull）。
     public DataProperty<string> SidechainId { get; }
 
+    // [EP-MIXER-AUTO] 参数自动化条目：参数 id（字符串化）→ 曲线 + 基值。
+    // 加性语义与时间空间见 InsertSlotAutomation 的类注释；落盘走 InsertDto.Automations。
+    public DataObjectMap<string, InsertSlotAutomation> Automations { get; }
+
     // 插件的私有状态（getState 的原样字节）。null = 还没存过 / 插件没报状态。
     public byte[]? State { get; set; }
 
@@ -167,6 +171,9 @@ internal class InsertSlot : DataObject
 
         // [EP-MIXER-27] 默认没有侧链源。
         SidechainId = new DataString(this, string.Empty);
+
+        // [EP-MIXER-AUTO] 默认没有参数自动化。
+        Automations = new(this);
     }
 }
 

@@ -229,6 +229,12 @@ internal static class AudioEngine
         AudioGraph.SetMasterPhaseInvert(phaseInvert);
     }
 
+    // [EP-MIXER-AUTO] 插入参数自动化的时间换算器（工程装载 / tempo / 采样率变化时由宿主换入）。
+    public static void SetTimeMapper(IMixTimeMapper? mapper)
+    {
+        AudioGraph.SetTimeMapper(mapper);
+    }
+
     public static void ExportTrack(string filePath, IAudioTrack track, bool isStereo)
     {
         ExportTrack(filePath, track, isStereo, SampleRate.Value, AudioEncodeSettings.Wav(16));

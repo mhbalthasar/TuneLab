@@ -41,6 +41,10 @@ public sealed class InsertParameterWindow : Window
 
     readonly ParameterSource mSource;
     readonly string mHeaderText;
+
+    // [EP-MIXER-AUTO] 槽位 id（null = 没有槽位上下文，如测试 / 无槽位调用方）：
+    // 自动化接管期间的参数写入按 (槽位, 参数) 改基值。
+    readonly string? mSlotId;
     readonly StackPanel mRows = new() { Spacing = 2 };
     readonly TextBlock mEmpty = new();
     readonly List<Row> mRowViews = [];
@@ -53,11 +57,15 @@ public sealed class InsertParameterWindow : Window
         public required Slider Slider { get; init; }
         public required DraggableNumberBox Box { get; init; }
         public bool Dragging { get; set; }
+
+        // [EP-MIXER-AUTO] 自动化接管期间的基值编辑作用域（一次拖动 = 一步 undo）；null = 未接管。
+        public IDisposable? EditScope { get; set; }
     }
 
-    InsertParameterWindow(string title, ParameterSource source)
+    InsertParameterWindow(string title, ParameterSource source, string? slotId)
     {
         mSource = source;
+        mSlotId = slotId;
 
         // 抬头只说"哪条轨道的哪个 FX"，别堆功能说明。
         Title = title;
@@ -77,8 +85,11 @@ public sealed class InsertParameterWindow : Window
         Closed += (_, _) => mPoll?.Stop();
     }
 
-    public static InsertParameterWindow Create(string pluginName, IMixInsert insert)
+    public static InsertParameterWindow Create(string pluginName, IMixInsert insert, string? slotId = null)
     {
+        // 闭包捕获局部量（Create 是静态方法）。
+        string? automationSlotId = slotId;
+
         ParameterSource source = insert switch
         {
             IParameterInsert vst3 => new ParameterSource
@@ -89,6 +100,11 @@ public sealed class InsertParameterWindow : Window
                     .ToList(),
                 Write = (id, value) =>
                 {
+                    // [EP-MIXER-AUTO] 该参数被自动化接管：写入 = 改基值（面板的值是叠加的
+                    // 起点而不是最终值），有效值立刻应用一次；播放中下一块还会再同步（幂等）。
+                    if (automationSlotId != null && InsertInstanceFactory.Shared.TryWriteAutomatedParameter(automationSlotId, id, value))
+                        return;
+
                     vst3.SetParameter(id, value);
 
                     // VST3 的参数改动要等一次 process() 才被处理器消费。播放中音频线程
@@ -104,7 +120,14 @@ public sealed class InsertParameterWindow : Window
                 Read = () => vst2.GetParameters()
                     .Select(p => new Parameter((int)p.Id, p.Name, p.Min, p.Max, p.Value, null))
                     .ToList(),
-                Write = (id, value) => vst2.SetParameter(id, value),
+                Write = (id, value) =>
+                {
+                    // [EP-MIXER-AUTO] 同 VST3：自动化接管期间写入 = 改基值。
+                    if (automationSlotId != null && InsertInstanceFactory.Shared.TryWriteAutomatedParameter(automationSlotId, id, value))
+                        return;
+
+                    vst2.SetParameter(id, value);
+                },
                 // 过桥：每次刷新都是一次命名管道往返，别太勤。
                 PollInterval = TimeSpan.FromMilliseconds(1500),
             },
@@ -116,7 +139,7 @@ public sealed class InsertParameterWindow : Window
             },
         };
 
-        return new InsertParameterWindow(pluginName, source);
+        return new InsertParameterWindow(pluginName, source, slotId);
     }
 
     Control BuildContent()
@@ -228,8 +251,21 @@ public sealed class InsertParameterWindow : Window
 
         var row = new Row { Id = parameter.Id, Slider = slider, Box = box };
 
-        slider.ValueWillChange.Subscribe(() => row.Dragging = true);
-        slider.ValueCommitted.Subscribe(() => row.Dragging = false);
+        // [EP-MIXER-AUTO] 自动化接管期间基值是数据（可 undo）：一次拖动归并成一步。
+        // 没被接管的参数写的是插件状态（本来就不进 undo），作用域是 no-op。
+        slider.ValueWillChange.Subscribe(() =>
+        {
+            row.Dragging = true;
+            row.EditScope = mSlotId != null
+                ? InsertInstanceFactory.Shared.BeginParameterEdit(mSlotId)
+                : null;
+        });
+        slider.ValueCommitted.Subscribe(() =>
+        {
+            row.Dragging = false;
+            row.EditScope?.Dispose();
+            row.EditScope = null;
+        });
 
         slider.ValueChanged.Subscribe(() =>
         {

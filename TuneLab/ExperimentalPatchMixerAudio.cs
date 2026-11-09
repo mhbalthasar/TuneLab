@@ -50,11 +50,13 @@ internal sealed class MixerGraphCompiler
         var chains = new Dictionary<string, List<IMixInsert>>();
 
         var masterSlots = masterInserts ?? [];
-        var masterChain = BuildInserts("master", masterSlots);
+        var masterAutomations = new List<MixAutomationBinding>();
+        var masterChain = BuildInserts("master", masterSlots, masterAutomations);
         chains["master"] = masterChain;
 
         var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(masterPhaseInvert),
             null, masterChain);
+        master.AddAutomations(masterAutomations);
 
         // v1 只有一个设备：所有"设备"输出都进同一个 sink（DESIGN.md §4.4）。
         var device = builder.AddNode("device", MixNodeKind.Device);
@@ -75,9 +77,11 @@ internal sealed class MixerGraphCompiler
             var state = new AuxChannelState(aux);
             auxStates.Add(state);
 
-            var chain = BuildInserts(aux.Id, aux.Inserts);
+            var auxAutomations = new List<MixAutomationBinding>();
+            var chain = BuildInserts(aux.Id, aux.Inserts, auxAutomations);
             chains[aux.Id] = chain;
             nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null, chain);
+            nodes[aux.Id].AddAutomations(auxAutomations);
         }
 
         for (int i = 0; i < trackList.Count; i++)
@@ -87,10 +91,12 @@ internal sealed class MixerGraphCompiler
             trackStates.Add(state);
 
             string id = "track-" + i;
-            var chain = BuildInserts(id, track.Inserts);
+            var trackAutomations = new List<MixAutomationBinding>();
+            var chain = BuildInserts(id, track.Inserts, trackAutomations);
             chains[id] = chain;
 
             var node = builder.AddNode(id, MixNodeKind.Track, state, new TrackMixSource(graph, track), chain);
+            node.AddAutomations(trackAutomations);
             nodes[id] = node;
 
             // [EP-MIXER-27] 侧链引用用的是**稳定序号**（"track:7"），不是编译期下标。
@@ -172,8 +178,10 @@ internal sealed class MixerGraphCompiler
 
         // ignoreMuteSolo: 导出分轨与旧路径 AddData 一致 —— 静音/solo 不改变导出内容。
         var state = new TrackChannelState(track, ignoreMuteSolo: true);
-        var chain = BuildInserts("track-export", track.Inserts);
+        var exportAutomations = new List<MixAutomationBinding>();
+        var chain = BuildInserts("track-export", track.Inserts, exportAutomations);
         var node = builder.AddNode("track-export", MixNodeKind.Track, state, new TrackMixSource(graph, track), chain);
+        node.AddAutomations(exportAutomations);
 
         builder.Connect(node, device);
 
@@ -266,7 +274,12 @@ internal sealed class MixerGraphCompiler
     //      一个插件卸了就让混音台整张图建不起来，比丢一个效果器严重得多。
     //   ② 顺序就是数据里的顺序（= 界面看到的顺序），别在这里重排。
     //   ③ 实例的释放归工厂：这里只负责"这次编译用了哪些"。
-    static List<IMixInsert> BuildInserts(string channelId, IReadOnlyList<InsertSlot> slots)
+    //
+    // [EP-MIXER-AUTO] 顺带把槽位上的参数自动化条目变成图绑定（automations），
+    // 并登记进工厂（参数面板的"改基值"路径要按槽位找到条目）。绑定的 evaluate/push
+    // 闭包捕获的是**裸插件实例**（湿/干、增益包装不影响参数语义）。
+    static List<IMixInsert> BuildInserts(string channelId, IReadOnlyList<InsertSlot> slots,
+        List<MixAutomationBinding>? automations = null)
     {
         if (slots.Count == 0)
             return [];
@@ -319,6 +332,17 @@ internal sealed class MixerGraphCompiler
             // 登记链上那一环：界面上改 mix / 增益时要能推到正在跑的包装器
             // （不必重建图，与旁通、send 推子同一条纪律）。
             factory.RegisterWrapped(slot.Id, wrapped);
+
+            // [EP-MIXER-AUTO] 参数自动化：建绑定 + 登记（自动化的推送走**裸插件**，
+            // 与包装器无关 —— 包装层只是混音语义，不碰插件参数）。
+            if (slot.Automations.Count > 0 && automations != null)
+            {
+                var slotBindings = MixerAutomation.BuildBindings(slot, insert, out var hostBindings);
+                automations.AddRange(slotBindings);
+
+                if (hostBindings.Count > 0)
+                    factory.RegisterAutomations(slot.Id, hostBindings);
+            }
 
             chain.Add(wrapped);
         }

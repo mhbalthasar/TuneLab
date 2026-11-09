@@ -239,6 +239,11 @@ internal static unsafe class JsfxNative
     [return: MarshalAs(UnmanagedType.I1)]
     public static extern bool ysfx_slider_get_curve(IntPtr fx, uint index, out SliderCurve curve);
 
+    // 枚举滑条（slider 声明里的 1{A,B,C} 形态）= 选择型参数：不进插入参数自动化。
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public static extern bool ysfx_slider_is_enum(IntPtr fx, uint index);
+
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern double ysfx_slider_get_value(IntPtr fx, uint index);
 

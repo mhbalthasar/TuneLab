@@ -523,6 +523,9 @@ internal sealed unsafe class JsfxPluginHost : IBridgePluginHost
                     Max = max,
                     Value = JsfxNative.ysfx_slider_get_value(slot.Fx, index),
                     DefaultValue = defaultValue,
+
+                    // [EP-MIXER-AUTO] 枚举滑条（1{A,B,C}）是选择型：不进参数自动化。
+                    IsDiscrete = JsfxNative.ysfx_slider_is_enum(slot.Fx, index),
                 });
             }
         }
