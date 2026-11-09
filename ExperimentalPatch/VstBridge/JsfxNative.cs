@@ -150,6 +150,9 @@ internal static unsafe class JsfxNative
     public static extern IntPtr ysfx_get_name(IntPtr fx);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern IntPtr ysfx_get_author(IntPtr fx);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern double ysfx_get_pdc_delay(IntPtr fx);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

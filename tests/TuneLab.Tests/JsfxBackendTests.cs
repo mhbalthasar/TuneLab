@@ -51,6 +51,63 @@ public class JsfxBackendTests
     }
 
     [Fact]
+    public void ListPlugins_ReadsAuthorTagAsVendor()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "tunelab-jsfx-scan-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Directory.CreateDirectory(root);
+
+            File.WriteAllText(Path.Combine(root, "tagged.jsfx"), """
+                desc: Tagged
+                author: Some Author
+                slider1:0<0,1,0.01>Gain
+
+                @init
+                gain = slider1;
+                """);
+
+            // 不规范但很常见的注释写法（ysfx 也照读）。
+            File.WriteAllText(Path.Combine(root, "commented.jsfx"), """
+                desc: Commented
+                //author: Comment Author
+
+                @init
+                gain = 1;
+                """);
+
+            // 没有 author 就留空 —— 菜单按"未知厂商"分组，而不是把格式当成作者。
+            File.WriteAllText(Path.Combine(root, "bare.jsfx"), """
+                desc: Bare
+
+                @init
+                gain = 1;
+                """);
+
+            // 头部元数据只在第一个 @section 之前有效，写在 @init 里不算。
+            File.WriteAllText(Path.Combine(root, "late.jsfx"), """
+                desc: Late
+
+                @init
+                author: Too Late
+                """);
+
+            var plugins = new JsfxBackend().ListPlugins([root], null, false, null);
+
+            Assert.Equal("Some Author", Assert.Single(plugins, p => p.PluginId == "jsfx:tagged.jsfx").Vendor);
+            Assert.Equal("Comment Author", Assert.Single(plugins, p => p.PluginId == "jsfx:commented.jsfx").Vendor);
+            Assert.Equal(string.Empty, Assert.Single(plugins, p => p.PluginId == "jsfx:bare.jsfx").Vendor);
+            Assert.Equal(string.Empty, Assert.Single(plugins, p => p.PluginId == "jsfx:late.jsfx").Vendor);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ListPlugins_FallsBackToFileNameWhenDescIsMissing()
     {
         string root = Path.Combine(Path.GetTempPath(), "tunelab-jsfx-scan-" + Guid.NewGuid().ToString("N"));

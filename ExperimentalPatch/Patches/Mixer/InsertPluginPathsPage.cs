@@ -23,7 +23,7 @@ namespace TuneLab.ExperimentalPatch.Patches.Mixer;
 // 宿主为此开了一个贡献锚点（EP-MIXER-16：IAnchorTable.AddSettingsTab）。
 //
 // 【页面结构】尽量薄：
-//   ① 一行插件缓冲（毫秒）——本页唯一的音频参数；
+//   ① 「效果器属性」面板：一行插件缓冲（毫秒）——本页唯一的音频参数；
 //   ② 每种格式（VST3 / VST2 / CLAP / JSFX）一个面板：路径清单 + 「+ 添加路径」；
 //   ③ 底部一个「立即扫描」+ 进度 + 状态。
 // 控件一律用宿主的 TuneLab.GUI（Button / Slider / Style），不另造一套皮肤。
@@ -55,7 +55,7 @@ public sealed class InsertPluginPathsPage : UserControl
     Control BuildContent()
     {
         var body = new StackPanel { Spacing = 18 };
-        body.Children.Add(BuildBufferRow());
+        body.Children.Add(BuildPanel(L("效果器属性", "Effect properties"), BuildBufferRow()));
         body.Children.Add(BuildSection(L("VST3 路径", "VST3 paths"), Vst3Format, mVst3));
         body.Children.Add(BuildSection(L("VST2 路径", "VST2 paths"), Vst2Format, mVst2));
         body.Children.Add(BuildSection(L("CLAP 路径", "CLAP paths"), ClapFormat, mClap));
@@ -166,8 +166,9 @@ public sealed class InsertPluginPathsPage : UserControl
         return row;
     }
 
-    // 一个格式的面板：标题 + 路径行 + 「添加路径」。
-    Control BuildSection(string title, string format, ObservableCollection<PathEntry> paths)
+    // 所有面板的统一画法：粗体标题 + 缩进一级的内容。缓冲行和四个格式路径区
+    // 用同一套骨架，页面上每一块的层级才对得上（缓冲行以前裸着，看着像页首说明）。
+    Control BuildPanel(string title, Control content)
     {
         var header = new TextBlock
         {
@@ -177,10 +178,23 @@ public sealed class InsertPluginPathsPage : UserControl
             Foreground = Style.TEXT_LIGHT.ToBrush(),
         };
 
+        var body = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+        body.Children.Add(content);
+
+        var panel = new StackPanel();
+        panel.Children.Add(header);
+        panel.Children.Add(body);
+
+        return panel;
+    }
+
+    // 一个格式的面板：标题 + 路径行 + 「添加路径」。
+    Control BuildSection(string title, string format, ObservableCollection<PathEntry> paths)
+    {
         // 行直接手工堆进 StackPanel，不用 ItemsControl/DataTemplate：这里是"清单"而不是"缓存"，
         // 几十条的量级，整体重建最省心。（为什么"重建"而不是增量增删：见 git 历史——
         // 增量删行曾经靠 Tag 匹配失败而漏删，整体重建没有这个类别的问题。）
-        var list = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+        var list = new StackPanel();
 
         void RebuildRows()
         {
@@ -206,12 +220,11 @@ public sealed class InsertPluginPathsPage : UserControl
         add.Tag = "add-path";   // 供回归测试识别（渲染树测试按它数按钮）
         add.Clicked += () => Browse(format, paths);
 
-        var body = new StackPanel();
-        body.Children.Add(header);
+        var body = new StackPanel { Spacing = 6 };
         body.Children.Add(list);
         body.Children.Add(add);
 
-        return body;
+        return BuildPanel(title, body);
     }
 
     // 宿主样式的小按钮（AboutDialog / UpdateDialog 同款画法）。

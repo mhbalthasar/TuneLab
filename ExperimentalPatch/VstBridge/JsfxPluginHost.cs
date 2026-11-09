@@ -121,10 +121,11 @@ internal sealed unsafe class JsfxPluginHost : IBridgePluginHost
             outputChannels = 2;
 
             string? name = PtrToString(JsfxNative.ysfx_get_name(fx));
+            string? author = PtrToString(JsfxNative.ysfx_get_author(fx));
             int latency = ReadLatency(fx);
 
             return (true, null, string.IsNullOrWhiteSpace(name) ? Path.GetFileNameWithoutExtension(request.Path) : name,
-                "JSFX", latency, false, hasEditor, false);
+                string.IsNullOrWhiteSpace(author) ? string.Empty : author, latency, false, hasEditor, false);
         }
         catch (Exception ex)
         {

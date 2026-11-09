@@ -44,6 +44,11 @@ public class InsertPluginPathsPageDiagnosticTests
             .Count(b => (b.Tag as string) == "add-path");
         Assert.Equal(4, addButtons);
 
+        // 缓冲行不再是页首的裸控件：它和四种格式一样，挂在一个粗体标题的面板下。
+        var headers = page.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
+        Assert.Contains("效果器属性", headers);
+        Assert.Contains("JSFX 路径", headers);
+
         // 宽度诊断：页面必须被窗口约束住（历史上内容曾比窗口宽，右缘被裁掉）。
         Assert.True(page.Bounds.Width <= 800, $"page width {page.Bounds.Width} exceeds window width 800");
         var scroll = page.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
