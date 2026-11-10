@@ -109,15 +109,15 @@ internal static class InsertAutomationCatalog
             .WithColor(TrackColors.PickBySeed(keyId));
     }
 
-    // 真正值（同轴背景用）：clamp(基值 + Σ 所有 part 的偏移) − 基值。
+    // 真正值（背景用）：clamp(基值 + Σ 所有 part 的偏移, Min, Max)。
     // 传工程**绝对 tick**（渲染器的参数区是 part 相对 tick，调用方加 part.Pos 换算）。
     // 每个 part 的曲线只在**该 part 的时域内**贡献（与音频绑定同一口径，见 MixerAutomation.Binding）。
-    // 结果落在 [Min−基值, Max−基值] ⊂ [−range, +range]，正好画在 lane 的偏移轴上：
-    // 曲线 = 本 part 的偏移（未钳位），填充顶 = 所有 part 求和后的**实际生效**偏移（已钳位）。
-    public static double[] EvaluateTrueOffset(Project project, string keyId, InsertSlotAutomation entry,
+    // 背景把这条真正值映射到 lane 的**满高**（参数最小 = 底部、最大 = 顶部），与曲线的偏移轴分开：
+    // 曲线 = 本 part 的偏移（未钳位），背景顶 = 所有 part 求和后的实际生效值（已钳位）。
+    public static double[] EvaluateTrueValues(Project project, string keyId, InsertSlotAutomation entry,
         IReadOnlyList<double> absoluteTicks)
     {
-        var offsets = new double[absoluteTicks.Count];
+        var values = new double[absoluteTicks.Count];
 
         foreach (var track in project.Tracks)
         {
@@ -134,12 +134,12 @@ internal static class InsertAutomationCatalog
                 for (int i = 0; i < relative.Length; i++)
                     relative[i] = absoluteTicks[i] - pos;
 
-                var values = curve.GetValues(relative);
-                for (int i = 0; i < offsets.Length; i++)
+                var curveValues = curve.GetValues(relative);
+                for (int i = 0; i < values.Length; i++)
                 {
                     double tick = absoluteTicks[i];
                     if (tick >= start && tick <= end)
-                        offsets[i] += values[i];
+                        values[i] += curveValues[i];
                 }
             }
         }
@@ -148,10 +148,10 @@ internal static class InsertAutomationCatalog
         double min = Math.Min(entry.MinValue.Value, entry.MaxValue.Value);
         double max = Math.Max(entry.MinValue.Value, entry.MaxValue.Value);
 
-        for (int i = 0; i < offsets.Length; i++)
-            offsets[i] = Math.Clamp(baseValue + offsets[i], min, max) - baseValue;
+        for (int i = 0; i < values.Length; i++)
+            values[i] = Math.Clamp(baseValue + values[i], min, max);
 
-        return offsets;
+        return values;
     }
 
     // lane 显示名："FX 名 · 参数名"（tab 按钮与面板标题共用）。参数显示名按活实例现查

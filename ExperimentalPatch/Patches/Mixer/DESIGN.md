@@ -1680,8 +1680,9 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 - **key 形状**：`AutomationKey.Insert("{slotId}:{paramId}")`——slotId 全工程唯一、通道归属由槽位自带，全工程按槽位 id 找回（`InsertAutomationCatalog`）。`EffectIndex` 恒 -1。
 - **无适配视图**：曲线就是真实的 `Automation`（part 相对 tick、偏移量），渲染器 / 编辑原语 / 锚点选中态直接作用在真数据上，不需要 `InsertAutomationView` 那层投影。
 - **值空间 = 偏移量**：lane 轴 = `[-(Max−Min), +(Max−Min)]`，默认 0（`BuildLaneConfig`）。`[0,100] → [-100,100]`，`[-50,100] → [-150,150]`。画点 / 拖拽 / 存储 / 音频求值全在同一空间——**跟手**。
-- **真正值背景（同轴）**：激活的插入 lane 在曲线之前画一块半透明填充，从 lane 底部填到
-  `clamp(基值 + Σ各 part 偏移, Min, Max) − 基值`。它落在**同一根偏移轴**上，所以填充顶 = 所有 part 求和后的实际偏移（已钳位），曲线 = 本 part 的偏移（未钳位）；无钳位时两者重合，钳位时填充顶停住、曲线继续。背景只画**激活轨**。
+- **真正值背景（满高映射）**：激活的插入 lane 在曲线之前画一块半透明填充，从 lane 底部填到
+  `clamp(基值 + Σ各 part 偏移, Min, Max)`；值域映射到 lane 的**满高**——参数最小 = 底部（空幅度）、最大 = 顶部（满幅度）。
+  它与曲线的偏移轴是两套映射：曲线 = 本 part 的偏移（未钳位），背景顶 = 所有 part 求和后的实际生效值（已钳位）。背景只画**激活轨**。
 - **路由**：`IMidiPartExtension` 的 `TryGetSourceConfig` / `GetEffectiveAutomation` / `GetFinalAutomationValues` 各加 Insert 分支。语义分流：`GetEffectiveAutomation` 插入键返回已有曲线或 null（**不创建**——悬浮 / 收集锚点路径会调它）；`AddEffectiveAutomation` 创建（绘制路径的 `?? Add` 入口）；`GetEffective/GetFinalAutomationValues` 返回偏移，无曲线返回全 0。`MidiPart.AddAutomation` 先判声源声明（voice 优先），再判 `InsertAutomationCatalog.TryResolveEntry` 命中则建默认 0 的曲线。
 - **lane config**：量程在建条目时从活实例抄进 `MinValue/MaxValue` 落盘——重开工程、图未编译时轴也正确；颜色按 keyId 的稳定哈希从调色板取（`TrackColors.PickBySeed`；`string.GetHashCode` 进程随机化，不能用）。
 - **UI 接线**：tab 栏在 voice/effect 之后加一组（当前轨道音流所经通道上已建条目）。两条订阅：**链成员变化**

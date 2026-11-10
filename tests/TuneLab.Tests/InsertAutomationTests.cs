@@ -163,10 +163,10 @@ public class InsertAutomationTests
         Assert.Equal(0.75, host.Evaluate(580), 12);
     }
 
-    // ── 背景：同轴真正值（Σ 后钳位、相对基值的偏移）──
+    // ── 背景：真正值（Σ 后钳位到参数量程；渲染时映射到 lane 满高）──
 
     [Fact]
-    public void TrueOffset_SumsAllPartsAndClampsThenSubtractsBase()
+    public void TrueValues_SumsAllPartsAndClampsToTheParameterRange()
     {
         var (project, parts) = NewProjectWithParts(0, 960);
         var slot = AddSlot(project.Tracks[0], "VST3", "vst3:test", "Test");
@@ -176,15 +176,15 @@ public class InsertAutomationTests
 
         string keyId = InsertAutomationCatalog.MakeKeyId(slot.Id, 3);
 
-        // tick 1000：0.5 + 0.2 + 0.3 = 1.0 → 偏移 0.5（正好到上限）。
-        Assert.Equal(0.5, InsertAutomationCatalog.EvaluateTrueOffset(project, keyId, entry, [1000])[0], 12);
+        // tick 1000：0.5 + 0.2 + 0.3 = 1.0（正好到上限）。
+        Assert.Equal(1.0, InsertAutomationCatalog.EvaluateTrueValues(project, keyId, entry, [1000])[0], 12);
 
-        // 基值改到 0.9 → 和 1.4 被钳到 1 → 偏移 0.1。
+        // 基值改到 0.9 → 和 1.4 被钳到 1。
         entry.BaseValue.Set(0.9);
-        Assert.Equal(0.1, InsertAutomationCatalog.EvaluateTrueOffset(project, keyId, entry, [1000])[0], 12);
+        Assert.Equal(1.0, InsertAutomationCatalog.EvaluateTrueValues(project, keyId, entry, [1000])[0], 12);
 
-        // 两个 part 都不覆盖的 tick：真正值 = 基值 → 偏移 0。
-        Assert.Equal(0, InsertAutomationCatalog.EvaluateTrueOffset(project, keyId, entry, [5000])[0], 12);
+        // 两个 part 都不覆盖的 tick：真正值 = 基值。
+        Assert.Equal(0.9, InsertAutomationCatalog.EvaluateTrueValues(project, keyId, entry, [5000])[0], 12);
     }
 
     // ── lane 值轴：偏移空间 ±range，默认 0 ──
@@ -231,7 +231,7 @@ public class InsertAutomationTests
         Assert.Equal(100, stored.Pos, 12);
         Assert.Equal(0.1, stored.Value, 12);
 
-        // lane 终值 = 偏移量本身（不加基值、不钳位；真正值见 EvaluateTrueOffset）。
+        // lane 终值 = 偏移量本身（不加基值、不钳位；真正值见 EvaluateTrueValues）。
         Assert.Equal(0.1, part.GetFinalAutomationValues([100], key)[0], 12);
 
         // 第二次调用取回同一对象（不重建）。

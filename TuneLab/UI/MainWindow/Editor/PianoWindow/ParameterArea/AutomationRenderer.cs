@@ -428,9 +428,9 @@ internal partial class AutomationRenderer : View
             context.DrawCurve(points, ColorUtils.ParseOrFallback(config.Color), lineWidth);
         }
 
-        // 插入参数自动化的"真正值"背景（只读）：从 lane 底部填充到 clamp(基值 + Σ所有 part 的偏移) − 基值。
-        // 同轴口径（用户选）：填充顶落在曲线用的同一根 ±range 偏移轴上，所以"填充顶 = 所有 part 求和后的
-        // 实际偏移"，与单条曲线（本 part 的偏移）可直接比较；钳位时填充顶停在 [Min−基值, Max−基值]。
+        // 插入参数自动化的"真正值"背景（只读）：从 lane 底部填充到 clamp(基值 + Σ所有 part 的偏移)。
+        // 值域映射到 lane 的**满高**（用户口径）：参数最小 = 底部（空幅度）、最大 = 顶部（满幅度）。
+        // 与曲线的偏移轴分开：曲线 = 本 part 的偏移（未钳位），背景顶 = 所有 part 求和后的实际生效值（已钳位）。
         void DrawInsertTrueValueBackground(AutomationKey automationID, AutomationConfig config)
         {
             if (Part?.Track.Project is not Project project)
@@ -439,20 +439,26 @@ internal partial class AutomationRenderer : View
             if (!InsertAutomationCatalog.TryResolveEntry(Part, automationID.Id, out _, out var entry))
                 return;
 
+            double min = Math.Min(entry.MinValue.Value, entry.MaxValue.Value);
+            double max = Math.Max(entry.MinValue.Value, entry.MaxValue.Value);
+            double range = max - min;
+            if (range <= 0)
+                return;   // 死参数没有幅度可言
+
             // 参数区是 part 相对 tick；背景求值要工程绝对 tick（各 part 的曲线按自己的 Pos 平移）。
             var absolute = new double[n];
             double partPos = Part.Pos.Value;
             for (int i = 0; i < n; i++)
                 absolute[i] = ticks[i] + partPos;
 
-            double[] offsets = InsertAutomationCatalog.EvaluateTrueOffset(project, automationID.Id, entry, absolute);
+            double[] values = InsertAutomationCatalog.EvaluateTrueValues(project, automationID.Id, entry, absolute);
 
             var geometry = new StreamGeometry();
             using (var ctx = geometry.Open())
             {
                 ctx.BeginFigure(new Point(0, Bounds.Height), true);
                 for (int i = 0; i < n; i++)
-                    ctx.LineTo(new Point(xs[i], ValueToY(config.Scale.Project(offsets[i]), config.Scale)));
+                    ctx.LineTo(new Point(xs[i], NormalizedToY((values[i] - min) / range)));
                 ctx.LineTo(new Point(Bounds.Width, Bounds.Height));
                 ctx.EndFigure(true);
             }
