@@ -71,7 +71,6 @@ public class ParameterTabBarInsertGroupTests
             BaseValue = 0.5,
             MinValue = 0,
             MaxValue = 1,
-            Points = [],
         });
         slot.Automations.Add("3", entry);
 

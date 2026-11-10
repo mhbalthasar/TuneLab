@@ -151,7 +151,7 @@ internal static class IMidiPartExtension
             return false;
         }
 
-        // [EP-MIXER-AUTO] 插入效果器参数：条目存在即有效（config 现建，值轴 = 参数量程）。
+        // [EP-MIXER-AUTO] 插入效果器参数：条目存在即有效（config 现建，值轴 = 偏移空间 ±(Max−Min)）。
         if (key.IsInsert)
         {
             if (InsertAutomationCatalog.TryResolveEntry(part, key.Id, out var slot, out var entry))
@@ -216,8 +216,8 @@ internal static class IMidiPartExtension
     }
 
     // 取已存在的自动化数据对象（voice、对应 effect 或插入效果器参数），不存在返回 null。
-    // 插入来源返回适配视图（part 相对 tick + 实参值空间，见 InsertAutomationView）；
-    // 视图无状态可随用随建，调用方按手势持有即可。
+    // 插入来源的曲线住在 part 自己的自动化表里（按 part 分住、part 相对 tick）；条目存在但
+    // 这个 part 还没画过 → null（偏移恒 0，不干预）。
     public static IAutomation? GetEffectiveAutomation(this IMidiPart part, AutomationKey key)
     {
         if (key.IsNoteLane)
@@ -225,8 +225,9 @@ internal static class IMidiPartExtension
 
         if (key.IsInsert)
         {
-            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out var slot, out var entry)
-                ? new InsertAutomationView(part, entry)
+            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out _, out _)
+                && part.Automations.TryGetValue(key.Id, out var insertAutomation)
+                ? insertAutomation
                 : null;
         }
 
@@ -241,15 +242,17 @@ internal static class IMidiPartExtension
     }
 
     // 取或创建自动化数据对象（按需在对应来源里 Add）。
-    // 插入来源**不在此创建**：条目由效果器侧栏的「添加自动化」建（要问活实例拿参数清单与
-    // 量程），钢琴窗只编辑已存在的轨 —— 返回 null 时绘制操作自然不进入。
+    // 插入来源的"创建"= 给当前 part 建它自己的偏移曲线；条目本身由效果器侧栏的
+    // 「添加自动化」建（要问活实例拿参数清单与量程），钢琴窗只编辑已存在的条目。
     public static IAutomation? AddEffectiveAutomation(this IMidiPart part, AutomationKey key)
     {
         if (key.IsNoteLane)
             return null;
 
         if (key.IsInsert)
-            return part.GetEffectiveAutomation(key);
+            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out _, out _)
+                ? part.AddAutomation(key.Id)
+                : null;
 
         if (key.IsEffect)
             return key.EffectIndex < part.Effects.Count ? part.Effects[key.EffectIndex].AddAutomation(key.Id) : null;
@@ -306,13 +309,9 @@ internal static class IMidiPartExtension
         if (key.IsLane)
             return new double[ticks.Count];
 
-        // [EP-MIXER-AUTO] 插入来源：没有 vibrato 可叠，原始曲线 = 终值。
+        // [EP-MIXER-AUTO] 插入来源：没有 vibrato 可叠，原始曲线 = 终值（当前 part 的偏移量）。
         if (key.IsInsert)
-        {
-            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out _, out var entry)
-                ? InsertAutomationView.Evaluate(part, entry, ticks)
-                : new double[ticks.Count];
-        }
+            return GetInsertOffsets(part, key.Id, ticks);
 
         if (key.IsEffect)
         {
@@ -356,11 +355,7 @@ internal static class IMidiPartExtension
             return new double[ticks.Count];
 
         if (key.IsInsert)
-        {
-            return InsertAutomationCatalog.TryResolveEntry(part, key.Id, out _, out var entry)
-                ? InsertAutomationView.Evaluate(part, entry, ticks)
-                : new double[ticks.Count];
-        }
+            return GetInsertOffsets(part, key.Id, ticks);
 
         if (key.IsEffect)
         {
@@ -375,6 +370,16 @@ internal static class IMidiPartExtension
         }
 
         return part.GetFinalAutomationValues(ticks, key.Id);
+    }
+
+    // [EP-MIXER-AUTO] 插入来源：当前 part 的偏移曲线（part 相对 tick）。
+    // 条目不存在（已从侧栏删除）或这个 part 还没画过 → 全 0（不干预）。
+    static double[] GetInsertOffsets(IMidiPart part, string keyId, IReadOnlyList<double> ticks)
+    {
+        return InsertAutomationCatalog.TryResolveEntry(part, keyId, out _, out _)
+            && part.Automations.TryGetValue(keyId, out var insertAutomation)
+            ? insertAutomation.GetValues(ticks)
+            : new double[ticks.Count];
     }
 
     public static (int, int) PitchRange(this IMidiPart part)

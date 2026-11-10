@@ -128,6 +128,12 @@ internal partial class AutomationRenderer : View
 
         mDependency.PartHolder.Modified.Subscribe(InvalidateVisual, s);
         mDependency.PartHolder.When(p => p.Automations.Modified).Subscribe(InvalidateVisual, s);
+        // [EP-MIXER-AUTO] 插入参数自动化的曲线按 part 住（键 = "{slotId}:{paramId}"）：别的 part
+        // 改自己的 lane 也会改变本轨背景（真正值 = 所有 part 的偏移求和 + 基值、钳位）。
+        // IPart 没有 Automations（只有 IMidiPart 有），故逐 part 订；part 增删 / 换轨时重挂。
+        mDependency.PartHolder.Modified.Subscribe(ResubscribeAllPartsAutomations, s);
+        mDependency.PartHolder.When(p => p.Track.Project.Tracks.MembershipModified).Subscribe(ResubscribeAllPartsAutomations, s);
+        mDependency.PartHolder.When(p => p.Track.Project.Tracks.WhenAny(track => track.Parts.MembershipModified)).Subscribe(ResubscribeAllPartsAutomations, s);
         // 分段轨数据（voice 级在 part.PiecewiseAutomations、effect 级在各 effect.PiecewiseAutomations）编辑后重绘。
         mDependency.PartHolder.When(p => p.PiecewiseAutomations.Modified).Subscribe(InvalidateVisual, s);
         mDependency.PartHolder.When(p => p.Effects.WhenAny(effect => effect.PiecewiseAutomations.Modified)).Subscribe(InvalidateVisual, s);
@@ -168,11 +174,15 @@ internal partial class AutomationRenderer : View
         mDependency.PianoTool.Modified.Subscribe(UpdateAnchorValueInput, s);
         mDependency.ActiveAutomationChanged += InvalidateVisual;
         mDependency.ActiveAutomationChanged += UpdateAnchorValueInput;
+        mDependency.ActiveAutomationChanged += ResubscribeActiveInsertLane;
+        mDependency.PartHolder.Modified.Subscribe(ResubscribeActiveInsertLane, s);
         mDependency.VisibleAutomationChanged += InvalidateVisual;
         mDependency.SynthesizedParameterVisibilityChanged += InvalidateVisual;
         mDependency.TickAxis.AxisChanged += Update;
         mDependency.TickAxis.AxisChanged += UpdateAnchorValueInput;
         mDependency.PianoScrollView.RegionSelectionChanged += InvalidateVisual;   // 范围选区变化（任一区拖/清）→ 参数区重绘同一条 tick 带
+        ResubscribeAllPartsAutomations();
+        ResubscribeActiveInsertLane();
     }
 
     ~AutomationRenderer() => Detach();
@@ -185,6 +195,9 @@ internal partial class AutomationRenderer : View
         mDependency.PianoScrollView.RegionSelectionChanged -= InvalidateVisual;
         mDependency.ActiveAutomationChanged -= InvalidateVisual;
         mDependency.ActiveAutomationChanged -= UpdateAnchorValueInput;
+        mDependency.ActiveAutomationChanged -= ResubscribeActiveInsertLane;
+        mInsertLaneSubscriptions.DisposeAll();
+        mAllPartsAutomationSubscriptions.DisposeAll();
         mDependency.VisibleAutomationChanged -= InvalidateVisual;
         mDependency.SynthesizedParameterVisibilityChanged -= InvalidateVisual;
         mDependency.TickAxis.AxisChanged -= Update;
@@ -192,6 +205,41 @@ internal partial class AutomationRenderer : View
         mAnchorValueInput.GotFocus -= OnAnchorValueInputGotFocus;
         mAnchorValueInput.KeyDown -= OnAnchorValueInputKeyDown;
         mAnchorValueInput.PointerPressed -= OnAnchorValueInputPointerPressed;
+    }
+
+    // [EP-MIXER-AUTO] 激活的插入轨：基值变化（参数面板拖动 = 改基值）要实时重绘背景（真正值）。
+    // 条目（基值 / 量程）在槽位上，不在 part 的自动化表里，所以上面的 part 订阅覆盖不到它。
+    // 随激活轨 / 编辑 part 变化重挂；只订**激活**轨——背景只画激活轨（用户口径）。
+    void ResubscribeActiveInsertLane()
+    {
+        mInsertLaneSubscriptions.DisposeAll();
+
+        if (Part == null || mDependency.ActiveAutomation is not { } active || !active.IsInsert)
+            return;
+
+        if (!InsertAutomationCatalog.TryResolveEntry(Part, active.Id, out _, out var entry))
+            return;
+
+        entry.BaseValue.Modified.AsEverytime().Subscribe(_ => InvalidateVisual(), mInsertLaneSubscriptions);
+    }
+
+    // [EP-MIXER-AUTO] 全工程 part 的自动化表订阅：插入参数自动化的曲线按 part 住，任一 part 的
+    // 曲线变化都影响激活轨背景（真正值 = 所有 part 求和）。part 增删 / 换轨时重挂，避免订到已删的 part。
+    void ResubscribeAllPartsAutomations()
+    {
+        mAllPartsAutomationSubscriptions.DisposeAll();
+
+        if (Part == null)
+            return;
+
+        foreach (var track in Part.Track.Project.Tracks)
+        {
+            foreach (var part in track.Parts)
+            {
+                if (part is IMidiPart midiPart)
+                    midiPart.Automations.Modified.Subscribe(InvalidateVisual, mAllPartsAutomationSubscriptions);
+            }
+        }
     }
 
     protected override Size ArrangeOverride(Size finalSize)
@@ -252,7 +300,7 @@ internal partial class AutomationRenderer : View
             else if (Part.IsEffectivePhonemeLane(automationID))
                 DrawPhonemeLane(automationID, isActive);
             else if (Part.IsEffectiveAutomation(automationID))
-                DrawContinuous(automationID);
+                DrawContinuous(automationID, isActive);
             else if (Part.IsEffectivePiecewiseAutomation(automationID))
             {
                 // 二值区间轨（分段 + 退化量程）渲染为满高色带，而非折线（值轴无意义、presence 即开关）。
@@ -358,9 +406,15 @@ internal partial class AutomationRenderer : View
             }
         }
 
-        void DrawContinuous(AutomationKey automationID)
+        void DrawContinuous(AutomationKey automationID, bool isActive)
         {
             var config = Part.GetEffectiveAutomationConfig(automationID);
+
+            // [EP-MIXER-AUTO] 插入来源的激活轨：先画"真正值"背景（同轴填充），再画本 part 的偏移曲线。
+            // 背景 = 所有 part 的偏移求和 + 基值、钳位后的**实际生效值**（相对基值的偏移，落在 ±range 轴上）；
+            // 曲线 = 本 part 自己的偏移（未钳位）。无钳位时两者重合，钳位时填充顶停住、曲线继续。
+            if (isActive && automationID.IsInsert)
+                DrawInsertTrueValueBackground(automationID, config);
 
             double[] values = Part.GetFinalAutomationValues(ticks, automationID);
 
@@ -372,6 +426,38 @@ internal partial class AutomationRenderer : View
             }
 
             context.DrawCurve(points, ColorUtils.ParseOrFallback(config.Color), lineWidth);
+        }
+
+        // 插入参数自动化的"真正值"背景（只读）：从 lane 底部填充到 clamp(基值 + Σ所有 part 的偏移) − 基值。
+        // 同轴口径（用户选）：填充顶落在曲线用的同一根 ±range 偏移轴上，所以"填充顶 = 所有 part 求和后的
+        // 实际偏移"，与单条曲线（本 part 的偏移）可直接比较；钳位时填充顶停在 [Min−基值, Max−基值]。
+        void DrawInsertTrueValueBackground(AutomationKey automationID, AutomationConfig config)
+        {
+            if (Part?.Track.Project is not Project project)
+                return;
+
+            if (!InsertAutomationCatalog.TryResolveEntry(Part, automationID.Id, out _, out var entry))
+                return;
+
+            // 参数区是 part 相对 tick；背景求值要工程绝对 tick（各 part 的曲线按自己的 Pos 平移）。
+            var absolute = new double[n];
+            double partPos = Part.Pos.Value;
+            for (int i = 0; i < n; i++)
+                absolute[i] = ticks[i] + partPos;
+
+            double[] offsets = InsertAutomationCatalog.EvaluateTrueOffset(project, automationID.Id, entry, absolute);
+
+            var geometry = new StreamGeometry();
+            using (var ctx = geometry.Open())
+            {
+                ctx.BeginFigure(new Point(0, Bounds.Height), true);
+                for (int i = 0; i < n; i++)
+                    ctx.LineTo(new Point(xs[i], ValueToY(config.Scale.Project(offsets[i]), config.Scale)));
+                ctx.LineTo(new Point(Bounds.Width, Bounds.Height));
+                ctx.EndFigure(true);
+            }
+
+            context.DrawGeometry(ColorUtils.ParseOrFallback(config.Color).Opacity(0.20).ToBrush(), null, geometry);
         }
 
         void DrawPiecewise(AutomationKey automationID)
@@ -989,6 +1075,10 @@ internal partial class AutomationRenderer : View
 
     readonly IDependency mDependency;
     readonly DisposableManager s = new();
+    // 激活插入轨的条目订阅（基值在槽位上，不在 part 的自动化表里，随激活轨重挂）。
+    readonly DisposableManager mInsertLaneSubscriptions = new();
+    // 全工程 part 的自动化表订阅（插入曲线按 part 住，背景要跟着所有 part 求和）。
+    readonly DisposableManager mAllPartsAutomationSubscriptions = new();
     readonly TextInput mAnchorValueInput;
     bool mIgnoreAnchorValueInputEndInput = false;
 

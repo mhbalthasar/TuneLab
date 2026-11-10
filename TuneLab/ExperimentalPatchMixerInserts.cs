@@ -278,7 +278,12 @@ internal sealed class InsertInstanceFactory
         ClearFailure(slotId);
 
         // [EP-MIXER-AUTO] 自动化登记同样随槽位走（下一次编译按数据重建）。
-        mAutomations.Remove(slotId);
+        // 绑定订着工程 / part 级事件，摘表时必须退订。
+        if (mAutomations.Remove(slotId, out var automations))
+        {
+            foreach (var binding in automations.Values)
+                binding.Dispose();
+        }
 
         if (!mLive.Remove(slotId, out var insert))
             return;
@@ -299,6 +304,15 @@ internal sealed class InsertInstanceFactory
 
         foreach (var id in mLive.Keys.ToArray())
             Release(id);
+
+        // 没有活实例的槽位（加载失败 / 旁通）也可能登记过（空表或旧绑定）。
+        foreach (var map in mAutomations.Values)
+        {
+            foreach (var binding in map.Values)
+                binding.Dispose();
+        }
+
+        mAutomations.Clear();
     }
 
     // ── [EP-MIXER-AUTO] 参数自动化登记与"面板改基值"的接管 ──
@@ -309,6 +323,14 @@ internal sealed class InsertInstanceFactory
 
     internal void RegisterAutomations(string slotId, IReadOnlyList<MixerAutomation.Binding> bindings)
     {
+        // 上一次编译的绑定要先退订：它们订着基值与工程 / part 级事件（曲线按 part 住），
+        // 只换表不 Dispose 会让旧绑定一直活着，跟着每次曲线编辑重取快照（越编越多）。
+        if (mAutomations.Remove(slotId, out var old))
+        {
+            foreach (var binding in old.Values)
+                binding.Dispose();
+        }
+
         var map = new Dictionary<long, MixerAutomation.Binding>(bindings.Count);
 
         foreach (var binding in bindings)

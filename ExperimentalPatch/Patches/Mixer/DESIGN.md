@@ -1661,29 +1661,39 @@ VST3 的 `ActualInputChannels` 语义未验证 → 标实验性，VST2 是主路
 
 把通道插入效果器的参数交给时间曲线，分两期落地。接驳点带 `EP-MIXER-AUTO` / `EP-MIXER-2期` 标记。
 
-### 14.1 数据与语义（一期）
+### 14.1 数据与语义
 
 | 项 | 决定 |
 |---|---|
-| 存哪 | `InsertSlot.Automations`（`DataObjectMap<string, InsertSlotAutomation>`），随槽位 undo / 落盘（`InsertDto.Automations`，锚点用带属性的 `AutomationAnchorDto`——`Foundation.Point` 是字段型 JSON 会丢） |
-| 曲线存什么 | **偏移量**（叠加语义）：生效值 = clamp(基值 + Hermite(偏移)(tick), 参数 Min, Max)。曲线 `Automation.DefaultValue` 恒 0，"零点 = 不干预" |
-| 时间空间 | 锚点 Pos 是**工程绝对 tick**（Master / AUX 链不属于任何 part） |
+| 条目存哪 | `InsertSlot.Automations`（`DataObjectMap<string, InsertSlotAutomation>`）：只存**基值 + 参数量程**，随槽位 undo / 落盘（`InsertDto.Automations`） |
+| 曲线存哪 | **每个 part 各一条**，住在 `MidiPart.Automations`，键 = `"{slotId}:{paramId}"`（即 `AutomationKey.Id`）。part 的 `MidiPartInfo.Automations` 本来就持久化任意键、part 相对 tick、随 part 移动 / 删除，undo 走 part 栈——不需要给 part 发明持久 id，也不动 SDK DTO |
+| 曲线存什么 | **偏移量**（叠加语义）：生效值 = clamp(基值 + Σ各 part 偏移(tick), 参数 Min, Max)。`Automation.DefaultValue` 恒 0，"零点 = 不干预" |
+| 多 part | 同一参数可被多个 part 控制（AUX / Master 链尤其如此）：每条曲线各画各的 lane，求**和**后叠加。每个 part 的曲线只在**该 part 的时域**（`StartPos`..`EndPos`）内贡献——否则端点值会一直延伸到全曲、串到别的 part 上 |
+| 时间空间 | 曲线锚点 Pos 是 **part 相对 tick**（与 part 的其它自动化同一空间）；音频 / 背景求值时按 `part.Pos` 平移到工程 tick |
 | 基值 | = 面板当前值；自动化激活期间面板改动写基值（不直接写插件），叠加关系不变。插件 GUI 里的改动拦不住、会被覆盖（v1 已知限制） |
-| 音频路径 | `MixerAutomation.Binding`：编译期（图构建）冻结锚点快照，每块块首求值推送（值变才推、失败下块重试）；`Curve.Modified` → 快照重建。时间映射走 `Mixer.TimeMapper`（tempo / 采样率变化由 `ProjectDocument` 重建） |
+| 音频路径 | `MixerAutomation.Binding`：编译期（图构建）冻结 `(partPos, partStart, partEnd, Point[])` 快照，每块块首求和后推送（值变才推、失败下块重试）。订阅基值、每个 part 的 `Automations.Modified` / `Pos` / `StartOffset` / `EndOffset`、part / 轨道成员变化 → 重取快照。时间映射走 `Mixer.TimeMapper`（tempo / 采样率变化由 `ProjectDocument` 重建） |
 | 条目从哪建 | 效果器侧栏「添加自动化」三级菜单（音流通道 → FX → 线性参数）。选择型参数不进菜单：JSFX 用 `ysfx_slider_is_enum`，CLAP 用 `CLAP_PARAM_IS_STEPPED`；VST2/VST3 无元数据，暂报线性 |
+| 删条目 | 只摘槽位节点；各 part 的曲线保留为**休眠数据**（无节点即不生效）。重新添加同一参数恢复原曲线；避免"删一个条目产生 N 个 part 的多步 undo" |
 
-### 14.2 钢琴窗 lane（二期）
+### 14.2 钢琴窗 lane
 
 - **key 形状**：`AutomationKey.Insert("{slotId}:{paramId}")`——slotId 全工程唯一、通道归属由槽位自带，全工程按槽位 id 找回（`InsertAutomationCatalog`）。`EffectIndex` 恒 -1。
-- **适配视图** `InsertAutomationView`：参数区整个工作在 part 相对 tick 空间、lane 值轴要显示**实参**（钳位后的基值+偏移），视图做两重翻译——tick 平移（±part.Pos，live 读）、值空间（呈现 DefaultValue = 基值本尊，渲染器的"锚点绝对值 = 锚点偏移 + DefaultValue"口径正好落在加性语义上）。`GetValues = clamp(基值 + Hermite(偏移))`，**与音频线程逐位同一公式**——画出来的就是听到的。
-- **无状态**：视图不订阅任何事件、可随用随建（渲染器每帧只走静态 `Evaluate`，不建实例）。锚点以 `PresentedAnchor`（`AnchorPoint` 的 Pos/Value/IsSelected 已 virtual）live 投影，选中态转发回存储锚点，跨手势与既有轨一致。
-- **路由**：`IMidiPartExtension` 的 `TryGetSourceConfig` / `GetEffectiveAutomation` / `GetFinalAutomationValues` 各加 Insert 分支；条目由侧栏创建，钢琴窗**只编辑不创建**（`AddEffectiveAutomation` 对 Insert 直接返回已存在的）。
-- **lane config**：值轴 = 参数量程（建条目时从活实例抄进 `MinValue/MaxValue` 落盘——重开工程、图未编译时轴也正确）；颜色按 keyId 的稳定哈希从调色板取（`TrackColors.PickBySeed`；`string.GetHashCode` 进程随机化，不能用）。
+- **无适配视图**：曲线就是真实的 `Automation`（part 相对 tick、偏移量），渲染器 / 编辑原语 / 锚点选中态直接作用在真数据上，不需要 `InsertAutomationView` 那层投影。
+- **值空间 = 偏移量**：lane 轴 = `[-(Max−Min), +(Max−Min)]`，默认 0（`BuildLaneConfig`）。`[0,100] → [-100,100]`，`[-50,100] → [-150,150]`。画点 / 拖拽 / 存储 / 音频求值全在同一空间——**跟手**。
+- **真正值背景（同轴）**：激活的插入 lane 在曲线之前画一块半透明填充，从 lane 底部填到
+  `clamp(基值 + Σ各 part 偏移, Min, Max) − 基值`。它落在**同一根偏移轴**上，所以填充顶 = 所有 part 求和后的实际偏移（已钳位），曲线 = 本 part 的偏移（未钳位）；无钳位时两者重合，钳位时填充顶停住、曲线继续。背景只画**激活轨**。
+- **路由**：`IMidiPartExtension` 的 `TryGetSourceConfig` / `GetEffectiveAutomation` / `GetFinalAutomationValues` 各加 Insert 分支。语义分流：`GetEffectiveAutomation` 插入键返回已有曲线或 null（**不创建**——悬浮 / 收集锚点路径会调它）；`AddEffectiveAutomation` 创建（绘制路径的 `?? Add` 入口）；`GetEffective/GetFinalAutomationValues` 返回偏移，无曲线返回全 0。`MidiPart.AddAutomation` 先判声源声明（voice 优先），再判 `InsertAutomationCatalog.TryResolveEntry` 命中则建默认 0 的曲线。
+- **lane config**：量程在建条目时从活实例抄进 `MinValue/MaxValue` 落盘——重开工程、图未编译时轴也正确；颜色按 keyId 的稳定哈希从调色板取（`TrackColors.PickBySeed`；`string.GetHashCode` 进程随机化，不能用）。
 - **UI 接线**：tab 栏在 voice/effect 之后加一组（当前轨道音流所经通道上已建条目）。两条订阅：**链成员变化**
   （轨道 / AUX / Master 的 `Inserts` MembershipModified——混音台后挂或删 FX、undo 都要立刻反映）与各槽位
   `Automations.MapModified`（条目增删），都随每次重置收掉重挂；vibrato ghost / 关联颤音对 Insert 排除
   （颤音是声源装饰）；面板布局按 `"insert"` 来源持久化。**已知限制**：音流图本身变化（改 output / 增删 send）
   不触发本组重建，下次切 part 才刷新（侧栏同款行为）。
+- **重绘订阅**：基值（槽位条目）单独订激活轨的 `BaseValue.Modified`；曲线内容由 part 自己的
+  `Automations.Modified`（本 part）+ 全工程逐 part 的 `Automations.Modified`（别的 part 影响求和背景）覆盖。
+- **旧数据迁移**：二期首版把单条全局曲线存在槽位 DTO 里（工程绝对 tick）。装载时迁到"最可能的 part"
+  ——轨道槽位 → 该轨第一个 part；AUX / Master → 全工程第一个 part；`Pos -= part.Pos`。无 part 可迁则丢弃并告警。
+  新存档的槽位 `Points` 恒空。
 - **已知限制**：清空（Clear）沿用既有轨语义（区域两端补默认锚点）；基值改动使钳位段形状轻微变化（与一期一致）。
 
 

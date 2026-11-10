@@ -1,27 +1,24 @@
-using System.Collections.Generic;
 using TuneLab.Foundation;
 using TuneLab.SDK;
 
 namespace TuneLab.Data;
 
-// 一个插入效果器参数的自动化条目：曲线 + 基值 + 参数量程，挂在 InsertSlot 上（随槽位 undo / 落盘）。
+// 一个插入效果器参数的自动化条目：基值 + 参数量程，挂在 InsertSlot 上（随槽位 undo / 落盘）。
 //
-// 【加性语义】曲线存的是**偏移量**（相对基值的叠加量），不是参数的最终值：
-//   实际生效值 = clamp(BaseValue + 曲线值(tick), MinValue, MaxValue)
-// 曲线的"零点"就是"不干预"：Automation.DefaultValue 恒 0，锚点值直接是偏移量。
+// 【加性语义】每个 part 各有一条**偏移曲线**（住在 part.Automations 里，键 = "{slotId}:{paramId}"，
+// 见 InsertAutomationCatalog），真正生效值 = 各 part 曲线求和后再叠加基值：
+//   实际生效值 = clamp(BaseValue + Σ_part 曲线值(tick), MinValue, MaxValue)
+// 曲线存的是**偏移量**（相对基值的叠加量），不是参数的最终值；"零点" = "这个 part 不干预"。
 // 基值 = 用户在参数面板里设的那个值；面板在自动化接管期间改动 = 改基值（见
 // InsertInstanceFactory 的自动化登记与参数面板的写入路径），叠加关系不变。
 //
-// 【时间空间】锚点 Pos 是**工程绝对 tick**（与 TempoManager 同一坐标系）：Master / AUX
-// 链不属于任何 part，part 相对空间没有意义。渲染 / 求值都经 TempoManager 换算；钢琴窗
-// 参数区（part 相对空间）经 InsertAutomationView 适配。
+// 【为什么曲线按 part 存】AUX / Master 链不属于任何 part：多条轨的 part 都可能是它的
+// 控制者，每个 part 各画各的 lane、求和生效（同一条轨的多个 part 亦然）。曲线住在 part 上，
+// 天然随 part 移动（part 相对 tick）/ 删除 / undo，也让"同一参数被多个 part 控制"不需要
+// 稳定的 part 身份落盘（part 没有持久 id）。
 //
 // 【量程】建条目时从活实例抄一份参数的 Min/Max：钢琴窗 lane 的值轴、锚点钳位都不能依赖
 // "实例此刻活着"（重开工程、图还没编译时 lane 也得有正确的轴）。
-//
-// 【曲线数学】直接复用 Automation（part = null）：锚点插值、编辑原语、undo 命令全套继承。
-// 曲线对象的父对象是本条目 —— 编辑产生的 undo 命令沿父链进工程撤销栈，与增删条目合成
-// 各自独立的一步。
 internal class InsertSlotAutomation : DataObject
 {
     public InsertSlotAutomation(DataObject parent, string paramId) : base(parent)
@@ -30,7 +27,6 @@ internal class InsertSlotAutomation : DataObject
         BaseValue = new(this);
         MinValue = new(this);
         MaxValue = new(this);
-        Curve = new(null, new AutomationInfo(), this);
     }
 
     // 插件参数 id（字符串化的 long：映射键必须是字符串）。
@@ -43,20 +39,12 @@ internal class InsertSlotAutomation : DataObject
     public DataStruct<double> MinValue { get; }
     public DataStruct<double> MaxValue { get; }
 
-    // 偏移曲线。DefaultValue 恒 0 —— 偏移语义下"默认 = 不干预"。
-    public Automation Curve { get; }
-
-    // 偏移量取值（单个 tick，无分配；给音频线程的绑定快照用不上 —— 那边走冻结数组，
-    // 这边给 UI / 停止态的即时应用用）。
-    public double OffsetAt(double tick) => Curve.GetValues([tick])[0];
-
     public InsertSlotAutomationInfo GetInfo() => new()
     {
         ParamId = ParamId,
         BaseValue = BaseValue,
         MinValue = MinValue,
         MaxValue = MaxValue,
-        Points = Curve.GetInfo().Points,
     };
 
     public void SetInfo(InsertSlotAutomationInfo info)
@@ -64,17 +52,17 @@ internal class InsertSlotAutomation : DataObject
         BaseValue.SetInfo(info.BaseValue);
         MinValue.SetInfo(info.MinValue);
         MaxValue.SetInfo(info.MaxValue);
-        // 曲线的 DefaultValue 恒 0（偏移语义），不落盘不回读。
-        Curve.SetInfo(new AutomationInfo { DefaultValue = 0, Points = info.Points });
+        // 条目只承载基值 / 量程；曲线按 part 住（见 InsertAutomationCatalog）。
     }
 }
 
-// 落盘载荷（InsertDto.Automations 的元素）。Points = 工程绝对 tick + 偏移量。
+// 条目的信息载荷。二期首版的全局曲线（工程绝对 tick）是**落盘 DTO** 的遗留字段
+// （InsertAutomationDto.Points），装载时由 ExperimentalPatchMixerPersistence.MigrateLegacyCurve
+// 迁进 part 曲线；这里的条目信息里不再有曲线。
 internal class InsertSlotAutomationInfo
 {
     public string ParamId { get; set; } = string.Empty;
     public double BaseValue { get; set; }
     public double MinValue { get; set; }
     public double MaxValue { get; set; }
-    public List<Point> Points { get; set; } = [];
 }

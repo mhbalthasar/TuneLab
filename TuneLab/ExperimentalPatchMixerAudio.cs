@@ -40,6 +40,11 @@ internal sealed class MixerGraphCompiler
         var trackList = tracks.ToList();
         var auxList = auxes.ToList();
 
+        // [EP-MIXER-AUTO] 插入自动化的曲线按 part 住（part 相对 tick），绑定要枚举工程里的 part
+        // 求和。轨道对象就是数据层的 Track（ITrack : IAudioTrack），工程从任意一条轨取；
+        // 空工程没有 part，传 null 不影响（没有曲线可求和）。
+        Project? project = trackList.OfType<ITrack>().FirstOrDefault()?.Project as Project;
+
         var trackStates = new List<TrackChannelState>(trackList.Count);
         var auxStates = new List<AuxChannelState>(auxList.Count);
 
@@ -51,7 +56,7 @@ internal sealed class MixerGraphCompiler
 
         var masterSlots = masterInserts ?? [];
         var masterAutomations = new List<MixAutomationBinding>();
-        var masterChain = BuildInserts("master", masterSlots, masterAutomations);
+        var masterChain = BuildInserts("master", masterSlots, project, masterAutomations);
         chains["master"] = masterChain;
 
         var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(masterPhaseInvert),
@@ -78,7 +83,7 @@ internal sealed class MixerGraphCompiler
             auxStates.Add(state);
 
             var auxAutomations = new List<MixAutomationBinding>();
-            var chain = BuildInserts(aux.Id, aux.Inserts, auxAutomations);
+            var chain = BuildInserts(aux.Id, aux.Inserts, project, auxAutomations);
             chains[aux.Id] = chain;
             nodes[aux.Id] = builder.AddNode(aux.Id, MixNodeKind.Aux, state, null, chain);
             nodes[aux.Id].AddAutomations(auxAutomations);
@@ -92,7 +97,7 @@ internal sealed class MixerGraphCompiler
 
             string id = "track-" + i;
             var trackAutomations = new List<MixAutomationBinding>();
-            var chain = BuildInserts(id, track.Inserts, trackAutomations);
+            var chain = BuildInserts(id, track.Inserts, project, trackAutomations);
             chains[id] = chain;
 
             var node = builder.AddNode(id, MixNodeKind.Track, state, new TrackMixSource(graph, track), chain);
@@ -179,7 +184,8 @@ internal sealed class MixerGraphCompiler
         // ignoreMuteSolo: 导出分轨与旧路径 AddData 一致 —— 静音/solo 不改变导出内容。
         var state = new TrackChannelState(track, ignoreMuteSolo: true);
         var exportAutomations = new List<MixAutomationBinding>();
-        var chain = BuildInserts("track-export", track.Inserts, exportAutomations);
+        Project? project = (track as ITrack)?.Project as Project;
+        var chain = BuildInserts("track-export", track.Inserts, project, exportAutomations);
         var node = builder.AddNode("track-export", MixNodeKind.Track, state, new TrackMixSource(graph, track), chain);
         node.AddAutomations(exportAutomations);
 
@@ -278,7 +284,7 @@ internal sealed class MixerGraphCompiler
     // [EP-MIXER-AUTO] 顺带把槽位上的参数自动化条目变成图绑定（automations），
     // 并登记进工厂（参数面板的"改基值"路径要按槽位找到条目）。绑定的 evaluate/push
     // 闭包捕获的是**裸插件实例**（湿/干、增益包装不影响参数语义）。
-    static List<IMixInsert> BuildInserts(string channelId, IReadOnlyList<InsertSlot> slots,
+    static List<IMixInsert> BuildInserts(string channelId, IReadOnlyList<InsertSlot> slots, Project? project,
         List<MixAutomationBinding>? automations = null)
     {
         if (slots.Count == 0)
@@ -296,6 +302,10 @@ internal sealed class MixerGraphCompiler
             {
                 // 旁通的槽位连实例都不建：插件白加载一次只是浪费，
                 // 而"旁通时不碰插件"还顺手避开了"旁通时插件还在跑"的 CPU 开销。
+                // 自动化登记同时清空（旧绑定退订）：旁通期间面板不该再以为参数被接管。
+                if (automations != null)
+                    factory.RegisterAutomations(slot.Id, []);
+
                 chain.Add(new BypassedInsert(slot.Name.Value, slot.Format));
                 continue;
             }
@@ -305,6 +315,11 @@ internal sealed class MixerGraphCompiler
             if (insert == null)
             {
                 HostLog.Warning($"mixer: insert '{slot.Name.Value}' on {channelId} is unavailable ({reason}); passing through");
+
+                // 实例不在 = 没有可推送的目标；旧绑定（如果有）要退订。
+                if (automations != null)
+                    factory.RegisterAutomations(slot.Id, []);
+
                 chain.Add(new BypassedInsert(slot.Name.Value, slot.Format));
                 continue;
             }
@@ -335,13 +350,13 @@ internal sealed class MixerGraphCompiler
 
             // [EP-MIXER-AUTO] 参数自动化：建绑定 + 登记（自动化的推送走**裸插件**，
             // 与包装器无关 —— 包装层只是混音语义，不碰插件参数）。
-            if (slot.Automations.Count > 0 && automations != null)
+            // 无条件登记（哪怕是空表）：RegisterAutomations 会先 Dispose 上一次编译的绑定
+            // —— 绑定订着工程 / part 级事件，光换表不退订会让旧绑定一直活着、跟着每次曲线编辑重取快照。
+            if (automations != null)
             {
-                var slotBindings = MixerAutomation.BuildBindings(slot, insert, out var hostBindings);
+                var slotBindings = MixerAutomation.BuildBindings(slot, insert, project, out var hostBindings);
                 automations.AddRange(slotBindings);
-
-                if (hostBindings.Count > 0)
-                    factory.RegisterAutomations(slot.Id, hostBindings);
+                factory.RegisterAutomations(slot.Id, hostBindings);
             }
 
             chain.Add(wrapped);

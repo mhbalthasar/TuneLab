@@ -877,13 +877,25 @@ internal class MidiPart : Part, IMidiPart
         if (mAutomations.TryGetValue(automationID, out var value))
             return value;
 
-        if (!IsEffectiveAutomation(automationID))
-            return null;
+        if (IsEffectiveAutomation(automationID))
+        {
+            var config = GetEffectiveAutomationConfig(automationID);
+            var automation = CreateAutomation(automationID, new() { DefaultValue = config.DefaultValue });
+            mAutomations.Add(automationID, automation);
+            return automation;
+        }
 
-        var config = GetEffectiveAutomationConfig(automationID);
-        var automation = CreateAutomation(automationID, new() { DefaultValue = config.DefaultValue });
-        mAutomations.Add(automationID, automation);
-        return automation;
+        // [EP-MIXER-AUTO] 插入参数自动化的"分轨曲线"也住在这张表里（键 = "{slotId}:{paramId}"）：
+        // 条目（基值 / 量程）在槽位上，曲线按 part 分住 —— 随 part 移动 / 删除，undo 走 part 栈。
+        // 只在条目确实存在时接受（未声明的 voice id 仍返回 null，不在这里兜底）。
+        if (InsertAutomationCatalog.TryResolveEntry(this, automationID, out _, out _))
+        {
+            var insertAutomation = CreateAutomation(automationID, new() { DefaultValue = 0 });
+            mAutomations.Add(automationID, insertAutomation);
+            return insertAutomation;
+        }
+
+        return null;
     }
 
     public bool IsEffectiveAutomation(string id)

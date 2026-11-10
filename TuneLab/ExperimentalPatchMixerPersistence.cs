@@ -7,6 +7,7 @@ using TuneLab.Audio;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.Foundation;
+using TuneLab.SDK;
 using HostLog = TuneLab.Foundation.Log;
 
 namespace TuneLab;
@@ -216,7 +217,7 @@ internal static class MixerPersistence
             aux.TrimDb.SetInfo(dto.TrimDb);
             aux.PhaseInvert.SetInfo(dto.PhaseInvert);
             aux.HpfHz.SetInfo(dto.HpfHz);
-            ApplyInserts(aux.Inserts, dto.Inserts);
+            ApplyInserts(project, null, aux.Inserts, dto.Inserts);
             ApplySends(aux.Sends, dto.Sends);
 
             auxes[dto.Id] = aux;
@@ -252,7 +253,7 @@ internal static class MixerPersistence
             track.TrimDb.SetInfo(dto.TrimDb);
             track.PhaseInvert.SetInfo(dto.PhaseInvert);
             track.HpfHz.SetInfo(dto.HpfHz);
-            ApplyInserts((DataObjectList<InsertSlot>)track.Inserts, dto.Inserts);
+            ApplyInserts(project, track, (DataObjectList<InsertSlot>)track.Inserts, dto.Inserts);
             ApplySends((DataObjectList<Send>)track.Sends, dto.Sends);
             matched++;
         }
@@ -261,7 +262,7 @@ internal static class MixerPersistence
             HostLog.Warning($"mixer: {dropped} track(s) in the routing sidecar had no match; their routing was dropped");
 
         // Master 的插入链：与轨道 / AUX 同一套装载。
-        ApplyInserts(project.MasterInserts, payload.MasterInserts);
+        ApplyInserts(project, null, project.MasterInserts, payload.MasterInserts);
 
         // [EP-MIXER-28] Master 的 Ø。老文件没有该字段 → false（默认不反相）。
         project.MasterPhaseInvert.SetInfo(payload.MasterPhaseInvert);
@@ -311,7 +312,7 @@ internal static class MixerPersistence
 
     // 插入槽位的装载。与 send 的区别：plugins 是**按 id 原样重建**的（不像轨道路由
     // 需要重新对上）—— id 是我们自己生成的 GUID，不依赖宿主的任何顺序或命名。
-    static void ApplyInserts(DataObjectList<InsertSlot> list, List<InsertDto>? dtos)
+    static void ApplyInserts(Project project, ITrack? ownerTrack, DataObjectList<InsertSlot> list, List<InsertDto>? dtos)
     {
         if (dtos == null)
             return;
@@ -338,9 +339,6 @@ internal static class MixerPersistence
             // [EP-MIXER-27] 侧链源。老工程没有 → 空串 = 没有侧链。
             slot.SidechainId.SetInfo(dto.SidechainId ?? string.Empty);
 
-            // [EP-MIXER-AUTO] 参数自动化。老工程没有这个键 → 原样没有。
-            ApplyAutomations(slot, dto.Automations);
-
             if (!string.IsNullOrEmpty(dto.State))
             {
                 try
@@ -356,6 +354,12 @@ internal static class MixerPersistence
             }
 
             list.Add(slot);
+
+            // [EP-MIXER-AUTO] 参数自动化。老工程没有这个键 → 原样没有。
+            // 必须排在 list.Add 之后：旧曲线迁移要给 part 建曲线，而 AddAutomation 会按
+            // slotId 全工程找回条目（见 InsertAutomationCatalog.TryResolveEntry）——
+            // 槽位还没进列表时找不到，迁移会被静默丢弃。
+            ApplyAutomations(project, ownerTrack, slot, dto.Automations);
         }
     }
 
@@ -463,14 +467,15 @@ internal static class MixerPersistence
                 BaseValue = info.BaseValue,
                 MinValue = info.MinValue,
                 MaxValue = info.MaxValue,
-                Points = info.Points.Select(p => new AutomationAnchorDto { Pos = p.X, Value = p.Y }).ToList(),
+                // 曲线按 part 住（part 自己的自动化表，随 part 落盘）。这里不再写 Points；
+                // 读到旧工程的 Points 时由 MigrateLegacyCurve 迁进 part 曲线。
             });
         }
 
         return list;
     }
 
-    static void ApplyAutomations(InsertSlot slot, List<InsertAutomationDto>? dtos)
+    static void ApplyAutomations(Project project, ITrack? ownerTrack, InsertSlot slot, List<InsertAutomationDto>? dtos)
     {
         if (dtos == null || dtos.Count == 0)
             return;
@@ -487,10 +492,49 @@ internal static class MixerPersistence
                 BaseValue = dto.BaseValue,
                 MinValue = dto.MinValue,
                 MaxValue = dto.MaxValue,
-                Points = dto.Points?.Select(p => new Point(p.Pos, p.Value)).ToList() ?? [],
+                // 曲线按 part 住（见 MigrateLegacyCurve）；Points 只用于读二期首版的旧工程。
             });
             slot.Automations.Add(dto.ParamId, entry);
+
+            if (dto.Points is { Count: > 0 })
+                MigrateLegacyCurve(project, ownerTrack, slot, dto);
         }
+    }
+
+    // 二期首版把单条全局曲线存在槽位 DTO 里（**工程绝对 tick**）。新版曲线按 part 分住：
+    // 迁移给"最可能画它的那个 part"——轨道槽位给该轨第一个 part，AUX / Master 给全工程
+    // 第一个 part（旧版数据只可能来自用户实际画过的 part，这里是无从追溯时的最佳猜测）。
+    // 坐标同时换成 part 相对 tick（曲线住在 part 上，随 part 移动）。
+    static void MigrateLegacyCurve(Project project, ITrack? ownerTrack, InsertSlot slot, InsertAutomationDto dto)
+    {
+        if (!long.TryParse(dto.ParamId, out long parameterId))
+            return;
+
+        IMidiPart? part = ownerTrack?.Parts.OfType<IMidiPart>().FirstOrDefault()
+            ?? project.Tracks.SelectMany(track => track.Parts).OfType<IMidiPart>().FirstOrDefault();
+
+        if (part == null)
+        {
+            HostLog.Warning($"mixer: a legacy automation curve of '{slot.Name.Value}' has no part to migrate to; dropped");
+            return;
+        }
+
+        string keyId = InsertAutomationCatalog.MakeKeyId(slot.Id, parameterId);
+        var curve = part.AddAutomation(keyId);
+
+        if (curve == null)
+        {
+            HostLog.Warning($"mixer: a legacy automation curve of '{slot.Name.Value}' could not be attached to a part; dropped");
+            return;
+        }
+
+        double pos = part.Pos.Value;
+        curve.SetInfo(new AutomationInfo
+        {
+            DefaultValue = 0,
+            Points = dto.Points!.Select(p => new Point(p.Pos - pos, p.Value)).ToList(),
+        });
+        HostLog.Info($"mixer: migrated a legacy automation curve of '{slot.Name.Value}' to a part");
     }
 
     static MixerPin ParsePin(string? value)

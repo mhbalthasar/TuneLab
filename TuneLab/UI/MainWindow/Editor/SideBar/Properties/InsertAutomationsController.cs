@@ -21,9 +21,10 @@ namespace TuneLab.UI;
 //
 // 一条通道的插入效果器（VST3 / VST2 / CLAP / JSFX）的线性参数可以挂自动化曲线：
 // 「+ 添加」弹出三级菜单 —— 通道（当前音频流经的、带效果器的）→ 效果器 → 线性参数；
-// 选定后在列表里加一条，曲线数据挂在对应的 InsertSlot 上（undo / 落盘 / 随槽位走）。
+// 选定后在列表里加一条条目（基值 / 量程，随槽位 undo / 落盘），曲线按 part 分住
+//（键 = "{slotId}:{paramId}"，见 InsertAutomationCatalog / MidiPart.Automations）。
 //
-// 【加性语义】曲线存的是偏移量：实际生效值 = clamp(基值 + 偏移(tick), 参数 Min, 参数 Max)。
+// 【加性语义】每条 part 曲线存的是偏移量：实际生效值 = clamp(基值 + Σ各 part 偏移(tick), 参数 Min, 参数 Max)。
 // 基值 = 参数面板里的值；自动化接管期间面板改动 = 改基值（见
 // InsertInstanceFactory.TryWriteAutomatedParameter）。插件 GUI 里的改动拦不到，会在下一块
 // 被自动化覆盖 —— v1 的已知限制。
@@ -31,9 +32,8 @@ namespace TuneLab.UI;
 // 【音频】曲线编辑实时生效：条目增删 → 重建混音图（绑定在编译期建）；曲线锚点变化走
 // 冻结快照换引用（Binding），播放中下一块就听到，不必重建图。
 //
-// 【本期的边界】曲线锚点在侧栏内编辑（列表行展开的锚点表）；钢琴窗参数区的 lane 集成
-// 是二期。undo/redo 增删条目时混音图在下一次重建前沿用旧绑定（曲线值的 undo 会经快照
-// 换引用即时生效，不受此限）。
+// 【编辑入口】钢琴窗参数区的插入 lane（偏移空间 + 同轴真正值背景）是编辑面；本列表只负责
+// 增删条目（条目 = 基值 / 量程，曲线按 part 分住，见上）。
 internal class InsertAutomationsController : StackPanel
 {
     public InsertAutomationsController()
@@ -146,6 +146,8 @@ internal class InsertAutomationsController : StackPanel
 
     void OnEntryRemoved(InsertSlot slot, InsertSlotAutomation entry)
     {
+        // 只摘条目（基值 / 量程 / 绑定）。各 part 的偏移曲线保留为"休眠数据"：
+        // 重新添加同一参数会恢复原曲线（一次 undo 也能整条恢复），且删除不产生 N 个 part 的多步 undo。
         slot.Automations.Remove(entry.ParamId);
         mParts[0].Commit();
         AudioEngine.RebuildMixerGraph();
@@ -272,7 +274,6 @@ internal class InsertAutomationsController : StackPanel
             // 量程抄自活实例：钢琴窗 lane 的值轴 / 钳位不依赖实例活着（重开工程也能画轴）。
             MinValue = parameter.MinValue,
             MaxValue = parameter.MaxValue,
-            Points = [],
         });
         slot.Automations.Add(key, entry);
 

@@ -92,19 +92,66 @@ internal static class InsertAutomationCatalog
 
     // ── lane 的 AutomationConfig（底部参数区与 tab 按钮共用同一份口径）──
 
-    // 值轴 = 参数量程（lane 上看到的就是实参）；默认基线 = 基值；颜色按 key 确定取
-    //（插入轨没有"声明序"可依，用 keyId 的稳定哈希在调色板里取，同一轨每次同色）。
+    // 值轴 = **偏移量**空间 ±(Max−Min)：曲线只存偏移，真正值 = clamp(基值 + Σ偏移)。
+    // 默认基线 = 0（"不干预"）：[0,100] → [-100,100]，[-50,100] → [-150,150]。
+    // 颜色按 key 确定取（插入轨没有"声明序"可依，用 keyId 的稳定哈希在调色板里取，同一轨每次同色）。
     public static AutomationConfig BuildLaneConfig(InsertSlotAutomation entry, string keyId)
     {
         double min = Math.Min(entry.MinValue.Value, entry.MaxValue.Value);
         double max = Math.Max(entry.MinValue.Value, entry.MaxValue.Value);
 
-        if (min >= max)
-            (min, max) = (0, 1);   // 死参数兜底：至少给个能画的轴
+        double range = max - min;
+        if (range <= 0)
+            range = 1;   // 死参数兜底：至少给个能画的轴
 
-        return AutomationConfig.Create(min, max)
-            .WithDefault(entry.BaseValue.Value)
+        return AutomationConfig.Create(-range, range)
+            .WithDefault(0)
             .WithColor(TrackColors.PickBySeed(keyId));
+    }
+
+    // 真正值（同轴背景用）：clamp(基值 + Σ 所有 part 的偏移) − 基值。
+    // 传工程**绝对 tick**（渲染器的参数区是 part 相对 tick，调用方加 part.Pos 换算）。
+    // 每个 part 的曲线只在**该 part 的时域内**贡献（与音频绑定同一口径，见 MixerAutomation.Binding）。
+    // 结果落在 [Min−基值, Max−基值] ⊂ [−range, +range]，正好画在 lane 的偏移轴上：
+    // 曲线 = 本 part 的偏移（未钳位），填充顶 = 所有 part 求和后的**实际生效**偏移（已钳位）。
+    public static double[] EvaluateTrueOffset(Project project, string keyId, InsertSlotAutomation entry,
+        IReadOnlyList<double> absoluteTicks)
+    {
+        var offsets = new double[absoluteTicks.Count];
+
+        foreach (var track in project.Tracks)
+        {
+            foreach (var part in track.Parts)
+            {
+                if (part is not IMidiPart midiPart || !midiPart.Automations.TryGetValue(keyId, out var curve))
+                    continue;
+
+                double pos = part.Pos.Value;
+                double start = part.StartPos();
+                double end = part.EndPos();
+
+                var relative = new double[absoluteTicks.Count];
+                for (int i = 0; i < relative.Length; i++)
+                    relative[i] = absoluteTicks[i] - pos;
+
+                var values = curve.GetValues(relative);
+                for (int i = 0; i < offsets.Length; i++)
+                {
+                    double tick = absoluteTicks[i];
+                    if (tick >= start && tick <= end)
+                        offsets[i] += values[i];
+                }
+            }
+        }
+
+        double baseValue = entry.BaseValue.Value;
+        double min = Math.Min(entry.MinValue.Value, entry.MaxValue.Value);
+        double max = Math.Max(entry.MinValue.Value, entry.MaxValue.Value);
+
+        for (int i = 0; i < offsets.Length; i++)
+            offsets[i] = Math.Clamp(baseValue + offsets[i], min, max) - baseValue;
+
+        return offsets;
     }
 
     // lane 显示名："FX 名 · 参数名"（tab 按钮与面板标题共用）。参数显示名按活实例现查

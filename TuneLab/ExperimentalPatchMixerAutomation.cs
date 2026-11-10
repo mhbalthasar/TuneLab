@@ -13,11 +13,13 @@ namespace TuneLab;
 
 // [EP-MIXER-AUTO] 插入参数自动化的宿主侧接线。
 //
-// 【数据】曲线 + 基值在 InsertSlotAutomation（挂在 InsertSlot 上，随槽位 undo / 落盘）。
-// 【求值】音频线程每块开头：位置 → tick（TempoTimeMapper）→ 冻结曲线快照求偏移
-//         → clamp(基值 + 偏移, 参数 Min, 参数 Max) → 推给正在跑的实例。
-// 【纪律】音频线程路径零分配：绑定持有一份不可变的 Point[] 快照，UI 改曲线时整份换引用；
-//         稳态（平线）时每块只做一次 double 比较。
+// 【数据】条目（基值 / 量程）在 InsertSlotAutomation（挂在 InsertSlot 上，随槽位 undo / 落盘）；
+//         每个 part 的偏移曲线住在该 part 的自动化表里（键 = "{slotId}:{paramId}"，part 相对 tick）。
+//         同一参数可被多个 part 控制（AUX / Master 链尤其如此），曲线**求和**后叠加到基值。
+// 【求值】音频线程每块开头：位置 → tick（TempoTimeMapper）→ 各 part 冻结曲线快照求偏移之和
+//         → clamp(基值 + Σ偏移, 参数 Min, 参数 Max) → 推给正在跑的实例。
+// 【纪律】音频线程路径零分配：绑定持有一份不可变的 (partPos, Point[]) 快照，UI 改曲线时整份换引用；
+//         稳态（平线）时每块只做几次 double 比较。
 internal static class MixerAutomation
 {
     // ── 位置 → tick ──
@@ -39,50 +41,137 @@ internal static class MixerAutomation
 
     internal sealed class Binding
     {
-        public Binding(InsertSlotAutomation entry, double minValue, double maxValue, Func<double, bool> push)
+        public Binding(InsertSlotAutomation entry, string keyId, Project? project,
+            double minValue, double maxValue, Func<double, bool> push)
         {
             mEntry = entry;
+            mKeyId = keyId;
+            mProject = project;
             mMin = Math.Min(minValue, maxValue);
             mMax = Math.Max(minValue, maxValue);
             mPush = push;
 
             RebuildSnapshot();
-            entry.Curve.Modified.Subscribe(RebuildSnapshot, mSubscriptions);
-            entry.BaseValue.Modified.Subscribe(RebuildSnapshot, mSubscriptions);
+            // 全量脸（AsEverytime）：面板拖基值时外层包着 merge 作用域，结果态要等松手才发；
+            // 而 TryWriteAutomatedParameter 在拖动中每步都要用**新基值**求值推一次。
+            entry.BaseValue.Modified.AsEverytime().Subscribe(_ => RebuildSnapshot(), mSubscriptions);
+
+            if (project == null)
+                return;
+
+            // 结构性变化（part 增删 / 轨道增删）→ 重挂"每个 part 的自动化表"订阅并重取快照。
+            // 曲线内容变化走 part.Automations.Modified（Map 的 Modified 会聚合子项修改，
+            // 与渲染器重绘同一口径）；曲线首次创建也走它。
+            project.Tracks.MembershipModified.Subscribe(RebuildStructure, mSubscriptions);
+            project.Tracks.WhenAny(track => track.Parts.ItemAdded).Subscribe(_ => RebuildStructure(), mSubscriptions);
+            project.Tracks.WhenAny(track => track.Parts.ItemRemoved).Subscribe(_ => RebuildStructure(), mSubscriptions);
+
+            RebuildStructure();
         }
 
         readonly InsertSlotAutomation mEntry;
+        readonly string mKeyId;
+        readonly Project? mProject;
         readonly double mMin;
         readonly double mMax;
         readonly Func<double, bool> mPush;
         readonly DisposableManager mSubscriptions = new();
+        readonly DisposableManager mPartSubscriptions = new();
 
         // 工厂的自动化登记要用（参数面板按 (槽位, 参数) 找回条目改基值）。
         internal InsertSlotAutomation Entry => mEntry;
 
         // 冻结快照。volatile 引用换：音频线程要么看旧的、要么看新的，绝不看半份。
         // 只存 Point（纯数据），不存 AnchorPoint（带着选择事件、UI 线程对象）。
+        // Start/End = part 的时域（绝对 tick）：曲线只在这个区间内贡献 —— 否则端点值会一直
+        // 延伸到全曲，把别的 part 的区间也叠上（AUX / Master 链尤其明显）。
         // 【为什么 base 不用 volatile】volatile 不允许 double；base 的一次读撕裂不可能
         //（对齐的 64 位写），偶尔读到一次旧基值 = 旧值持续到下一块，无害。
-        volatile Point[] mPoints = [];
+        readonly record struct LaneSnapshot(double Pos, double Start, double End, Point[] Points);
+        volatile LaneSnapshot[] mLanes = [];
         double mBase;
+
+        void RebuildStructure()
+        {
+            mPartSubscriptions.DisposeAll();
+
+            if (mProject != null)
+            {
+                foreach (var track in mProject.Tracks)
+                {
+                    foreach (var part in track.Parts)
+                    {
+                        if (part is not IMidiPart midiPart)
+                            continue;
+
+                        // 全量脸（AsEverytime）：画点 / 拖锚点的编辑手势整段包在 merge 作用域里，
+                        // 结果态要等松手才发 —— 只订结果态会让音频在拖动中不跟手。
+                        midiPart.Automations.Modified.AsEverytime().Subscribe(_ => RebuildSnapshot(), mPartSubscriptions);
+                        part.Pos.Modified.Subscribe(RebuildSnapshot, mPartSubscriptions);
+                        part.StartOffset.Modified.Subscribe(RebuildSnapshot, mPartSubscriptions);
+                        part.EndOffset.Modified.Subscribe(RebuildSnapshot, mPartSubscriptions);
+                    }
+                }
+            }
+
+            RebuildSnapshot();
+        }
 
         void RebuildSnapshot()
         {
-            mPoints = [.. mEntry.Curve.Points.Select(p => new Point(p.Pos, p.Value))];
             mBase = mEntry.BaseValue.Value;
+
+            if (mProject == null)
+            {
+                mLanes = [];
+                return;
+            }
+
+            var lanes = new List<LaneSnapshot>();
+
+            foreach (var track in mProject.Tracks)
+            {
+                foreach (var part in track.Parts)
+                {
+                    if (part is not IMidiPart midiPart)
+                        continue;
+
+                    if (!midiPart.Automations.TryGetValue(mKeyId, out var curve) || curve.Points.Count == 0)
+                        continue;
+
+                    lanes.Add(new LaneSnapshot(part.Pos.Value, part.StartPos(), part.EndPos(),
+                        [.. curve.Points.Select(p => new Point(p.Pos, p.Value))]));
+                }
+            }
+
+            mLanes = [.. lanes];
         }
 
         // tick → 生效值。音频线程每块调用；无分配。
         public double Evaluate(double tick)
         {
-            double offset = InsertAutomationMath.Evaluate(mPoints, tick);
+            var lanes = mLanes;
+            double offset = 0;
+
+            for (int i = 0; i < lanes.Length; i++)
+            {
+                var lane = lanes[i];
+                if (tick < lane.Start || tick > lane.End)
+                    continue;
+
+                offset += InsertAutomationMath.Evaluate(lane.Points, tick - lane.Pos);
+            }
+
             return Math.Clamp(mBase + offset, mMin, mMax);
         }
 
         public bool Push(double value) => mPush(value);
 
-        public void Dispose() => mSubscriptions.DisposeAll();
+        public void Dispose()
+        {
+            mPartSubscriptions.DisposeAll();
+            mSubscriptions.DisposeAll();
+        }
     }
 
     // ── 编译期：把一个槽位的自动化条目变成图里的绑定 ──
@@ -115,7 +204,7 @@ internal static class MixerAutomation
     }
 
     // 一个槽位的全部自动化条目 → 图绑定。没有条目 / 实例拿不到 / 参数不在清单里 → 跳过该条。
-    internal static List<MixAutomationBinding> BuildBindings(InsertSlot slot, IMixInsert? insert,
+    internal static List<MixAutomationBinding> BuildBindings(InsertSlot slot, IMixInsert? insert, Project? project,
         out List<Binding> hostBindings)
     {
         hostBindings = [];
@@ -141,7 +230,9 @@ internal static class MixerAutomation
             if (parameter.MinValue >= parameter.MaxValue)
                 continue;   // 死参数（min == max）没有可自动化的余地
 
-            var hostBinding = new Binding(entry, parameter.MinValue, parameter.MaxValue,
+            string keyId = InsertAutomationCatalog.MakeKeyId(slot.Id, parameterId);
+
+            var hostBinding = new Binding(entry, keyId, project, parameter.MinValue, parameter.MaxValue,
                 value => PushParameter(insert, (int)parameterId, value));
             hostBindings.Add(hostBinding);
 
