@@ -257,13 +257,15 @@ internal class AudioGraph()
         {
             // 多设备：先让播放层把被引用的副设备打开（打不开的返回），再编图。
             // 打不开的设备在编译器里回落到 Master —— 宁可路由不精确，也不要一条轨突然静音。
-            var deviceIds = CollectOutputDeviceIds(tracks, auxes);
+            var masterRoute = mMasterOutput?.Value ?? MixerRoute.Master;
+            var deviceIds = CollectOutputDeviceIds(tracks, auxes, masterRoute);
             var unavailable = AudioEngine.PrepareOutputDevices(deviceIds);
 
             var available = new HashSet<string>(deviceIds, StringComparer.Ordinal);
             available.ExceptWith(unavailable);
 
-            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts, mMasterPhaseInvert, available));
+            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts, mMasterPhaseInvert,
+                available, masterRoute));
         }
         catch (Exception ex)
         {
@@ -276,8 +278,10 @@ internal class AudioGraph()
     // 工程里所有被 output / send 引用到的设备 id（含主设备）。
     //
     // 编图前就要知道它们：副设备要在**编译时**就打开，编译器才能知道哪些设备可用、
-    // 哪些要回落 Master。只收 Device 类路由 —— AUX / Master 不是设备。
-    static HashSet<string> CollectOutputDeviceIds(IReadOnlyList<IAudioTrack> tracks, IReadOnlyList<AuxBus> auxes)
+    // 哪些要回落 Master。只收 Device 类路由 —— AUX 不是设备；Master 的去向
+    // [EP-MIXER-34] 现在也可以是设备，一并收进来。
+    static HashSet<string> CollectOutputDeviceIds(IReadOnlyList<IAudioTrack> tracks, IReadOnlyList<AuxBus> auxes,
+        MixerRoute masterRoute)
     {
         var ids = new HashSet<string>(StringComparer.Ordinal) { MixDeviceIds.Default };
 
@@ -300,6 +304,8 @@ internal class AudioGraph()
             foreach (var send in aux.Sends)
                 Add(send.Target.Value);
         }
+
+        Add(masterRoute);
 
         return ids;
     }
@@ -353,6 +359,15 @@ internal class AudioGraph()
     public void SetMasterPhaseInvert(DataProperty<bool>? phaseInvert)
     {
         mMasterPhaseInvert = phaseInvert;
+    }
+
+    // [EP-MIXER-34] Master 的输出去向（由当前工程提供）。引用换入后由随后的
+    // SetMasterInserts 那次重建接上图（与 Ø 同一套时序）。
+    DataProperty<MixerRoute>? mMasterOutput;
+
+    public void SetMasterOutput(DataProperty<MixerRoute>? output)
+    {
+        mMasterOutput = output;
     }
 
     int mSampleRate = 44100;

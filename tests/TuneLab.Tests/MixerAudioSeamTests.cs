@@ -251,6 +251,71 @@ public class MixerAudioSeamTests
         AssertBitEqual(expected, actual);
     }
 
+    // [EP-MIXER-34] Master 也可以去指定设备：主混音出现在那条设备流里，主设备只剩直出。
+    [Fact]
+    public void MasterRoutedToDevice_AppearsInThatDeviceStream()
+    {
+        const int frames = 64;
+
+        var track = new FakeTrack(1, 0, false, false, new FakeSource(0, frames, 31));
+
+        var graph = new AudioGraph { SampleRate = SampleRate };
+        graph.AddTrack(track);
+
+        var compiler = new MixerGraphCompiler();
+        var snapshot = compiler.Compile(graph, [track], [], null, null, null,
+            new MixerRoute(MixerOutputKind.Device, MixDeviceIds.ForName("Cable"), "Cable"));
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(snapshot);
+
+        // 先渲染一遍（deviceId = null 渲染所有 sink），再取设备流 —— CopyDeviceStream
+        // 拷的是「刚渲染的那一块」。
+        var scratch = new float[frames * 2];
+        mixer.Render(0, frames, scratch, 0);
+
+        // 主混音跟着 Master 去了 Cable。
+        var cable = new float[frames * 2];
+        Assert.True(mixer.CopyDeviceStream(MixDeviceIds.ForName("Cable"), cable, 0, frames));
+
+        var expected = new float[frames * 2];
+        graph.AddData(track, 0, frames, true, expected, 0);
+        AssertBitEqual(expected, cable);
+
+        // 主设备上没有 Master（这条轨默认去 Master，所以主设备是静音）。
+        var primary = new float[frames * 2];
+        mixer.Render(0, frames, primary, 0, null, MixDeviceIds.Default);
+        Assert.All(primary, sample => Assert.Equal(0f, sample));
+    }
+
+    // [EP-MIXER-34] Master 指向的设备打不开 → 主混音回落主设备，不能凭空消失。
+    [Fact]
+    public void MasterRoutedToUnavailableDevice_FallsBackToPrimary()
+    {
+        const int frames = 32;
+
+        var track = new FakeTrack(1, 0, false, false, new FakeSource(0, frames, 32));
+
+        var graph = new AudioGraph { SampleRate = SampleRate };
+        graph.AddTrack(track);
+
+        var compiler = new MixerGraphCompiler();
+        var snapshot = compiler.Compile(graph, [track], [], null, null,
+            new HashSet<string> { MixDeviceIds.Default },
+            new MixerRoute(MixerOutputKind.Device, MixDeviceIds.ForName("Missing"), "Missing"));
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(snapshot);
+
+        var primary = new float[frames * 2];
+        mixer.Render(0, frames, primary, 0, null, MixDeviceIds.Default);
+
+        var expected = new float[frames * 2];
+        graph.AddData(track, 0, frames, true, expected, 0);
+
+        AssertBitEqual(expected, primary);
+    }
+
     // 多设备：去 "device:Cable" 的轨只出现在那条设备流里，主设备保持静音。
     [Fact]
     public void DeviceRoutedTrack_OnlyAppearsInItsOwnDeviceStream()

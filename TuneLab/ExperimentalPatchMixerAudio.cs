@@ -25,7 +25,8 @@ internal sealed class MixerGraphCompiler
 
     public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks,
         IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null,
-        DataProperty<bool>? masterPhaseInvert = null, IReadOnlySet<string>? availableDevices = null)
+        DataProperty<bool>? masterPhaseInvert = null, IReadOnlySet<string>? availableDevices = null,
+        MixerRoute? masterOutput = null)
     {
         // Master 是"总轨"：它的插入链挂在 master 节点上（DESIGN §5.7.18）。
         // 没有就传 null，行为与以前完全一致。
@@ -59,11 +60,21 @@ internal sealed class MixerGraphCompiler
         var masterChain = BuildInserts("master", masterSlots, project, masterAutomations);
         chains["master"] = masterChain;
 
-        // Master 始终进主设备（"device:default"）。v2 的多设备只改变**通道**的去向；
-        // Master 自己的 output 菜单还是占位（模型里没有可落盘的 MasterOutput），
-        // 所以这里不读它，避免"菜单里选了却不生效"。
+        // [EP-MIXER-34] Master 的输出去向跟工程走（Project.MasterOutput）：显式设备且当前
+        // 可用才跟过去，否则留在主设备。与轨道回落 Master 同一哲学 —— 宁可路由不精确，
+        // 也不要主混音凭空消失。
+        // 注意：Master 去了副设备后，该设备的流 = Master 混音 + 直出到该设备的轨
+        // （CopyDeviceStream 会把同一设备的所有 sink 求和）。
+        string masterDevice = MixDeviceIds.Default;
+
+        if (masterOutput is { Kind: MixerOutputKind.Device } masterRoute
+            && IsDeviceAvailable(masterRoute.Id))
+        {
+            masterDevice = masterRoute.Id;
+        }
+
         var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(masterPhaseInvert),
-            null, masterChain, MixDeviceIds.Default);
+            null, masterChain, masterDevice);
         master.AddAutomations(masterAutomations);
 
         // 每个被引用到的设备一条 sink（按需创建）。没被引用到的设备不建节点：

@@ -316,6 +316,12 @@ internal static class AudioEngine
         AudioGraph.SetMasterPhaseInvert(phaseInvert);
     }
 
+    // [EP-MIXER-34] Master 的输出去向由工程提供（Project.MasterOutput）。
+    public static void SetMasterOutput(DataProperty<TuneLab.Data.MixerRoute>? output)
+    {
+        AudioGraph.SetMasterOutput(output);
+    }
+
     // [EP-MIXER-AUTO] 插入参数自动化的时间换算器（工程装载 / tempo / 采样率变化时由宿主换入）。
     public static void SetTimeMapper(IMixTimeMapper? mapper)
     {

@@ -109,6 +109,11 @@ internal static class MixerPersistence
         // [EP-MIXER-28] Master 的 Ø（没有 Trim / HPF）。
         payload.MasterPhaseInvert = project.MasterPhaseInvert.Value;
 
+        // [EP-MIXER-34] Master 的输出去向（多设备）。只存显式设备；主设备存 null，
+        // 老文件 / 新工程（值还是 default(MixerRoute)）都不写垃圾字段。
+        var masterRoute = project.MasterOutput.Value;
+        payload.MasterOutput = masterRoute.Kind == MixerOutputKind.Device ? ToDto(masterRoute) : null;
+
         return payload;
     }
 
@@ -266,6 +271,9 @@ internal static class MixerPersistence
 
         // [EP-MIXER-28] Master 的 Ø。老文件没有该字段 → false（默认不反相）。
         project.MasterPhaseInvert.SetInfo(payload.MasterPhaseInvert);
+
+        // [EP-MIXER-34] Master 的输出去向。老文件没有该字段 → null → Master()（主设备）。
+        project.MasterOutput.SetInfo(FromDto(payload.MasterOutput));
 
         if (matched > 0 || auxes.Count > 0)
             HostLog.Info($"mixer: restored routing ({auxes.Count} aux, {matched} track(s))");
@@ -579,6 +587,9 @@ internal static class MixerPersistence
 
         // [EP-MIXER-28] Master 的 Ø。老文件没有这个字段 → false，行为与以前一致。
         public bool MasterPhaseInvert { get; set; }
+
+        // [EP-MIXER-34] Master 的输出去向。老文件没有这个字段 → null → 主设备。
+        public RouteDto? MasterOutput { get; set; }
     }
 
     sealed class AuxDto

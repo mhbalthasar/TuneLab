@@ -115,6 +115,51 @@ public class MixerPersistenceTests
         }
     }
 
+    // [EP-MIXER-34] Master 的输出去向是工程数据：存读要一致。
+    [Fact]
+    public void MasterOutput_RoundTrips()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var source = NewProject("主唱");
+            source.MasterOutput.SetInfo(new MixerRoute(MixerOutputKind.Device, "device:CABLE Input", "CABLE Input"));
+
+            MixerPersistence.Save(source, path);
+
+            var target = NewProject("主唱");
+            MixerPersistence.Load(target, path);
+
+            Assert.Equal(MixerOutputKind.Device, target.MasterOutput.Value.Kind);
+            Assert.Equal("device:CABLE Input", target.MasterOutput.Value.Id);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
+    // 老文件没有 MasterOutput 字段 → 默认（非设备路由），行为与以前一致。
+    [Fact]
+    public void MasterOutput_OldFileDefaultsToPrimary()
+    {
+        string path = TempProjectPath();
+        try
+        {
+            var source = NewProject("主唱");
+            MixerPersistence.Save(source, path);
+
+            var target = NewProject("主唱");
+            MixerPersistence.Load(target, path);
+
+            Assert.NotEqual(MixerOutputKind.Device, target.MasterOutput.Value.Kind);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
     // 改名（轨数不变）→ 路由按序号跟上。
     [Fact]
     public void RenamedTrack_KeepsItsRouting()

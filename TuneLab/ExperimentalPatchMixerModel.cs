@@ -40,7 +40,6 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     public IReadOnlyList<IMixerChannel> Channels => mChannels;
     public IMixerChannel Master => mMaster;
     public IReadOnlyList<IMixerOutput> Outputs => mOutputs;
-    public IMixerOutput DefaultDevice => DeviceOutput;
     public IReadOnlyList<IMixerInsertFormat> InsertFormats => mFormats;
 
     // 阶段一：AUX / output / send 已接通；插入效果的模型侧已接上（实例的装配见 InsertInstanceFactory）。
@@ -311,6 +310,32 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
 
     internal IMixerOutput DeviceOutput => FindOutput(MixerOutputKind.Device, "device:default") ?? mOutputs[0];
 
+    // [EP-MIXER-34] Master 的输出去向。工程里存的是路由值；指向的设备不在当前设备表里
+    // （被拔掉 / 换了机器）就回落主设备 —— 与轨道回落 Master 同一哲学。
+    internal IMixerOutput ResolveMasterOutput()
+    {
+        var route = Project.MasterOutput.Value;
+
+        if (route.Kind == MixerOutputKind.Device)
+        {
+            var output = FindOutput(MixerOutputKind.Device, route.Id);
+            if (output != null)
+                return output;
+        }
+
+        return DeviceOutput;
+    }
+
+    internal void SetMasterOutputRoute(IMixerOutput output)
+    {
+        if (output.Kind != MixerOutputKind.Device)
+            return;   // Master 只能去设备（Master / Aux 对它没意义，Cable 未实现）
+
+        // 一步 undo，与轨道改 output 同一套（EditSession = 宿主 merge 作用域）。
+        var edit = new EditSession(Project);
+        edit.Write(Project.MasterOutput, new MixerRoute(MixerOutputKind.Device, output.Id, output.Name));
+    }
+
     // 插入效果器的实例工厂（宿主侧，EP-MIXER-14）。通道的 Inserts 视图要用它建实例。
     internal InsertInstanceFactory InsertFactory => sInsertFactory;
 
@@ -559,7 +584,6 @@ internal sealed class MixerModelFacade : IMixerModel, IDisposable
     public IReadOnlyList<IMixerChannel> Channels => mInner.Channels;
     public IMixerChannel Master => mInner.Master;
     public IReadOnlyList<IMixerOutput> Outputs => mInner.Outputs;
-    public IMixerOutput DefaultDevice => mInner.DefaultDevice;
     public IReadOnlyList<IMixerInsertFormat> InsertFormats => mInner.InsertFormats;
 
     public bool SupportsAux => mInner.SupportsAux;
@@ -1252,6 +1276,7 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
     {
         mOwner = owner;
         mOwner.Project.MasterPhaseInvert.Modified.Subscribe(OnPhaseInvertModified);
+        mOwner.Project.MasterOutput.Modified.Subscribe(RaiseRoutingChanged);
 
         // 与轨道 / AUX 同一套订阅：成员增删（包括 undo / redo 撤回来的）都从这里出发
         // 重建图 + 通知界面。轨道走 track.Inserts.MembershipModified，Master 的槽位
@@ -1306,14 +1331,12 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
         set { }
     }
 
+    // [EP-MIXER-34] Master 的输出去向已可落盘（Project.MasterOutput）：多设备下 Master
+    // 可以带着整条主混音去任意一台设备（比如总输出走 Cable 给 OBS 录制）。
     public IMixerOutput Output
     {
-        get => mOwner.DeviceOutput;
-        set
-        {
-            if (value.Kind is MixerOutputKind.Device or MixerOutputKind.Cable)
-                RaiseRoutingChanged();
-        }
+        get => mOwner.ResolveMasterOutput();
+        set => mOwner.SetMasterOutputRoute(value);
     }
 
     public IReadOnlyList<IMixerSend> Sends => [];
@@ -1379,6 +1402,7 @@ internal sealed class MixerMasterChannel : IMixerChannel, IDisposable
     public void Dispose()
     {
         mOwner.Project.MasterPhaseInvert.Modified.Unsubscribe(OnPhaseInvertModified);
+        mOwner.Project.MasterOutput.Modified.Unsubscribe(RaiseRoutingChanged);
         mOwner.Project.MasterInserts.MembershipModified.Unsubscribe(RaiseRoutingChanged);
     }
 

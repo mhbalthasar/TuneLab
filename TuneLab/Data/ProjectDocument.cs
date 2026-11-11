@@ -31,6 +31,7 @@ internal class ProjectDocument : DataDocument
             // 把新的 MasterChannelState 建出来。
             AudioEngine.SetMasterPhaseInvert(null);
             AudioEngine.SetMasterInserts(null);
+            AudioEngine.SetMasterOutput(null);
 
             // [EP-MIXER-AUTO] 时间换算一并摘掉（订阅、换算器、"当前 tick"提供者都随工程走）。
             UnwireAutomationTimeMapper();
@@ -50,6 +51,7 @@ internal class ProjectDocument : DataDocument
             // 指针一空，master 节点就没有插入实例，Master 轨 FX 的「界面」键永远是灰的。
             AudioEngine.SetMasterPhaseInvert(Project?.MasterPhaseInvert);
             AudioEngine.SetMasterInserts(Project?.MasterInserts);
+            AudioEngine.SetMasterOutput(Project?.MasterOutput);
 
             // [EP-MIXER-AUTO] 换算器 + "当前 tick"提供者跟随当前工程；tempo / 采样率变化时重建。
             WireAutomationTimeMapper();

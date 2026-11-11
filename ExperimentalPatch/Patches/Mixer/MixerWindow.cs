@@ -744,19 +744,15 @@ public sealed class MixerWindow : Window
         flyout.ShowAt(strip.OutputAnchor);
     }
 
-    // 不能输出到自己；Master 只能去"当前输出设备"；不可用的目的地（Cable 未实现 /
-    // 打不开的设备）一律禁用。
+    // 不能输出到自己；不可用的目的地（Cable 未实现 / 打不开的设备）一律禁用。
+    // [EP-MIXER-34] Master 也可以去任意设备（Project.MasterOutput 已可落盘）。
     bool CanRoute(IMixerChannel channel, IMixerOutput output)
     {
         if (!output.IsAvailable)
             return false;
 
         if (channel.Kind == MixerChannelKind.Master)
-        {
-            // Master 的 output 固定是主设备（模型里没有可落盘的 MasterOutput）。
-            // 只让这一条可勾选，其余设备灰掉 —— 不让用户选了却不生效。
-            return output.Kind == MixerOutputKind.Device && output.Id == mModel.DefaultDevice.Id;
-        }
+            return output.Kind == MixerOutputKind.Device;
 
         if (output.Kind == MixerOutputKind.Aux && output.Id == channel.Id)
             return false;

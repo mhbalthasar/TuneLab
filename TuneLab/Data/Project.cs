@@ -28,6 +28,10 @@ internal class Project : DataObject, IProject
     // 只有 Ø；挂在工程上，所以 undo / 落盘都跟着工程走。
     public DataProperty<bool> MasterPhaseInvert { get; }
 
+    // [EP-MIXER-34] Master 的输出去向（多设备 v2）。默认 = 主设备（device:default）。
+    // 老工程没有这个键 → 反序列化后是 Master()，语义不变。
+    public DataProperty<MixerRoute> MasterOutput { get; }
+
     // AUX 总线（DESIGN.md §4.1）。**暂不落盘**：见 §9 与 Patches/Mixer/DESIGN.md 的说明——
     // 打开另一个工程时这里会被清空（它们属于上一个工程），UI 上有明确提示。
     public IReadOnlyDataObjectList<AuxBus> Auxes => mAuxes;
@@ -54,6 +58,7 @@ internal class Project : DataObject, IProject
         // 数据挂在 Project 上（与 Tracks/Auxes 同级），所以 undo / 落盘都跟着工程走。
         MasterInserts = new DataObjectList<InsertSlot>(this);
         MasterPhaseInvert = new DataStruct<bool>(this);
+        MasterOutput = new DataStruct<MixerRoute>(this);
         // 注意：**不要**在这里接进音频图。见 ProjectDocument：Master 插入跟随"当前文档的工程"，
         // 而不是"最后一次 new 出来的 Project"——后者会被临时工程（导入轨道的 TempoManager 等）抢走。
         mTracks.ItemAdded.Subscribe(OnTrackAdded);
