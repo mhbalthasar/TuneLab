@@ -66,7 +66,12 @@ public interface IMixerModel
     void MoveChannel(IMixerChannel channel, MixerChannelMove move);
 
     // "移动到.."：把 channel 移到 target 现在的位置（同组内才生效）。
-    void MoveChannelTo(IMixerChannel channel, IMixerChannel target);}
+    void MoveChannelTo(IMixerChannel channel, IMixerChannel target);
+
+    // 主输出设备（设置里选的那个）。Master 的 output 固定指向它 —— 模型里还没有
+    // 可落盘的 MasterOutput，所以菜单只允许勾这一条，避免"选了却不生效"。
+    IMixerOutput DefaultDevice { get; }
+}
 
 public enum MixerChannelKind
 {

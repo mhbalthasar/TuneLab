@@ -22,13 +22,34 @@ public sealed class MixSnapshot
     // 空表 = 图里没有任何参数自动化：音频线程每块开头判一次空就完事。
     public IReadOnlyList<MixAutomationBinding> Automations { get; }
 
+    // 每个节点属于哪条设备流（下标与 Nodes 对齐；非 sink = null）。
+    // "device:default" = 主设备，其余见 MixDeviceIds。
+    public IReadOnlyList<string?> SinkDeviceIds { get; }
+
     internal MixSnapshot(IReadOnlyList<MixNode> nodes, MixNode master, int maxLatencySamples,
-        int sidechainBufferCount = 0, IReadOnlyList<MixAutomationBinding>? automations = null)
+        int sidechainBufferCount = 0, IReadOnlyList<MixAutomationBinding>? automations = null,
+        IReadOnlyList<string?>? sinkDeviceIds = null)
     {
         Nodes = nodes;
         Master = master;
         MaxLatencySamples = maxLatencySamples;
         SidechainBufferCount = sidechainBufferCount;
         Automations = automations ?? [];
+        SinkDeviceIds = sinkDeviceIds is { Count: > 0 } && sinkDeviceIds.Count == nodes.Count
+            ? sinkDeviceIds
+            : BuildSinkDeviceIds(nodes);
+    }
+
+    // 手工构造的快照（测试）没有传设备流：sink 全部回落到主设备，与 v1 行为一致。
+    static string?[] BuildSinkDeviceIds(IReadOnlyList<MixNode> nodes)
+    {
+        var ids = new string?[nodes.Count];
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (nodes[i].Kind is MixNodeKind.Master or MixNodeKind.Device)
+                ids[i] = nodes[i].DeviceId ?? MixDeviceIds.Default;
+        }
+
+        return ids;
     }
 }

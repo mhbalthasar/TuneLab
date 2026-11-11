@@ -20,6 +20,13 @@ internal static class AudioEngine
 {
     public static event Action? PlayStateChanged;
     public static event Action? ProgressChanged;
+
+    // 输出设备列表变了（插拔 / 驱动切换）。混音台的 output 菜单据此重建：
+    // 设备名字就是路由 id 的一部分（"device:<name>"），列表不动菜单就会指向旧名字。
+    public static event Action? DevicesChanged;
+
+    public static string AutoDeviceName => IAudioPlaybackHandler.AutoDeviceName;
+
     public static bool IsPlaying => mAudioSampleProvider.IsPlaying;
     public static INotifiableProperty<int> SampleRate { get; } = new NotifiableProperty<int>(44100);
     // 播放头显示的位置 = 用户**听到**的位置。它来自 SDL 回调里"写下一块之前已经
@@ -87,6 +94,7 @@ internal static class AudioEngine
         mAudioSampleProvider.SampleRate = SampleRate.Value;
         mAudioPlaybackHandler = new SDLPlaybackHandler() { SampleRate = SampleRate.Value, BufferSize = BufferSize.Value, ChannelCount = 2 };
         mAudioPlaybackHandler.Init(mAudioSampleProvider);
+        mAudioSampleProvider.SecondarySink = mAudioPlaybackHandler as ISecondaryAudioSink;
         SetDriverToPlaybackHandler();
         SetDeviceToPlaybackHandler();
         // 【必须是具名方法，好在 Destroy 里退订】这三个事件都由 SDL 侧 marshal 回 UI 线程（context.Post）。
@@ -133,6 +141,7 @@ internal static class AudioEngine
         CurrentDriver.Modified.Unsubscribe(OnCurrentDriverModified);
         CurrentDevice.Modified.Unsubscribe(OnCurrentDeviceModified);
 
+        mAudioSampleProvider.SecondarySink = null;
         mAudioPlaybackHandler.Destroy();
         mAudioPlaybackHandler = null;
     }
@@ -155,6 +164,13 @@ internal static class AudioEngine
     static void OnHandlerDevicesChanged()
     {
         SetDeviceToPlaybackHandler();
+
+        // 设备插拔：清掉"打不开"的旧结论，让下一次编图重新尝试；菜单也要重建
+        // （设备名就是路由 id 的一部分）。
+        RefreshOutputDevices();
+
+        // 副设备可能被拔掉 / 新插进来的要打开：重编一次图（PrepareOutputDevices 在里面）。
+        RebuildMixerGraph();
     }
 
     public static void Play()
@@ -206,6 +222,77 @@ internal static class AudioEngine
     public static void RebuildMixerGraph()
     {
         AudioGraph.RebuildMixerGraph();
+    }
+
+    // 打不开的副设备（"device:<name>"）。UI 线程读写；菜单据此把条目画成禁用。
+    static readonly HashSet<string> mUnavailableOutputDevices = new(StringComparer.Ordinal);
+
+    public static bool IsOutputDeviceAvailable(string deviceId)
+        => deviceId == MixDeviceIds.Default || !mUnavailableOutputDevices.Contains(deviceId);
+
+    // 多设备输出：编图前打开/关闭副设备。返回打不开的设备 id（编译器据此回落 Master）。
+    //
+    // 只在 UI 线程（编图路径）调用。播放层内部用快照 + 锁保护音频线程：
+    // 打开/关闭期间音频线程可能正在往旧设备排队，见 SDLPlaybackHandler。
+    public static IReadOnlyCollection<string> PrepareOutputDevices(IReadOnlyCollection<string> deviceIds)
+    {
+        if (mAudioPlaybackHandler is not ISecondaryDeviceHost host)
+            return Array.Empty<string>();
+
+        var names = new List<string>();
+        var idByName = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var id in deviceIds)
+        {
+            if (id == MixDeviceIds.Default)
+                continue;
+
+            if (!MixDeviceIds.TryGetName(id, out var name))
+                continue;
+
+            names.Add(name);
+            idByName[name] = id;
+        }
+
+        IReadOnlyCollection<string> failedNames;
+        try
+        {
+            failedNames = host.SetSecondaryDevices(names);
+        }
+        catch (Exception ex)
+        {
+            // 副设备打开失败绝不能把整张混音图拖垮（RebuildSnapshot 的 catch 会退回旧路径，
+            // 等于所有接线失效）。全部按失败处理：这些路由回落 Master，主输出照常。
+            Log.Error("failed to prepare secondary output devices: " + ex);
+            failedNames = names;
+        }
+
+        var failed = new List<string>(failedNames.Count);
+        foreach (var name in failedNames)
+        {
+            if (!idByName.TryGetValue(name, out var id))
+                continue;
+
+            failed.Add(id);
+            mUnavailableOutputDevices.Add(id);
+        }
+
+        // 这次成功打开的从失败表里清掉（设备插回来了 / 之前是独占失败）。
+        foreach (var id in deviceIds)
+        {
+            if (!failed.Contains(id))
+                mUnavailableOutputDevices.Remove(id);
+        }
+
+        return failed;
+    }
+
+    // 设备列表变了：失败表清空（乐观重试），让下一次编图重新打开；
+    // 再通知界面重建 output 菜单。
+    static void RefreshOutputDevices()
+    {
+        mUnavailableOutputDevices.Clear();
+        DevicesChanged?.Invoke();
     }
 
     // [EP-MIXER-29] 批量结构变更的作用域：用 using 把一段"会改很多通道 output / send / 插入"
@@ -595,6 +682,9 @@ internal static class AudioEngine
         if (mKeySamplesPath != null)
             LoadKeySamples(mKeySamplesPath);
         RebuildPreviewSynthesizer();
+
+        // 采样率变了：副设备被关掉了（不做重采样），重编一次图把它们按新 freq 打开。
+        RebuildMixerGraph();
     }
 
     static void OnBufferSizeModified()
@@ -606,6 +696,9 @@ internal static class AudioEngine
             mAudioSampleProvider.ResetAfterDeviceChange();
             mAudioPlaybackHandler.Flush();
         }
+
+        // 块长变了：副设备的暂存缓冲按主设备块长分配，必须重开（PrepareOutputDevices）。
+        RebuildMixerGraph();
     }
 
     static void OnCurrentDriverModified()
@@ -618,6 +711,9 @@ internal static class AudioEngine
             mAudioPlaybackHandler.Flush();
         }
         mAudioPlaybackHandler?.Start();
+
+        // 驱动换了：副设备（在旧驱动下打开的）必须关掉重开，采样率/格式也可能变。
+        RebuildMixerGraph();
     }
 
     static void OnCurrentDeviceModified()
@@ -629,6 +725,9 @@ internal static class AudioEngine
             mAudioPlaybackHandler.Flush();
         }
         mAudioPlaybackHandler?.Start();
+
+        // 主设备变了：块长/格式可能不同，副设备要按新 spec 重开（PrepareOutputDevices）。
+        RebuildMixerGraph();
     }
 
     static void SetDriverToPlaybackHandler()
@@ -803,6 +902,9 @@ internal static class AudioEngine
             }
         }
 
+        // 多设备输出的副设备出口（由 AudioEngine.Init 接到播放层）。null = 没有副设备。
+        public ISecondaryAudioSink? SecondarySink { get; set; }
+
         public void Read(float[] buffer, int offset, int count)
         {
             // [EP-MIXER-3] Master 增益与预览音都交给混音图：图的 Master 节点负责乘增益，
@@ -812,18 +914,56 @@ internal static class AudioEngine
                 lock (mSeekLockObject)
                 {
                     int position = mGraphPosition;
-                    int endPosition = position + count;
                     try
                     {
-                        mAudioGraph.MixData(position, endPosition, true, buffer, offset, PreviewSource);
+                        ReadGraph(position, buffer, offset, count);
                     }
                     catch { }
-                    mGraphPosition = endPosition;
+                    mGraphPosition = position + count;
                 }
             }
             else
             {
                 mAudioGraph.MixIdle(count, buffer, offset, PreviewSource);
+            }
+        }
+
+        // 一次渲染出主设备 + 所有副设备的这一块。
+        //
+        // 【为什么要自己切块】Mixer.Render 会把超过 MaxBlockSize 的请求切成多块，而
+        // CopyDeviceStream 只能取**最后一块**的 sink 缓冲。这里按同一个块长切，
+        // 保证"渲染一块 → 立刻拷走副设备的那一块"始终成对。
+        void ReadGraph(int position, float[] buffer, int offset, int count)
+        {
+            var sink = SecondarySink;
+            int done = 0;
+
+            while (done < count)
+            {
+                int n = Math.Min(count - done, Mixer.DefaultMaxBlockSize);
+
+                // 主设备只取 "device:default" 的 sink；副设备的 sink 不混进主输出。
+                mAudioGraph.MixData(position + done, position + done + n, true, buffer, offset + done * 2,
+                    PreviewSource, MixDeviceIds.Default);
+
+                if (sink != null)
+                {
+                    var ids = sink.DeviceIds;
+
+                    for (int i = 0; i < ids.Count; i++)
+                    {
+                        string id = ids[i];
+                        var destination = sink.GetBuffer(id);
+
+                        if (destination == null || destination.Length < n * 2)
+                            continue;
+
+                        mAudioGraph.CopyDeviceStream(id, destination, 0, n);
+                        sink.Push(id, n);
+                    }
+                }
+
+                done += n;
             }
         }
 

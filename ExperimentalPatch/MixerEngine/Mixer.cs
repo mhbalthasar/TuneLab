@@ -63,7 +63,12 @@ public sealed class Mixer
 
     // 把 [position, position + count) 渲染进 buffer（交织立体声，写起点 offset）。
     // masterInput 是"直接混进 Master 输入"的额外音源（宿主的预览音），在 Master 增益之前加入。
-    public void Render(int position, int count, float[] buffer, int offset, IMixSource? masterInput = null)
+    //
+    // deviceId = null：所有 sink 都混进输出（旧行为；分轨导出 / 测试用）。
+    // deviceId 非 null：只混**属于这条设备流**的 sink。多设备播放时，主设备与每个副设备
+    // 各取自己那条（副设备随后用 CopyDeviceStream 取，见 AudioSampleProvider.Read）。
+    public void Render(int position, int count, float[] buffer, int offset, IMixSource? masterInput = null,
+        string? deviceId = null)
     {
         var runtime = mRuntime;
         if (runtime == null || count <= 0)
@@ -72,7 +77,7 @@ public sealed class Mixer
         while (count > 0)
         {
             int n = Math.Min(count, mMaxBlockSize);
-            RenderChunk(runtime, position, n, buffer, offset, masterInput);
+            RenderChunk(runtime, position, n, buffer, offset, masterInput, deviceId);
 
             // 限幅在**整块渲染完之后**做：各节点的电平抽头（表）已经在这一块里取过了，
             // 所以表显示的是限幅前的峰值（DESIGN.md §3.10）。
@@ -145,7 +150,8 @@ public sealed class Mixer
 
     static double ToDb(float amplitude) => amplitude <= 0 ? double.NegativeInfinity : 20 * Math.Log10(amplitude);
 
-    void RenderChunk(Runtime runtime, int position, int count, float[] output, int outputOffset, IMixSource? masterInput)
+    void RenderChunk(Runtime runtime, int position, int count, float[] output, int outputOffset,
+        IMixSource? masterInput, string? deviceId)
     {
         var nodes = runtime.Snapshot.Nodes;
 
@@ -362,14 +368,54 @@ public sealed class Mixer
             }
         }
 
-        // 3) 所有 sink（Master / Device）混进输出缓冲。
+        // 3) 属于**这条设备流**的 sink（Master / Device）混进输出缓冲。
         //    每个 sink 用自己的缓冲 → Master 的增益只作用于 Master 自己的输入，
         //    "直接去设备"的通道因此不受 Master 推子影响（这是混音台的语义，不是优化）。
+        //
+        //    deviceId = null 时所有 sink 都进来（旧行为，逐位不变）；多设备播放时主设备
+        //    只拿 "device:default" 的 sink —— 否则送去 Cable 的那条轨会同时从主音箱出来。
         for (int i = 0; i < nodes.Count; i++)
         {
-            if (IsSink(nodes[i]))
-                Accumulate(runtime.Buffers[i], 0, output, outputOffset, count, 1f, 1f);
+            if (!IsSink(nodes[i]))
+                continue;
+
+            if (deviceId != null && runtime.SinkDeviceIds[i] != deviceId)
+                continue;
+
+            Accumulate(runtime.Buffers[i], 0, output, outputOffset, count, 1f, 1f);
         }
+    }
+
+    // 把**刚渲染的这一块**里某条设备流的 sink 混进 buffer（覆盖写入，交织立体声）。
+    //
+    // 【调用约定】必须在 Render(..., deviceId) 之后、下一次 Render 之前，在同一个音频线程上调用；
+    // count 不能超过这一次 Render 的块长（副设备取块时与主设备用同一个块长）。
+    // 没有快照 / 没有这条流时输出静音并返回 false。
+    public bool CopyDeviceStream(string deviceId, float[] buffer, int offset, int count)
+    {
+        var runtime = mRuntime;
+        if (runtime == null || count <= 0 || count > mMaxBlockSize)
+        {
+            if (count > 0)
+                Array.Clear(buffer, offset, count * 2);
+            return false;
+        }
+
+        Array.Clear(buffer, offset, count * 2);
+
+        var nodes = runtime.Snapshot.Nodes;
+        bool any = false;
+
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (!IsSink(nodes[i]) || runtime.SinkDeviceIds[i] != deviceId)
+                continue;
+
+            any = true;
+            Accumulate(runtime.Buffers[i], 0, buffer, offset, count, 1f, 1f);
+        }
+
+        return any;
     }
 
     static bool IsSink(MixNode node) => node.Kind is MixNodeKind.Master or MixNodeKind.Device;
@@ -588,6 +634,10 @@ public sealed class Mixer
         public readonly float[] PeakRight;
         public readonly Dictionary<string, int> Index;
 
+        // 每个节点属于哪条设备流（与 Buffers 同一套下标；非 sink = null）。
+        // 从快照抄过来：音频线程每块按 sink 过滤时只做一次数组读，不进快照对象。
+        public readonly IReadOnlyList<string?> SinkDeviceIds;
+
         // 读取位置的补偿量。与 Snapshot.MaxLatencySamples 同一来源，抄在这里是为了
         // 每块的读取是一次字段访问而不是一次接口跳转。
         public readonly int SeekOffset;
@@ -596,6 +646,7 @@ public sealed class Mixer
         {
             Snapshot = snapshot;
             SeekOffset = snapshot.MaxLatencySamples;
+            SinkDeviceIds = snapshot.SinkDeviceIds;
             Buffers = new float[snapshot.Nodes.Count][];
             DelayLines = new DelayLine?[snapshot.Nodes.Count][];
             SidechainBuffers = new float[snapshot.SidechainBufferCount][];

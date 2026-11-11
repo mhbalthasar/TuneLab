@@ -25,7 +25,7 @@ internal sealed class MixerGraphCompiler
 
     public MixSnapshot Compile(AudioGraph graph, IReadOnlyCollection<IAudioTrack> tracks,
         IReadOnlyCollection<AuxBus> auxes, IReadOnlyList<InsertSlot>? masterInserts = null,
-        DataProperty<bool>? masterPhaseInvert = null)
+        DataProperty<bool>? masterPhaseInvert = null, IReadOnlySet<string>? availableDevices = null)
     {
         // Master 是"总轨"：它的插入链挂在 master 节点上（DESIGN §5.7.18）。
         // 没有就传 null，行为与以前完全一致。
@@ -59,12 +59,32 @@ internal sealed class MixerGraphCompiler
         var masterChain = BuildInserts("master", masterSlots, project, masterAutomations);
         chains["master"] = masterChain;
 
+        // Master 始终进主设备（"device:default"）。v2 的多设备只改变**通道**的去向；
+        // Master 自己的 output 菜单还是占位（模型里没有可落盘的 MasterOutput），
+        // 所以这里不读它，避免"菜单里选了却不生效"。
         var master = builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(masterPhaseInvert),
-            null, masterChain);
+            null, masterChain, MixDeviceIds.Default);
         master.AddAutomations(masterAutomations);
 
-        // v1 只有一个设备：所有"设备"输出都进同一个 sink（DESIGN.md §4.4）。
-        var device = builder.AddNode("device", MixNodeKind.Device);
+        // 每个被引用到的设备一条 sink（按需创建）。没被引用到的设备不建节点：
+        // 空 sink 只是白占一块缓冲，而"主设备"的 sink 已经由 Master 节点承担。
+        var deviceNodes = new Dictionary<string, MixGraphBuilder.NodeDraft>(StringComparer.Ordinal);
+
+        MixGraphBuilder.NodeDraft GetDeviceNode(string deviceId)
+        {
+            if (deviceNodes.TryGetValue(deviceId, out var existing))
+                return existing;
+
+            // 节点 id 不能和轨道/AUX 撞：设备 id 自己带 "device:" 前缀，天然不冲突。
+            var node = builder.AddNode(deviceId, MixNodeKind.Device, deviceId: deviceId);
+            deviceNodes[deviceId] = node;
+            return node;
+        }
+
+        // 设备当前能不能开：null = 不限制（测试 / 没有播放层的场景）。
+        // 打不开的设备（被拔掉 / 被独占）回落到 Master —— 宁可听错路由，也不要静音。
+        bool IsDeviceAvailable(string deviceId)
+            => deviceId == MixDeviceIds.Default || availableDevices == null || availableDevices.Contains(deviceId);
 
         var nodes = new Dictionary<string, MixGraphBuilder.NodeDraft>();
 
@@ -118,7 +138,15 @@ internal sealed class MixerGraphCompiler
                     return aux;
 
                 case MixerOutputKind.Device:
-                    return device;
+                    // 合法 id 只有两种：主设备 "device:default"，或显式设备 "device:<name>"。
+                    bool known = route.Id == MixDeviceIds.Default || MixDeviceIds.TryGetName(route.Id, out _);
+                    if (known && IsDeviceAvailable(route.Id))
+                        return GetDeviceNode(route.Id);
+
+                    // 设备被拔掉 / 打不开：回落 Master，并记一次日志。路由值原样保留 ——
+                    // 设备插回来、下一次编图就会重新接上（比把用户的路由改掉更不意外）。
+                    HostLog.Warning($"mixer: output device '{route.Name}' ({route.Id}) is unavailable; routing to Master instead");
+                    return master;
 
                 case MixerOutputKind.Cable:
                     HostLog.Warning("mixer: cable output is not implemented yet; routing to Master instead");
@@ -178,8 +206,8 @@ internal sealed class MixerGraphCompiler
         var builder = new MixGraphBuilder();
 
         // 引擎要求恰好一个 Master；这里它只是占位（没有输入、没有输出）。
-        builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(null), null, []);
-        var device = builder.AddNode("device", MixNodeKind.Device);
+        builder.AddNode("master", MixNodeKind.Master, new MasterChannelState(null), null, [], MixDeviceIds.Default);
+        var device = builder.AddNode("device", MixNodeKind.Device, deviceId: MixDeviceIds.Default);
 
         // ignoreMuteSolo: 导出分轨与旧路径 AddData 一致 —— 静音/solo 不改变导出内容。
         var state = new TrackChannelState(track, ignoreMuteSolo: true);
@@ -260,7 +288,7 @@ internal sealed class MixerGraphCompiler
         source = null!;
 
         // Master / Device 是终点，不能当源。
-        if (id == "master" || id == "device")
+        if (id == "master" || id.StartsWith("device:", StringComparison.Ordinal))
             return false;
 
         // 模型侧的稳定 id（"track:7" / "aux-N"）在编译时已经作为别名登记进 nodes。

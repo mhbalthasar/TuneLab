@@ -33,12 +33,14 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         mProject.Tracks.MembershipModified.Subscribe(OnMembershipModified);
         mProject.Auxes.MembershipModified.Subscribe(OnMembershipModified);
         AudioEngine.CurrentDevice.Modified.Subscribe(OnDeviceModified);
+        AudioEngine.DevicesChanged += OnDevicesChanged;
         AudioEngine.ProgressChanged += OnProgressChanged;
     }
 
     public IReadOnlyList<IMixerChannel> Channels => mChannels;
     public IMixerChannel Master => mMaster;
     public IReadOnlyList<IMixerOutput> Outputs => mOutputs;
+    public IMixerOutput DefaultDevice => DeviceOutput;
     public IReadOnlyList<IMixerInsertFormat> InsertFormats => mFormats;
 
     // 阶段一：AUX / output / send 已接通；插入效果的模型侧已接上（实例的装配见 InsertInstanceFactory）。
@@ -293,6 +295,7 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
         mProject.Tracks.MembershipModified.Unsubscribe(OnMembershipModified);
         mProject.Auxes.MembershipModified.Unsubscribe(OnMembershipModified);
         AudioEngine.CurrentDevice.Modified.Unsubscribe(OnDeviceModified);
+        AudioEngine.DevicesChanged -= OnDevicesChanged;
         AudioEngine.ProgressChanged -= OnProgressChanged;
 
         foreach (var channel in mChannels)
@@ -393,7 +396,33 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
             mOutputs.Add(new MixerOutput(MixerOutputKind.Aux, bus.Id, () => bus.Name.Value, () => bus.Name.Value, true));
         }
 
-        mOutputs.Add(new MixerOutput(MixerOutputKind.Device, "device:default", DeviceName, DeviceShortName, true));
+        // 主设备（设置里选的那个）。"device:default" 是稳定 id：老工程的 Device 路由就是它，
+        // 它也是播放的时钟主（副设备都从它的块里取数据，见 SDLPlaybackHandler）。
+        mOutputs.Add(new MixerOutput(MixerOutputKind.Device, MixDeviceIds.Default, DeviceName, DeviceShortName, true));
+
+        // 其余真实设备：每个一条 output。名字就是 id（SDL 没有更稳定的设备句柄）。
+        // 与当前主设备同名的条目跳过 —— 选它等于选 "device:default"，重复列出来只会让人
+        // 以为是两条独立的流。
+        string current = AudioEngine.CurrentDevice.Value;
+        foreach (var name in AudioEngine.GetAllDevices())
+        {
+            if (name == AudioEngine.AutoDeviceName)
+                continue;
+
+            if (name == current)
+                continue;
+
+            var captured = name;
+            var id = MixDeviceIds.ForName(captured);
+
+            // 打不开的设备**仍然可点**（点一次会重编图、再试一次），只是名字后面标出来。
+            // 画成禁用会让"被别的程序独占 / 刚拔掉"变成死路：用户连重试的机会都没有。
+            mOutputs.Add(new MixerOutput(MixerOutputKind.Device, id,
+                () => AudioEngine.IsOutputDeviceAvailable(id)
+                    ? captured
+                    : $"{captured} {(IsChinese() ? "（当前不可用）" : "(unavailable)")}",
+                () => ShortDeviceName(captured), true));
+        }
 
         // daw_cable：菜单里保留这一类，但它是禁用项（DESIGN.md §4.5）。
         mOutputs.Add(new MixerOutput(MixerOutputKind.Cable, "cable", static () => "（未实现）", static () => "Cable", false));
@@ -402,14 +431,35 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     static string DeviceName()
     {
         string name = AudioEngine.CurrentDevice.Value;
-        return string.IsNullOrWhiteSpace(name) ? "默认输出设备" : name;
+
+        if (string.IsNullOrWhiteSpace(name))
+            return IsChinese() ? "默认输出设备" : "Default output";
+
+        if (name == AudioEngine.AutoDeviceName)
+            return IsChinese() ? "当前输出设备 (Auto)" : "Current output (Auto)";
+
+        return name;
     }
 
-    // 通道条上那一行只有 84px：完整设备名塞不下（DESIGN.md §4.5）。
-    static string DeviceShortName()
-        => TuneLab.I18N.TranslationManager.CurrentLanguage.Value.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
-            ? "设备"
-            : "Device";
+    static bool IsChinese()
+        => TuneLab.I18N.TranslationManager.CurrentLanguage.Value.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+
+    // 通道条上那一行只有 84px（9.5px 字号，约 70px 可用）：完整设备名塞不下（DESIGN.md §4.5）。
+    static string DeviceShortName() => IsChinese() ? "设备" : "Device";
+
+    // 显式设备在通道条上的短名：取括号前的核心名再截断。
+    // 完整名字仍在 output 菜单里（菜单没有宽度限制）。
+    static string ShortDeviceName(string name)
+    {
+        int paren = name.IndexOf('(');
+        string core = paren > 0 ? name[..paren].Trim() : name;
+
+        if (core.Length == 0)
+            core = name;
+
+        const int max = 8;
+        return core.Length <= max ? core : core[..max] + "…";
+    }
 
     void BuildFormats()
     {
@@ -435,6 +485,13 @@ internal sealed class MixerModelAdapter : IMixerModel, IDisposable
     }
 
     void OnDeviceModified()
+    {
+        BuildOutputs();
+        RoutingChanged?.Invoke();
+    }
+
+    // 设备插拔：名字就是路由 id，菜单必须重建（AudioEngine 已经在这之前清掉了失败表并重编了图）。
+    void OnDevicesChanged()
     {
         BuildOutputs();
         RoutingChanged?.Invoke();
@@ -502,6 +559,7 @@ internal sealed class MixerModelFacade : IMixerModel, IDisposable
     public IReadOnlyList<IMixerChannel> Channels => mInner.Channels;
     public IMixerChannel Master => mInner.Master;
     public IReadOnlyList<IMixerOutput> Outputs => mInner.Outputs;
+    public IMixerOutput DefaultDevice => mInner.DefaultDevice;
     public IReadOnlyList<IMixerInsertFormat> InsertFormats => mInner.InsertFormats;
 
     public bool SupportsAux => mInner.SupportsAux;
@@ -1470,8 +1528,14 @@ internal sealed class MixerSendAdapter(MixerModelAdapter model, Send send) : IMi
     public event Action? Changed;
 }
 
-internal sealed class MixerOutput(MixerOutputKind kind, string id, Func<string> name, Func<string> shortName, bool isAvailable) : IMixerOutput
+internal sealed class MixerOutput(MixerOutputKind kind, string id, Func<string> name, Func<string> shortName, Func<bool> isAvailable) : IMixerOutput
 {
+    // 固定可用性的重载（Master / AUX / Cable）。
+    public MixerOutput(MixerOutputKind kind, string id, Func<string> name, Func<string> shortName, bool isAvailable)
+        : this(kind, id, name, shortName, () => isAvailable)
+    {
+    }
+
     public MixerOutputKind Kind => kind;
     public string Id => id;
 
@@ -1480,7 +1544,10 @@ internal sealed class MixerOutput(MixerOutputKind kind, string id, Func<string> 
     // 早先它在 BuildOutputs 时把名字拷成 string，于是改名只改了 AUX 自己那一条。
     public string Name => name();
     public string ShortName => shortName();
-    public bool IsAvailable => isAvailable;
+
+    // 可用性也是活读的：设备可能在菜单打开期间被拔掉 / 被别的程序独占，
+    // 而下一次 BuildOutputs 之前用户就可能再点开菜单。
+    public bool IsAvailable => isAvailable();
 }
 
 internal sealed class MixerInsertFormat(string name, bool isAvailable, string? unavailableReason) : IMixerInsertFormat

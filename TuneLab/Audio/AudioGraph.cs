@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using TuneLab.Data;
+using TuneLab.ExperimentalPatch.Abstractions;
 using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Foundation;
 
@@ -125,12 +126,15 @@ internal class AudioGraph()
 
     // [EP-MIXER-1] 立体声走混音图；单声道导出暂时仍走旧的逐轨累加
     // （下混语义与图里的"先求和再除 2"不是逐位相同，等接入插入时一起处理）。
-    public void MixData(int position, int endPosition, bool isStereo, float[] buffer, int offset, IMixSource? masterInput = null)
+    // deviceId = null：旧行为（所有 sink 都混进来；导出/测试用）。
+    // deviceId 非 null：只混这条设备流的 sink（多设备播放，见 Mixer.Render）。
+    public void MixData(int position, int endPosition, bool isStereo, float[] buffer, int offset,
+        IMixSource? masterInput = null, string? deviceId = null)
     {
         if (isStereo && mMixer.HasSnapshot)
         {
             mCompiler.RefreshSolo();
-            mMixer.Render(position, endPosition - position, buffer, offset, masterInput);
+            mMixer.Render(position, endPosition - position, buffer, offset, masterInput, deviceId);
             return;
         }
 
@@ -146,6 +150,10 @@ internal class AudioGraph()
         if (mMixer.LimiterEnabled)
             mMixer.Limiter.Process(buffer, offset, endPosition - position, isStereo ? 2 : 1);
     }
+
+    // 多设备输出：把刚渲染的这一块里某条设备流的 sink 拷出来（见 Mixer.CopyDeviceStream）。
+    public bool CopyDeviceStream(string deviceId, float[] buffer, int offset, int count)
+        => mMixer.CopyDeviceStream(deviceId, buffer, offset, count);
 
     void MixDataLegacy(int position, int endPosition, bool isStereo, float[] buffer, int offset)
     {
@@ -247,7 +255,15 @@ internal class AudioGraph()
 
         try
         {
-            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts, mMasterPhaseInvert));
+            // 多设备：先让播放层把被引用的副设备打开（打不开的返回），再编图。
+            // 打不开的设备在编译器里回落到 Master —— 宁可路由不精确，也不要一条轨突然静音。
+            var deviceIds = CollectOutputDeviceIds(tracks, auxes);
+            var unavailable = AudioEngine.PrepareOutputDevices(deviceIds);
+
+            var available = new HashSet<string>(deviceIds, StringComparer.Ordinal);
+            available.ExceptWith(unavailable);
+
+            mMixer.SetSnapshot(mCompiler.Compile(this, tracks, auxes, mMasterInserts, mMasterPhaseInvert, available));
         }
         catch (Exception ex)
         {
@@ -255,6 +271,37 @@ internal class AudioGraph()
             mMixer.SetSnapshot(null);
             Log.Error("failed to build mixer graph: " + ex);
         }
+    }
+
+    // 工程里所有被 output / send 引用到的设备 id（含主设备）。
+    //
+    // 编图前就要知道它们：副设备要在**编译时**就打开，编译器才能知道哪些设备可用、
+    // 哪些要回落 Master。只收 Device 类路由 —— AUX / Master 不是设备。
+    static HashSet<string> CollectOutputDeviceIds(IReadOnlyList<IAudioTrack> tracks, IReadOnlyList<AuxBus> auxes)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal) { MixDeviceIds.Default };
+
+        void Add(MixerRoute route)
+        {
+            if (route.Kind == MixerOutputKind.Device && !string.IsNullOrEmpty(route.Id))
+                ids.Add(route.Id);
+        }
+
+        foreach (var track in tracks)
+        {
+            Add(track.Output);
+            foreach (var send in track.Sends)
+                Add(send.Target.Value);
+        }
+
+        foreach (var aux in auxes)
+        {
+            Add(aux.Output.Value);
+            foreach (var send in aux.Sends)
+                Add(send.Target.Value);
+        }
+
+        return ids;
     }
 
     // [EP-MIXER-3] 未播放时也要有预览音 + Master 增益（旧路径的这段逻辑在播放回调里，

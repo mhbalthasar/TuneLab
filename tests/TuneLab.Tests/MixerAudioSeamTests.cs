@@ -4,6 +4,7 @@ using System.Linq;
 using TuneLab.Audio;
 using TuneLab.Data;
 using TuneLab.ExperimentalPatch.Abstractions;
+using TuneLab.ExperimentalPatch.MixerEngine;
 using TuneLab.Foundation;
 using Xunit;
 
@@ -248,5 +249,62 @@ public class MixerAudioSeamTests
         graph.AddData(toMaster, 0, frames, true, expected, 0);
 
         AssertBitEqual(expected, actual);
+    }
+
+    // 多设备：去 "device:Cable" 的轨只出现在那条设备流里，主设备保持静音。
+    [Fact]
+    public void DeviceRoutedTrack_OnlyAppearsInItsOwnDeviceStream()
+    {
+        const int frames = 64;
+
+        var track = new FakeTrack(1, 0, false, false, new FakeSource(0, frames, 21))
+        {
+            Output = new MixerRoute(MixerOutputKind.Device, MixDeviceIds.ForName("Cable"), "Cable"),
+        };
+
+        var graph = new AudioGraph { SampleRate = SampleRate };
+        graph.AddTrack(track);
+
+        var primary = new float[frames * 2];
+        graph.MixData(0, frames, true, primary, 0, null, MixDeviceIds.Default);
+        Assert.All(primary, sample => Assert.Equal(0f, sample));
+
+        var cable = new float[frames * 2];
+        Assert.True(graph.CopyDeviceStream(MixDeviceIds.ForName("Cable"), cable, 0, frames));
+
+        var expected = new float[frames * 2];
+        graph.AddData(track, 0, frames, true, expected, 0);
+
+        AssertBitEqual(expected, cable);
+    }
+
+    // 打不开的设备：路由回落 Master，声音不能凭空消失。
+    [Fact]
+    public void UnavailableDeviceRoute_FallsBackToMaster()
+    {
+        const int frames = 32;
+
+        var track = new FakeTrack(1, 0, false, false, new FakeSource(0, frames, 22))
+        {
+            Output = new MixerRoute(MixerOutputKind.Device, MixDeviceIds.ForName("Missing"), "Missing"),
+        };
+
+        var graph = new AudioGraph { SampleRate = SampleRate };
+        var compiler = new MixerGraphCompiler();
+
+        // 只有主设备可用：Missing 必须被编译器回落到 Master。
+        var snapshot = compiler.Compile(graph, [track], [], null, null,
+            new HashSet<string> { MixDeviceIds.Default });
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(snapshot);
+
+        var primary = new float[frames * 2];
+        mixer.Render(0, frames, primary, 0, null, MixDeviceIds.Default);
+
+        var expected = new float[frames * 2];
+        graph.AddData(track, 0, frames, true, expected, 0);
+
+        AssertBitEqual(expected, primary);
     }
 }

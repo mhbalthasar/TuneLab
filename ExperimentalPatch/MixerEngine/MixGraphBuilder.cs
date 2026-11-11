@@ -20,6 +20,9 @@ public sealed class MixGraphBuilder
         public IMixChannelState? State { get; }
         public IMixSource? Source { get; }
 
+        // 只有 Master / Device 有值：这条 sink 输出到哪条设备流（见 MixDeviceIds）。
+        public string? DeviceId { get; }
+
         // 插入链（就地、按顺序）。建图时把延迟报上来做 PDC。
         public IReadOnlyList<IMixInsert> Inserts { get; }
 
@@ -35,13 +38,14 @@ public sealed class MixGraphBuilder
         internal readonly List<MixAutomationBinding> Automations = [];
 
         internal NodeDraft(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
-            IReadOnlyList<IMixInsert> inserts)
+            IReadOnlyList<IMixInsert> inserts, string? deviceId = null)
         {
             Id = id;
             Kind = kind;
             State = state;
             Source = source;
             Inserts = inserts;
+            DeviceId = deviceId;
         }
 
         // [EP-MIXER-AUTO] 给本节点挂插入参数自动化绑定（编译期调用，见 MixAutomationBinding）。
@@ -70,7 +74,7 @@ public sealed class MixGraphBuilder
     readonly List<NodeDraft> mNodes = [];
 
     public NodeDraft AddNode(string id, MixNodeKind kind, IMixChannelState? state = null,
-        IMixSource? source = null, IReadOnlyList<IMixInsert>? inserts = null)
+        IMixSource? source = null, IReadOnlyList<IMixInsert>? inserts = null, string? deviceId = null)
     {
         if (string.IsNullOrEmpty(id))
             throw new ArgumentException("node id must not be empty", nameof(id));
@@ -78,7 +82,12 @@ public sealed class MixGraphBuilder
         if (mNodes.Any(n => n.Id == id))
             throw new ArgumentException($"duplicate node id '{id}'", nameof(id));
 
-        var draft = new NodeDraft(id, kind, state, source, inserts ?? []);
+        // Master / Device 是 sink，必须落在某条设备流上。不传时回落到主设备：
+        // 老调用点（测试、分轨导出）因此行为不变 —— 所有 sink 仍进同一条流。
+        if (kind is MixNodeKind.Master or MixNodeKind.Device)
+            deviceId ??= MixDeviceIds.Default;
+
+        var draft = new NodeDraft(id, kind, state, source, inserts ?? [], deviceId);
         draft.Index = mNodes.Count;
         mNodes.Add(draft);
         return draft;
@@ -365,11 +374,20 @@ public sealed class MixGraphBuilder
         {
             var draft = order[i];
             nodes.Add(new MixNode(draft.Id, draft.Kind, draft.State, draft.Source, draft.Inserts, edges[i],
-                sidechainOutputs[i], sidechainByInsert[i]));
+                sidechainOutputs[i], sidechainByInsert[i], draft.DeviceId));
+        }
+
+        // 每条 sink 属于哪条设备流（非 sink 为 null）。音频线程每块按它把 sink 缓冲
+        // 分到"主设备 / 某个副设备"（见 Mixer.Render 的 deviceId 过滤）。
+        var sinkDeviceIds = new string?[nodes.Count];
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (nodes[i].Kind is MixNodeKind.Master or MixNodeKind.Device)
+                sinkDeviceIds[i] = nodes[i].DeviceId;
         }
 
         return new MixSnapshot(nodes, nodes[topoIndex[master]], maxLatency, sidechainBufferCount,
-            [.. mNodes.SelectMany(n => n.Automations)]);
+            [.. mNodes.SelectMany(n => n.Automations)], sinkDeviceIds);
     }
 
     // 供 UI 用：在现有图上再加一条 from → to，会不会成环？

@@ -11,8 +11,33 @@ public enum MixNodeKind
     // 终点：输入缓冲 → 推子（= MasterGain）→ 设备。整张图恰好一个。
     Master,
 
-    // 直接进设备（绕过 Master）。v1 只有一个设备，所以它就是一个输出口。
+    // 直接进设备（绕过 Master）。v2 起每个设备一个 sink（见 MixDeviceIds）。
     Device,
+}
+
+// 设备流的 id 约定。
+//
+// "device:default" = 设置里选的那个输出设备（主设备，也是**时钟主**：播放头/预读头都跟着它）。
+// "device:<name>"  = 显式指定的另一个设备（SDL 的设备名）。名字就是 SDL 的稳定标识；
+//                    设备被拔掉时路由原样保留，插回来会重新接上（见 MixerGraphCompiler）。
+public static class MixDeviceIds
+{
+    public const string Default = "device:default";
+
+    public static string ForName(string name) => "device:" + name;
+
+    public static bool TryGetName(string id, out string name)
+    {
+        const string prefix = "device:";
+        if (id.StartsWith(prefix, StringComparison.Ordinal) && id.Length > prefix.Length)
+        {
+            name = id[prefix.Length..];
+            return true;
+        }
+
+        name = string.Empty;
+        return false;
+    }
 }
 
 // 一条边（output 或 send）。增益与延迟在建图时定死，运行时只读。
@@ -78,6 +103,14 @@ public sealed class MixNode
     // 只有 Track 有。
     public IMixSource? Source { get; }
 
+    // 这条 sink 属于哪条设备流（只有 Master / Device 有值）：
+    // "device:default" = 设置里的主设备，其余见 MixDeviceIds。
+    //
+    // 为什么 sink 要带设备 id：v2 的多设备输出不是"每个设备一条 SDL 流、各渲各的"，
+    // 而是**一次渲染出所有设备流**（见 Mixer.Render 的 deviceId 过滤）。音频线程因此
+    // 只需要跑一遍插件，副设备从同一块的 sink 缓冲里取走自己那条。
+    public string? DeviceId { get; }
+
     // 插入链（按顺序处理，就地）。推子之后、分发之前（DESIGN.md §3.2）。
     // 没有插入时是空数组——退化图因此与无插入的路径逐位相同。
     public IReadOnlyList<IMixInsert> Inserts { get; }
@@ -101,12 +134,14 @@ public sealed class MixNode
     internal MixNode(string id, MixNodeKind kind, IMixChannelState? state, IMixSource? source,
         IReadOnlyList<IMixInsert> inserts, IReadOnlyList<MixEdge> outputs,
         IReadOnlyList<MixSidechainOutput>? sidechainOutputs = null,
-        IReadOnlyList<int>? sidechainBufferForInsert = null)
+        IReadOnlyList<int>? sidechainBufferForInsert = null,
+        string? deviceId = null)
     {
         Id = id;
         Kind = kind;
         State = state;
         Source = source;
+        DeviceId = deviceId;
         Inserts = inserts;
         Outputs = outputs;
         SidechainOutputs = sidechainOutputs ?? [];

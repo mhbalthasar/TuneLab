@@ -670,5 +670,111 @@ public class MixerEngineTests
             Assert.Equal(source[(i - delay) * 2 + 1], destination[i * 2 + 1]);
         }
     }
+
+    // ── 多设备输出（DESIGN.md §4.4 v2）──
+
+    // 两条轨各去一个副设备：主设备只拿自己的 sink（这里没有），副设备各拿自己那条。
+    [Fact]
+    public void DeviceSinks_AreRenderedPerDeviceStream()
+    {
+        const int frames = 16;
+
+        var aData = new float[frames * 2];
+        var bData = new float[frames * 2];
+        Array.Fill(aData, 0.25f);
+        Array.Fill(bData, -0.5f);
+
+        var builder = new MixGraphBuilder();
+        builder.AddNode("master", MixNodeKind.Master, new TestState(), deviceId: MixDeviceIds.Default);
+        var sinkA = builder.AddNode("sink-a", MixNodeKind.Device, deviceId: MixDeviceIds.ForName("A"));
+        var sinkB = builder.AddNode("sink-b", MixNodeKind.Device, deviceId: MixDeviceIds.ForName("B"));
+        var trackA = builder.AddNode("track-a", MixNodeKind.Track, new TestState(), new ArraySource(aData));
+        var trackB = builder.AddNode("track-b", MixNodeKind.Track, new TestState(), new ArraySource(bData));
+
+        builder.Connect(trackA, sinkA);
+        builder.Connect(trackB, sinkB);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        // 主设备：两条轨都直接去副设备，主输出应当是静音。
+        var primary = new float[frames * 2];
+        mixer.Render(0, frames, primary, 0, null, MixDeviceIds.Default);
+        Assert.All(primary, sample => Assert.Equal(0f, sample));
+
+        var deviceA = new float[frames * 2];
+        Assert.True(mixer.CopyDeviceStream(MixDeviceIds.ForName("A"), deviceA, 0, frames));
+        Assert.All(deviceA, sample => Assert.Equal(0.25f, sample));
+
+        var deviceB = new float[frames * 2];
+        Assert.True(mixer.CopyDeviceStream(MixDeviceIds.ForName("B"), deviceB, 0, frames));
+        Assert.All(deviceB, sample => Assert.Equal(-0.5f, sample));
+    }
+
+    // 不带 deviceId 的 Render 是旧行为：所有 sink 都混进来（导出 / 测试依赖它）。
+    [Fact]
+    public void RenderWithoutDeviceFilter_SumsEverySink()
+    {
+        const int frames = 8;
+
+        var aData = new float[frames * 2];
+        var bData = new float[frames * 2];
+        Array.Fill(aData, 0.25f);
+        Array.Fill(bData, -0.5f);
+
+        var builder = new MixGraphBuilder();
+        builder.AddNode("master", MixNodeKind.Master, new TestState(), deviceId: MixDeviceIds.Default);
+        var sinkA = builder.AddNode("sink-a", MixNodeKind.Device, deviceId: MixDeviceIds.ForName("A"));
+        var sinkB = builder.AddNode("sink-b", MixNodeKind.Device, deviceId: MixDeviceIds.ForName("B"));
+        var trackA = builder.AddNode("track-a", MixNodeKind.Track, new TestState(), new ArraySource(aData));
+        var trackB = builder.AddNode("track-b", MixNodeKind.Track, new TestState(), new ArraySource(bData));
+
+        builder.Connect(trackA, sinkA);
+        builder.Connect(trackB, sinkB);
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var all = new float[frames * 2];
+        mixer.Render(0, frames, all, 0);   // deviceId = null
+
+        Assert.All(all, sample => Assert.Equal(-0.25f, sample));   // 0.25 + (−0.5)
+    }
+
+    [Fact]
+    public void CopyDeviceStream_UnknownDeviceIsSilent()
+    {
+        const int frames = 8;
+
+        var builder = new MixGraphBuilder();
+        builder.AddNode("master", MixNodeKind.Master, new TestState());
+
+        var mixer = new Mixer();
+        mixer.SetSnapshot(builder.Build());
+
+        var buffer = new float[frames * 2];
+        Array.Fill(buffer, 1f);
+
+        Assert.False(mixer.CopyDeviceStream(MixDeviceIds.ForName("nope"), buffer, 0, frames));
+        Assert.All(buffer, sample => Assert.Equal(0f, sample));
+    }
+
+    [Fact]
+    public void Snapshot_ExposesTheSinkDeviceOfEachSink()
+    {
+        var builder = new MixGraphBuilder();
+        builder.AddNode("master", MixNodeKind.Master, new TestState(), deviceId: MixDeviceIds.Default);
+        var sinkA = builder.AddNode("sink-a", MixNodeKind.Device, deviceId: MixDeviceIds.ForName("A"));
+        var track = builder.AddNode("track-a", MixNodeKind.Track, new TestState(), new ArraySource(new float[4]));
+
+        builder.Connect(track, sinkA);
+
+        var snapshot = builder.Build();
+        var byId = snapshot.Nodes.Select((node, index) => (node.Id, index)).ToDictionary(x => x.Id, x => x.index);
+
+        Assert.Equal(MixDeviceIds.Default, snapshot.SinkDeviceIds[byId["master"]]);
+        Assert.Equal(MixDeviceIds.ForName("A"), snapshot.SinkDeviceIds[byId["sink-a"]]);
+        Assert.Null(snapshot.SinkDeviceIds[byId["track-a"]]);
+    }
 }
 

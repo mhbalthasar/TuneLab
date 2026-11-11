@@ -38,3 +38,12 @@ internal interface IAudioPlaybackHandler
     IReadOnlyList<string> GetAllDevices();
     IReadOnlyList<string> GetAllDrivers();
 }
+
+// 多设备输出：UI 线程侧的副设备管理。
+//
+// 宿主在**编图前**把工程里被引用的副设备名交进来：播放层打开缺的、关掉不再用的，
+// 返回打不开的名字。编译器据此把这些设备的路由回落 Master（见 MixerGraphCompiler）。
+internal interface ISecondaryDeviceHost
+{
+    IReadOnlyCollection<string> SetSecondaryDevices(IReadOnlyCollection<string> deviceNames);
+}
