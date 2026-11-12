@@ -759,6 +759,36 @@ public class MixerEngineTests
         Assert.All(buffer, sample => Assert.Equal(0f, sample));
     }
 
+    // [EP-MIXER-34] 限幅器是全局语义：副设备流同样被压住（Master 去副设备时，
+    // 主混音的过冲不能原样出街）。
+    [Fact]
+    public void Limiter_AppliesToSecondaryDeviceStreams()
+    {
+        const int frames = 16;
+
+        var data = new float[frames * 2];
+        Array.Fill(data, 2f);   // 远超 ceiling
+
+        var builder = new MixGraphBuilder();
+        var master = builder.AddNode("master", MixNodeKind.Master, new TestState(), deviceId: MixDeviceIds.ForName("Cable"));
+        var track = builder.AddNode("track-0", MixNodeKind.Track, new TestState(), new ArraySource(data));
+        builder.Connect(track, master, 1f);
+
+        var mixer = new Mixer { LimiterEnabled = true };
+        mixer.SetSnapshot(builder.Build());
+
+        // 先渲染一遍（null = 全 sink 求和，走主限幅器），让 sink 缓冲里有内容。
+        var scratch = new float[frames * 2];
+        mixer.Render(0, frames, scratch, 0);
+
+        var cable = new float[frames * 2];
+        Assert.True(mixer.CopyDeviceStream(MixDeviceIds.ForName("Cable"), cable, 0, frames));
+
+        // 副设备流被压住：不越 ceiling，且确实被动过（不是 2.0 原样直通）。
+        Assert.All(cable, sample => Assert.True(Math.Abs(sample) <= mixer.Limiter.Ceiling + 1e-5f));
+        Assert.True(cable.Max(Math.Abs) < 2f);
+    }
+
     [Fact]
     public void Snapshot_ExposesTheSinkDeviceOfEachSink()
     {

@@ -26,7 +26,21 @@ public sealed class Mixer
     }
 
     // 输入级高通要用。由宿主在采样率变化时设置（AudioGraph.SampleRate）。
-    public double SampleRate { get; set; } = 44100;
+    // 采样率变了，所有设备流的限幅器释放系数都要跟着重算。
+    public double SampleRate
+    {
+        get => mSampleRate;
+        set
+        {
+            mSampleRate = value;
+
+            Limiter.SampleRate = (int)value;
+            foreach (var limiter in mDeviceLimiters.Values)
+                limiter.SampleRate = (int)value;
+        }
+    }
+
+    double mSampleRate = 44100;
 
     // 声向法则（roadmap 2.5）。默认 Linear0Db = 上游老公式，逐位相同的保证靠它。
     public PanLaw PanLaw { get; set; } = PanLaw.Linear0Db;
@@ -37,7 +51,31 @@ public sealed class Mixer
 
     // 输出级限幅（DESIGN.md §3.10）。默认**关**：引擎单测要验证"纯混音"的 bit 相同，
     // 限幅是另一层语义。宿主在 AudioGraph 里把它打开。
+    //
+    // [EP-MIXER-34] 限幅对**每条设备流**独立生效（全局语义：不管混音去主设备还是副设备）。
+    // 每条流有自己的包络状态 —— 两条设备流是两条独立的物理输出，响度互不相干，
+    // 共用一个实例会把它们的增益耦合在一起（一条被压另一条也跟着压）。
+    // `Limiter` = 主设备流（deviceId 为 null / 主设备的渲染、导出的全求和流）；
+    // 显式副设备流按需各建一个（StreamLimiter）。
     public PeakLimiter Limiter { get; } = new();
+
+    readonly Dictionary<string, PeakLimiter> mDeviceLimiters = new(StringComparer.Ordinal);
+
+    // 一条设备流的限幅器。主设备流（null / "device:default"）用 Limiter 本尊；
+    // 副设备流第一次用到时建，包络状态随流保持（图重建不重置，与主设备一致）。
+    PeakLimiter StreamLimiter(string? deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId) || deviceId == MixDeviceIds.Default)
+            return Limiter;
+
+        if (!mDeviceLimiters.TryGetValue(deviceId, out var limiter))
+        {
+            limiter = new PeakLimiter { SampleRate = (int)SampleRate };
+            mDeviceLimiters[deviceId] = limiter;
+        }
+
+        return limiter;
+    }
 
     public bool LimiterEnabled { get; set; }
 
@@ -81,8 +119,9 @@ public sealed class Mixer
 
             // 限幅在**整块渲染完之后**做：各节点的电平抽头（表）已经在这一块里取过了，
             // 所以表显示的是限幅前的峰值（DESIGN.md §3.10）。
+            // [EP-MIXER-34] 每条设备流过自己的限幅器（全局语义：去哪台设备都被压住）。
             if (LimiterEnabled)
-                Limiter.Process(buffer, offset, n);
+                StreamLimiter(deviceId).Process(buffer, offset, n);
 
             position += n;
             offset += n * 2;
@@ -414,6 +453,11 @@ public sealed class Mixer
             any = true;
             Accumulate(runtime.Buffers[i], 0, buffer, offset, count, 1f, 1f);
         }
+
+        // [EP-MIXER-34] 设备流同样过限幅器：Master 去副设备后，主混音的过冲也要被压住。
+        // 表（电平抽头）在 Render 里取，仍是限幅前峰值，语义不变。
+        if (any && LimiterEnabled)
+            StreamLimiter(deviceId).Process(buffer, offset, count);
 
         return any;
     }
