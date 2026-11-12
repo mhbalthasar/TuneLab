@@ -3,6 +3,14 @@
 > 2026-10-30 方案稿。目标是把 VST3 的加载 / 处理 / 状态 / 编辑器全部搬到已有的 x64 桥进程，
 > 让插件**崩**或**挂**都只死桥，宿主继续活着。VST2 已经走这条路（DESIGN §5.3），
 > 这里只处理"VST3 也要走同一套"的增量。
+>
+> **【2026-11-12 目录迁移】** 桥工程重排进 `VstBridgeProcess/`：
+> `VstBridge/`（x86 桥源码）→ `VstBridgeProcess/VstBridge.Common/`（公共源码）+
+> `VstBridgeProcess/VstBridge.X86/`（x86 工程csproj）、`VstBridge.X64/` 原地平移、
+> 新增 `VstBridge.Arm64/`（osx-arm64 / win-arm64）。exe 名对称化为
+> `TuneLab.ExperimentalPatch.VstBridge.{x86,x64,arm64}[.exe]`（x86 桥因此**改了名**，
+> 宿主 `VstBridgeClient` 按位数 + 进程架构挑选）。本文正文里的旧路径按历史记录保留，
+> 读到 `VstBridge/` 时对号入座 `VstBridgeProcess/VstBridge.Common/`。
 
 ## 0. 为什么必做
 

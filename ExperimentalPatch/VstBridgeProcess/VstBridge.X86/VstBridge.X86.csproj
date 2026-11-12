@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- ════════════════════════════════════════════════════════════════════════
-       VstBridge — 32 位 VST 插件的宿主进程（DESIGN.md §5.3，Q6 拍板"桥进程"）
+       VstBridge.X86 — 32 位 VST 插件的宿主进程（DESIGN.md §5.3，Q6 拍板"桥进程"）
        ════════════════════════════════════════════════════════════════════════
        为什么需要它：VST2.4 的老插件大半是 32 位 x86 编译的。64 位宿主进程
        LoadLibrary 一个 32 位 dll 会直接失败（ERROR_BAD_EXE_FORMAT），没有别的路。
@@ -10,7 +10,15 @@
        所以：把"加载 32 位插件"这件事整个搬到这个 x86 进程里做，宿主用 named pipe
        跟它说话。宿主保持 AnyCPU，一条也不动。
 
-       三条硬纪律（本文件后面的代码都围着它们转）：
+       【目录结构（VstBridgeProcess/，三个 exe + 一份公共源码）】
+         · VstBridge.Common/   公共源码（协议 / 会话 / 各格式宿主），三个 exe 共编一份；
+         · VstBridge.X86/      本工程（x86 桥）；
+         · VstBridge.X64/      x64 桥（与本事同构）；
+         · VstBridge.Arm64/    arm64 桥（osx-arm64 / win-arm64 / linux-arm64）。
+       输出名对称：TuneLab.ExperimentalPatch.VstBridge.{x86,x64,arm64}[.exe]。
+       宿主侧 VstBridgeClient 按插件位数 + 进程架构选其中一个。
+
+       三条硬纪律（Common 里的代码都围着它们转）：
 
        ① **只按需启动**。没有 32 位插件要加载时，这个进程根本不该存在。
           宿主端 VstBridgeClient.EnsureStarted() 是唯一的启动入口。
@@ -21,9 +29,9 @@
           注意方向：**桥不能反过来把宿主关掉**，所以这里绝不创建带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
           又把宿主放进去的作业。
 
-       ③ **非 Windows 上这段代码不存在**。csproj 的 Platforms 只有 x86；宿主端的客户端
-           只在 OperatingSystem.IsWindows() 时才碰这些 API。别的平台上本工程既不编译
-           也不发布（它甚至不在 TuneLab.sln 里——由发布脚本按平台单独构）。
+       ③ **只发 Windows**。Platforms 只有 x86；宿主端的客户端只在
+          OperatingSystem.IsWindows() 时才碰这些 API。别的平台上本工程既不编译
+          也不发布（它甚至不在 TuneLab.sln 里——由发布脚本按平台单独构）。
        ════════════════════════════════════════════════════════════════════════ -->
 
   <PropertyGroup>
@@ -38,21 +46,29 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <AssemblyName>TuneLab.ExperimentalPatch.VstBridge</AssemblyName>
+    <AssemblyName>TuneLab.ExperimentalPatch.VstBridge.x86</AssemblyName>
     <RootNamespace>TuneLab.ExperimentalPatch.VstBridge</RootNamespace>
     <Version>2.1.1</Version>
     <!-- CS0436：桥与 InsertHost 各自编译一份 BridgeProtocol（两端逐字节一致是硬要求，
          见 InsertHost.csproj）。桥引用了 InsertHost 之后，同一个全名类型出现两次，
          编译器提醒"用的是本地的" —— 这正是我们要的，关掉这条噪声。 -->
     <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <!-- 源码在兄弟目录里：关掉默认通配，显式包含（与 VstBridge.X64 同一口径）。 -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <!-- 桥进程自己不需要 Avalonia（插件编辑器窗口是另一个话题，见 BridgeProtocol）。 -->
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 公共源码在兄弟目录 VstBridge.Common/：协议、会话、共享内存、各格式宿主。
+         ** 递归收编 InProcess/（进程内 VST3 的 vendored 实现）。 -->
+    <Compile Include="..\VstBridge.Common\**\*.cs" />
+  </ItemGroup>
 
   <!-- [VST3-BRIDGE] 桥也要承载 VST3：复用 InsertHost 里的 Vst3Backend / Vst3Insert，
        不再把 VST3 逻辑抄第二遍。x86 桥在运行时用不了 VST3（native 是 win-x64），
        所以它不支持并不冲突 —— Vst3PluginHost.IsSupported 会回 false，HelloAck 只声明 vst2。 -->
   <ItemGroup>
-    <ProjectReference Include="..\InsertHost\InsertHost.csproj" />
+    <ProjectReference Include="..\..\InsertHost\InsertHost.csproj" />
   </ItemGroup>
 
   <!-- 引用 InsertHost 的副作用：它把自己的 Native/win-x64/ownvst3.tlhost.dll 内容复制到

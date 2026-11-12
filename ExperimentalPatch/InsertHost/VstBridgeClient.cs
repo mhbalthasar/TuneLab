@@ -26,9 +26,11 @@ using TuneLab.ExperimentalPatch.VstBridge;
 // —— 见 SendProcess 的说明。
 internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
 {
-    // 桥的可执行文件名（不含扩展名，扩展名按平台补）。两个位数各一份（同名会让部署时互相覆盖）。
-    const string BridgeAssemblyName32 = "TuneLab.ExperimentalPatch.VstBridge";
+    // 桥的可执行文件名（不含扩展名，扩展名按平台补）。三个架构各一份（同名会让部署时互相覆盖）。
+    // [VstBridgeProcess] x86 / x64 / arm64 对称命名，由插件位数 + 进程架构挑选。
+    const string BridgeAssemblyName32 = "TuneLab.ExperimentalPatch.VstBridge.x86";
     const string BridgeAssemblyName64 = "TuneLab.ExperimentalPatch.VstBridge.x64";
+    const string BridgeAssemblyNameArm64 = "TuneLab.ExperimentalPatch.VstBridge.arm64";
 
     // 杀桥后等它真退出再放共享段的上限（见 KillBridge 里那段说明）。正常几毫秒。
     const int KillExitWaitMs = 2000;
@@ -1012,12 +1014,18 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     // ── 内部 ──
 
     // [P5.3] 当前平台 + 位数对应的桥 RID。
-    // Windows：win-x86 / win-x64（VST2 是双位数）。Unix：只有 64 位（VST2 是 Windows-only，
+    // Windows：win-x86 / win-x64 / win-arm64（VST2 是双位数；ARM 机器上的 64 位插件
+    // 进 arm64 桥，32 位老插件走 x86 模拟 → win-x86）。Unix：64/ARM（VST2 是 Windows-only，
     // VST3 锁 64 位，见 VST3-BRIDGE.md §9.1）——32 位在非 Windows 没有产物，返回 null。
     static string? BridgeRid(int bitness)
     {
         if (OperatingSystem.IsWindows())
-            return bitness == 32 ? "win-x86" : "win-x64";
+        {
+            if (bitness == 32)
+                return "win-x86";
+
+            return RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
+        }
 
         if (bitness == 32)
             return null;
@@ -1031,9 +1039,13 @@ internal sealed class VstBridgeClient : IDisposable, IBridgeChannel
     }
 
     // [P5.3] 可执行文件名：Windows 带 .exe，Unix 的 apphost 不带扩展名。
+    // 64 位在 ARM 机器上取 arm64 桥（与 BridgeRid 的架构判定同一口径）。
     static string BridgeExecutableName(int bitness)
     {
-        string stem = bitness == 32 ? BridgeAssemblyName32 : BridgeAssemblyName64;
+        string stem = bitness == 32
+            ? BridgeAssemblyName32
+            : RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? BridgeAssemblyNameArm64 : BridgeAssemblyName64;
+
         return OperatingSystem.IsWindows() ? stem + ".exe" : stem;
     }
 

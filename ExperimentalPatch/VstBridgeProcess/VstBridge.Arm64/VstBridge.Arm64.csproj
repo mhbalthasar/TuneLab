@@ -1,0 +1,98 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       VstBridge.Arm64 — arm64 插件的宿主进程（源码在 ..\VstBridge.Common）
+       ════════════════════════════════════════════════════════════════════════
+       为什么 arm64 也要一座桥：与 x64 完全同一套理由（VST2 没有沙箱、桥崩了宿主
+       换直通），只是目标架构不同 —— Apple Silicon 的 macOS（osx-arm64，未来承载
+       VST3 / AU / CLAP / JSFX 的 arm64 原生）与 Windows on ARM（win-arm64）。
+
+       三个桥（VstBridgeProcess/）的差别只有位数/架构与输出名：
+         · TuneLab.ExperimentalPatch.VstBridge.x86.exe    （x86，老插件）
+         · TuneLab.ExperimentalPatch.VstBridge.x64.exe    （x64）
+         · TuneLab.ExperimentalPatch.VstBridge.arm64.exe  （arm64，本工程）
+       宿主侧 VstBridgeClient 按插件位数 + 进程架构选其中一个。
+
+       【原生依赖的现状】arm64 目标目前没有 ownvst3 / ysfx 的 native 产物
+       （InsertHost/Native/ 下没有对应 RID 目录）：VST3 / JSFX 在 arm64 桥里
+       暂不可用（缺 native 时 IsSupported 回 false，与"没装 native"同一语义），
+       本工程先把**结构与产物**立起来，native 编出来即可用。
+       AU（Audio Unit）宿主还没有实现代码 —— Common 里没有 AU 宿主类，
+       支持它需要新增（协议已按"格式字符串"扩展，不需要动）。
+
+       这个工程**不在 TuneLab.sln 里**：由发布脚本按平台单独构。
+       ════════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <Platforms>ARM64</Platforms>
+    <!-- 本机默认给 win-arm64（在 x64 开发机上也能交叉编译验证）；
+         CI / 发布用 -r osx-arm64 / -r win-arm64 / -r linux-arm64 覆盖。 -->
+    <RuntimeIdentifier>win-arm64</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>TuneLab.ExperimentalPatch.VstBridge.arm64</AssemblyName>
+    <RootNamespace>TuneLab.ExperimentalPatch.VstBridge</RootNamespace>
+    <Version>2.1.1</Version>
+
+    <!-- CS0436：桥与 InsertHost 各自编译一份 BridgeProtocol（两端逐字节一致是硬要求）。
+         桥引用 InsertHost 复用 VST3 宿主之后，同一个全名类型出现两次，关掉这条噪声。 -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+    <!-- 源码在兄弟目录里：关掉默认通配，显式包含，免得多收一份 obj/。 -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 公共源码在 ..\VstBridge.Common\（协议 / 会话 / 各格式宿主）。 -->
+    <Compile Include="..\VstBridge.Common\*.cs" />
+    <!-- 进程内的 VST3 实现在 InProcess/ 子目录：
+         *.cs 的 glob 不递归，所以两条都要写。 -->
+    <Compile Include="..\VstBridge.Common\InProcess\*.cs" />
+    <Compile Include="..\VstBridge.Common\InProcess\Vendored\*.cs" />
+  </ItemGroup>
+
+  <!-- 桥承载 VST3：引用 InsertHost 复用 Vst3Backend / Vst3Insert。 -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\InsertHost\InsertHost.csproj" />
+  </ItemGroup>
+
+  <!-- ownvst3 的 native 必须躺在桥 exe 旁边（Vst3Backend 从 AppContext.BaseDirectory 找）。
+       按**目标 RID** 选目录，口径与 InsertHost.csproj / VstBridge.X64 一致。
+       arm64 的 native 产物还没有 —— Exists() 条件自然跳过，不会报错。 -->
+  <PropertyGroup>
+    <Vst3NativeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and '$(NETCoreSdkPortableRuntimeIdentifier)' != ''">$(NETCoreSdkPortableRuntimeIdentifier)</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-arm64</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</Vst3NativeRid>
+    <Vst3NativeRid Condition="'$(Vst3NativeRid)' == ''">linux-arm64</Vst3NativeRid>
+
+    <!-- 目标 RID 应该带哪一种 native（名字必须与 Vst3Backend.NativeFileName 一致）。 -->
+    <Vst3NativeFileName Condition="$(Vst3NativeRid.StartsWith('win'))">ownvst3.tlhost.dll</Vst3NativeFileName>
+    <Vst3NativeFileName Condition="$(Vst3NativeRid.StartsWith('osx'))">libownvst3.tlhost.dylib</Vst3NativeFileName>
+    <Vst3NativeFileName Condition="'$(Vst3NativeFileName)' == ''">libownvst3.tlhost.so</Vst3NativeFileName>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('..\..\InsertHost\Native\$(Vst3NativeRid)')">
+    <None Include="..\..\InsertHost\Native\$(Vst3NativeRid)\*"
+          CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- InsertHost 作为 ProjectReference 是**不带 RID** 编译的，它的 Native/<rid> 只看宿主
+       OS —— 跨 RID 发布会顺着引用把别的架构 native 带进来。按目标 RID 定夺：
+       不是本 RID 的那几种 native 名，一律删掉（与 X64 桥同一个路子）。 -->
+  <Target Name="DropForeignVst3Native" AfterTargets="Build">
+    <Delete Files="$(OutDir)ownvst3.tlhost.dll"           Condition="'$(Vst3NativeFileName)' != 'ownvst3.tlhost.dll'" />
+    <Delete Files="$(OutDir)libownvst3.tlhost.so"         Condition="'$(Vst3NativeFileName)' != 'libownvst3.tlhost.so'" />
+    <Delete Files="$(OutDir)libownvst3.tlhost.dylib"      Condition="'$(Vst3NativeFileName)' != 'libownvst3.tlhost.dylib'" />
+  </Target>
+  <Target Name="DropForeignVst3NativeOnPublish" AfterTargets="Publish">
+    <Delete Files="$(PublishDir)ownvst3.tlhost.dll"       Condition="'$(Vst3NativeFileName)' != 'ownvst3.tlhost.dll'" />
+    <Delete Files="$(PublishDir)libownvst3.tlhost.so"     Condition="'$(Vst3NativeFileName)' != 'libownvst3.tlhost.so'" />
+    <Delete Files="$(PublishDir)libownvst3.tlhost.dylib"  Condition="'$(Vst3NativeFileName)' != 'libownvst3.tlhost.dylib'" />
+  </Target>
+
+</Project>

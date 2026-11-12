@@ -1,18 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- ════════════════════════════════════════════════════════════════════════
-       VstBridge.x64 — 64 位 VST2 插件的宿主进程（与 ..\VstBridge 同一套源码）
+       VstBridge.X64 — 64 位 VST2 插件的宿主进程（源码在 ..\VstBridge.Common）
        ════════════════════════════════════════════════════════════════════════
        为什么 64 位插件也要过桥：VST2 没有沙箱。实测 46 个 64 位 VST2 插件里有
        一个在 effSetChunk 里直接 AccessViolation —— 进程内直载意味着整个 TuneLab
        退出。桥进程崩了只是桥崩了，宿主可以把它标成失败并直通。
 
-       两个桥的差别只有位数与输出名：
-         · TuneLab.ExperimentalPatch.VstBridge.exe      （x86，老插件）
-         · TuneLab.ExperimentalPatch.VstBridge.x64.exe  （x64，本工程）
-       宿主侧 VstBridgeClient.ForBitness() 按插件位数选其中一个。
+       三个桥（VstBridgeProcess/）的差别只有位数与输出名：
+         · TuneLab.ExperimentalPatch.VstBridge.x86.exe    （x86，老插件）
+         · TuneLab.ExperimentalPatch.VstBridge.x64.exe    （x64，本工程）
+         · TuneLab.ExperimentalPatch.VstBridge.arm64.exe  （arm64，osx/win 的 arm 机器）
+       宿主侧 VstBridgeClient 按插件位数 + 进程架构选其中一个。
 
-       这个工程**不在 TuneLab.sln 里**：它和 x86 那个一样由发布脚本按平台单独构。
+       这个工程**不在 TuneLab.sln 里**：它由发布脚本按平台单独构。
        ════════════════════════════════════════════════════════════════════════ -->
 
   <PropertyGroup>
@@ -37,16 +38,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\VstBridge\*.cs" />
+    <!-- 公共源码在 ..\VstBridge.Common\（协议 / 会话 / 各格式宿主）。 -->
+    <Compile Include="..\VstBridge.Common\*.cs" />
     <!-- 进程内的 VST3 实现在 InProcess/ 子目录（宿主程序集不再编译它们）：
          *.cs 的 glob 不递归，所以两条都要写。 -->
-    <Compile Include="..\VstBridge\InProcess\*.cs" />
-    <Compile Include="..\VstBridge\InProcess\Vendored\*.cs" />
+    <Compile Include="..\VstBridge.Common\InProcess\*.cs" />
+    <Compile Include="..\VstBridge.Common\InProcess\Vendored\*.cs" />
   </ItemGroup>
 
   <!-- [VST3-BRIDGE] x64 桥承载 VST3：引用 InsertHost 复用 Vst3Backend / Vst3Insert。 -->
   <ItemGroup>
-    <ProjectReference Include="..\InsertHost\InsertHost.csproj" />
+    <ProjectReference Include="..\..\InsertHost\InsertHost.csproj" />
   </ItemGroup>
 
   <!-- [P5.3] ownvst3 的 native 必须躺在桥 exe 旁边（Vst3Backend 从 AppContext.BaseDirectory 找）。
@@ -66,8 +68,8 @@
     <Vst3NativeFileName Condition="'$(Vst3NativeFileName)' == ''">libownvst3.tlhost.so</Vst3NativeFileName>
   </PropertyGroup>
 
-  <ItemGroup Condition="Exists('..\InsertHost\Native\$(Vst3NativeRid)')">
-    <None Include="..\InsertHost\Native\$(Vst3NativeRid)\*"
+  <ItemGroup Condition="Exists('..\..\InsertHost\Native\$(Vst3NativeRid)')">
+    <None Include="..\..\InsertHost\Native\$(Vst3NativeRid)\*"
           CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
   </ItemGroup>
 

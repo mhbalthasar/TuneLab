@@ -33,21 +33,21 @@
     <InternalsVisibleTo Include="TuneLab.Tests" />
   </ItemGroup>
 
-  <!-- 桥协议与共享音频环被**两个工程各编译一份**（VstBridge 与 InsertHost）。
+  <!-- 桥协议与共享音频环被**两个工程各编译一份**（VstBridge.Common 与 InsertHost）。
        不抽第三个共享工程是有意的：多一个工程就多一处被两端同时改的冲突面，
        而这里的内容必须两边逐字节一致。<Compile Include> 让单一真相源
-       （VstBridge/ 目录）由两边分别编译，改一处两端一起生效。 -->
+       （VstBridgeProcess/VstBridge.Common/ 目录）由两边分别编译，改一处两端一起生效。 -->
   <ItemGroup>
-    <Compile Include="..\VstBridge\BridgeProtocol.cs" Link="Bridge\BridgeProtocol.cs" />
-    <Compile Include="..\VstBridge\BridgeSharedMemory.cs" Link="Bridge\BridgeSharedMemory.cs" />
+    <Compile Include="..\VstBridgeProcess\VstBridge.Common\BridgeProtocol.cs" Link="Bridge\BridgeProtocol.cs" />
+    <Compile Include="..\VstBridgeProcess\VstBridge.Common\BridgeSharedMemory.cs" Link="Bridge\BridgeSharedMemory.cs" />
 
     <!-- OpenGL 兜底（Mesa 的 opengl32）：宿主进程里也要生效，所以与桥共用同一份源码。 -->
-    <Compile Include="..\VstBridge\OpenGlAvailability.cs" Link="Bridge\OpenGlAvailability.cs" />
+    <Compile Include="..\VstBridgeProcess\VstBridge.Common\OpenGlAvailability.cs" Link="Bridge\OpenGlAvailability.cs" />
   </ItemGroup>
 
-  <!-- 原生 VST3 宿主库（ownvst3）**不再随宿主程序集分发**：进程内实现已经搬到桥工程
-       （VstBridge/InProcess/），native 由 VstBridge.X64.csproj 拷到桥 exe 旁边。
-       patch 本体里没有能加载插件的代码，也就不该带着这份 dll。 -->
+  <!-- 原生 VST3 宿主库（ownvst3）**不再随宿主程序集分发**：进程内实现已经搬到桥工程的
+       公共源码（VstBridgeProcess/VstBridge.Common/InProcess/），native 由各桥 csproj
+       拷到桥 exe 旁边。patch 本体里没有能加载插件的代码，也就不该带着这份 dll。 -->
 </Project>
 
 

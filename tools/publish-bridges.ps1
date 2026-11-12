@@ -3,8 +3,9 @@
 # 为什么需要这一步：桥是独立的 exe，不是 ProjectReference（位数/平台与宿主不同，
 # 也不能让宿主带 x86 目标）。运行时要求固定布局：
 #
-#   <app>/bridge/<rid>/TuneLab.ExperimentalPatch.VstBridge.x64         （64 位，VST2 + VST3）
-#   <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.exe       （32 位，仅 VST2）
+#   <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.x86.exe    （32 位，仅 VST2）
+#   <app>/bridge/<rid>/TuneLab.ExperimentalPatch.VstBridge.x64[.exe]    （64 位，VST2 + VST3）
+#   <app>/bridge/<rid>/TuneLab.ExperimentalPatch.VstBridge.arm64[.exe]  （arm64，osx/win 的 ARM 机器）
 #
 # 目录必须按 RID 分开：hostfxr / coreclr 同名不同平台/架构，混放必炸。
 # 又因为多数机器只装了 x64 的 .NET 运行时，桥一律 --self-contained。
@@ -17,9 +18,9 @@
 #   pwsh tools/publish-bridges.ps1 -AppOutput workspace -Runtime linux-x64   # CI：按目标 RID 发一份
 #
 # [P5.3] -Runtime 给了就只发"该目标平台需要的桥"：
-#   · 64 位桥：目标 RID 各一份；
-#   · Windows 目标额外补一份 win-x86 桥（32 位 VST2 只能在 x86 进程里加载）；
-#   · 非 Windows 目标没有 32 位 VST（VST2 跨平台不在范围内），只发 64 位桥。
+#   · 64/ARM 位桥：目标 RID 各一份（arm 机器用 VstBridge.Arm64，其余用 VstBridge.X64）；
+#   · Windows 目标额外补一份 win-x86 桥（32 位 VST2 只能在 x86 进程里加载，ARM 上靠 x86 模拟）；
+#   · 非 Windows 目标没有 32 位 VST（VST2 跨平台不在范围内）。
 
 param(
     [string]$Configuration = "Debug",
@@ -43,26 +44,42 @@ if (-not (Test-Path $AppOutput)) {
     throw "app output directory not found: $AppOutput (build TuneLab first, or pass -AppOutput)"
 }
 
+# [VstBridgeProcess] 三个桥工程：x86 / x64 / arm64，公共源码在 VstBridge.Common/。
+$x86Project = "ExperimentalPatch/VstBridgeProcess/VstBridge.X86/VstBridge.X86.csproj"
+$x64Project = "ExperimentalPatch/VstBridgeProcess/VstBridge.X64/VstBridge.X64.csproj"
+$armProject = "ExperimentalPatch/VstBridgeProcess/VstBridge.Arm64/VstBridge.Arm64.csproj"
+
 $bridges = @()
 
 if (-not $Runtime) {
     # 没给目标 RID：保持老的 Windows 开发默认（两个位数都发）。
     $bridges = @(
-        @{ Project = "ExperimentalPatch/VstBridge/VstBridge.csproj";         Rid = "win-x86"; Folder = "bridge/win-x86" },
-        @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = "win-x64"; Folder = "bridge/win-x64" }
+        @{ Project = $x86Project; Rid = "win-x86"; Folder = "bridge/win-x86" },
+        @{ Project = $x64Project; Rid = "win-x64"; Folder = "bridge/win-x64" }
     )
 }
 elseif ($Runtime -like "win-*") {
-    $bridges += @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = $Runtime; Folder = "bridge/$Runtime" }
+    # ARM 机器上的 64 位插件进 arm64 桥；x86 机器 / Intel 上用 x64 桥。
+    if ($Runtime -eq "win-arm64") {
+        $bridges += @{ Project = $armProject; Rid = $Runtime; Folder = "bridge/$Runtime" }
+    }
+    else {
+        $bridges += @{ Project = $x64Project; Rid = $Runtime; Folder = "bridge/$Runtime" }
+    }
 
     if ($Runtime -ne "win-x86") {
-        # Windows 宿主同时要能加载 32 位 VST2：x86 桥固定 win-x86。
-        $bridges += @{ Project = "ExperimentalPatch/VstBridge/VstBridge.csproj"; Rid = "win-x86"; Folder = "bridge/win-x86" }
+        # Windows 宿主同时要能加载 32 位 VST2：x86 桥固定 win-x86（ARM 上走 x86 模拟）。
+        $bridges += @{ Project = $x86Project; Rid = "win-x86"; Folder = "bridge/win-x86" }
     }
 }
 else {
-    # linux-* / osx-*：只有 64 位桥。
-    $bridges += @{ Project = "ExperimentalPatch/VstBridge.X64/VstBridge.X64.csproj"; Rid = $Runtime; Folder = "bridge/$Runtime" }
+    # linux-* / osx-*：只有 64/ARM 位桥。arm 目标用 Arm64 工程（exe 名对称带 .arm64）。
+    if ($Runtime -eq "osx-arm64" -or $Runtime -eq "linux-arm64") {
+        $bridges += @{ Project = $armProject; Rid = $Runtime; Folder = "bridge/$Runtime" }
+    }
+    else {
+        $bridges += @{ Project = $x64Project; Rid = $Runtime; Folder = "bridge/$Runtime" }
+    }
 }
 
 foreach ($bridge in $bridges) {
@@ -84,11 +101,11 @@ foreach ($bridge in $bridges) {
     }
 
     # JSFX 的 native 运行时（ysfx）不是 .NET 程序集，不会跟着 publish 出来。
-    # 32 位桥不声明 JSFX；只给 64 位桥补。
+    # 32 位桥不声明 JSFX；只给 64/ARM 位桥补。
     if ($bridge.Rid -ne "win-x86") {
-        $ysfxName = if ($bridge.Rid -like "win-*") { "ysfx.tlhost.dll" }
-            elseif ($bridge.Rid -like "osx-*") { "libysfx.tlhost.dylib" }
-            else { "libysfx.tlhost.so" }
+        $ysfxName = "libysfx.tlhost.so"
+        if ($bridge.Rid -like "win-*") { $ysfxName = "ysfx.tlhost.dll" }
+        elseif ($bridge.Rid -like "osx-*") { $ysfxName = "libysfx.tlhost.dylib" }
 
         $candidates = @()
 

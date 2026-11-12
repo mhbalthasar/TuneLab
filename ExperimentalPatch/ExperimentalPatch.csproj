@@ -39,17 +39,13 @@
     <None Remove="InsertHost/**" />
     <EmbeddedResource Remove="MixerEngine/**" />
     <EmbeddedResource Remove="InsertHost/**" />
-    <!-- VstBridge/ 是独立的 x86 桥进程（不进本工程），但它的协议文件要被
-         InsertHost 与 VstBridge 各自编译 —— 别让本工程的默认通配把 **/*.cs 吞进来。 -->
-    <Compile Remove="VstBridge/**" />
-    <None Remove="VstBridge/**" />
-    <EmbeddedResource Remove="VstBridge/**" />
-
-    <!-- VstBridge.X64/ 是同一套源码的 64 位构建（只有 csproj，没有 .cs）。
-         它的 obj/ 会生成 AssemblyInfo.cs，必须一起排除，否则这里会撞 CS0579。 -->
-    <Compile Remove="VstBridge.X64/**" />
-    <None Remove="VstBridge.X64/**" />
-    <EmbeddedResource Remove="VstBridge.X64/**" />
+    <!-- VstBridgeProcess/ 是独立的桥进程们（x86 / x64 / arm64 三个 exe + 公共源码
+         VstBridge.Common，都不进本工程），但公共协议文件要被 InsertHost 与各桥
+         各自编译 —— 别让本工程的默认通配把 **/*.cs 吞进来。
+         它们的 obj/ 会生成 AssemblyInfo.cs，必须一起排除，否则这里会撞 CS0579。 -->
+    <Compile Remove="VstBridgeProcess/**" />
+    <None Remove="VstBridgeProcess/**" />
+    <EmbeddedResource Remove="VstBridgeProcess/**" />
   </ItemGroup>
 
 </Project>

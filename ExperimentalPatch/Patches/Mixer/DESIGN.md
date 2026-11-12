@@ -329,9 +329,12 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
 ```
 
   - 主进程保持 **AnyCPU**，发布时按 RID 出 x64 / arm64，与今天完全一致；
-  - 桥是两个独立 csproj：`VstBridge/`（x86）与 `VstBridge.X64/`（x64，源码同一份），
+  - 桥工程在 `VstBridgeProcess/` 下，三个 exe 共编一份公共源码：
+    `VstBridge.Common/`（协议 / 会话 / 各格式宿主）、`VstBridge.X86/`（x86 桥）、
+    `VstBridge.X64/`（x64 桥）、`VstBridge.Arm64/`（arm64 桥，osx-arm64 / win-arm64），
     **只在需要时由 VST2 加载器启动**；
-  - 32 位插件 → 起 x86 桥；64 位插件 → 起 x64 桥（`PluginBitness` 读 PE 头决定）。
+  - 32 位插件 → 起 x86 桥；64 位插件 → 按**宿主进程架构**起 x64 / arm64 桥
+    （`PluginBitness` 读 PE 头决定位数）。
 - **为什么 VST2 一律走桥**（而不是"64 位就在进程内"）：
   ① 一套代码路径，行为一致；② VST2 是遗留格式，崩溃概率高于 VST3，隔离收益大；
   ③ 主工程不必引用任何与位数相关的原生库 → **AnyCPU 这条不变量不被破坏**。
@@ -344,8 +347,9 @@ AUX 与 Master 是同一类东西（收别人的音频、混合、再往下送�
   由发布脚本单独构）。部署布局固定为：
 
   ```
-  <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.exe      （自包含：多数机器没有 x86 .NET 运行时）
+  <app>/bridge/win-x86/TuneLab.ExperimentalPatch.VstBridge.x86.exe    （自包含：多数机器没有 x86 .NET 运行时）
   <app>/bridge/win-x64/TuneLab.ExperimentalPatch.VstBridge.x64.exe
+  <app>/bridge/osx-arm64/TuneLab.ExperimentalPatch.VstBridge.arm64    （arm 机器；名不带 .exe）
   ```
 
   两个位数的运行时文件必须分目录——`hostfxr.dll` / `coreclr.dll` 同名不同架构，混放必炸。

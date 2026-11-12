@@ -127,7 +127,7 @@ jobs:
                -AppOutput "tests/TuneLab.Tests/bin/Debug/net8.0"
 
       - name: Ensure the bridge apphost is executable
-        run: chmod +x tests/TuneLab.Tests/bin/Debug/net8.0/bridge/${{ matrix.rid }}/TuneLab.ExperimentalPatch.VstBridge.x64
+        run: chmod +x tests/TuneLab.Tests/bin/Debug/net8.0/bridge/${{ matrix.rid }}/TuneLab.ExperimentalPatch.VstBridge.$(if [ "${{ matrix.rid }}" = "osx-arm64" ]; then echo arm64; else echo x64; fi)
 
       - name: Isolation + ring tests
         run: dotnet test tests/TuneLab.Tests/TuneLab.Tests.csproj -c Debug --no-build `

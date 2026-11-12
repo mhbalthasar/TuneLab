@@ -25,8 +25,14 @@ public class BridgeIsolationTests
     static string BridgeRid =>
         RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "linux-arm64" : "linux-x64";
 
+    // [VstBridgeProcess] 桥 exe 按架构对称命名：x64 / arm64。
+    static string BridgeExeName =>
+        (RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? "TuneLab.ExperimentalPatch.VstBridge.arm64"
+            : "TuneLab.ExperimentalPatch.VstBridge.x64");
+
     static string BridgePath =>
-        Path.Combine(AppContext.BaseDirectory, "bridge", BridgeRid, "TuneLab.ExperimentalPatch.VstBridge.x64");
+        Path.Combine(AppContext.BaseDirectory, "bridge", BridgeRid, BridgeExeName);
 
     // 【为什么用"提前 return"而不是 Skip.Unless】Skip.Unless 靠抛异常表达跳过，在
     // dotnet test 里算一次**失败**（消息带 SKIP: 前缀，CI 另行识别）。这组在 Windows 上
