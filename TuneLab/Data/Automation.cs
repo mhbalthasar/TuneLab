@@ -12,7 +12,7 @@ internal class Automation : DataObject, IAutomation
 {
     public IActionEvent<double, double> RangeModified => mRangeModified;
 
-    // part 只是"这份曲线挂在谁身上"的上下文（渲染器拿它做 tempo / 相对 tick 换算）。
+    // [EP-MIXER-AUTO] part 只是"这份曲线挂在谁身上"的上下文（渲染器拿它做 tempo / 相对 tick 换算）。
     // 插入效果器的参数自动化（InsertSlot.Automations）复用本类的曲线数学，但它不挂在
     // 任何 part 上（Master / AUX 链是工程级的）——那里 part 为 null，锚点直接存工程绝对 tick。
     // 经 IAutomation 接口读 Part 的路径只来自 part 数据（part 恒非空）；插入自动化用具体类型。

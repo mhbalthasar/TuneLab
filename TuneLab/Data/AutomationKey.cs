@@ -1,6 +1,6 @@
 namespace TuneLab.Data;
 
-// 参数面板轨道的来源类别：voice/part 级自动化、某个 effect 的自动化、插入效果器（混音台
+// [EP-MIXER-AUTO] 参数面板轨道的来源类别：voice/part 级自动化、某个 effect 的自动化、插入效果器（混音台
 // 通道 FX）的参数自动化，或属性 lane（用户钉选的有界数值属性，按 note / 音素分段呈现——
 // 数据存 note.Properties / phoneme.Properties，非时间曲线）。
 internal enum AutomationSource

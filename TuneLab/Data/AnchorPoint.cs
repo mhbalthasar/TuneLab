@@ -8,7 +8,7 @@ using TuneLab.Foundation;
 
 namespace TuneLab.Data;
 
-// Pos / Value / IsSelected 的取值口径：呈现空间 = 存储空间（插入参数自动化按 part 存曲线后，
+// [EP-MIXER-AUTO] Pos / Value / IsSelected 的取值口径：呈现空间 = 存储空间（插入参数自动化按 part 存曲线后，
 // 不再需要把存储锚点投影到别的空间——见 InsertAutomationCatalog）。
 internal class AnchorPoint(double pos, double value) : IAnchorPoint
 {
