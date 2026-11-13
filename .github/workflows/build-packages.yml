@@ -86,7 +86,7 @@ jobs:
 
     env:
       RID: ${{ matrix.rid }}
-      VERSION: ${{ needs.prepare.outputs.version }}
+      TUNE_VERSION: ${{ needs.prepare.outputs.version }}
 
     steps:
       - name: Checkout
@@ -100,15 +100,6 @@ jobs:
           dotnet-version: 8.0.x
 
       # ── TuneLab 本体：self-contained + CLI + 桥（自带 ownvst3 / ysfx）──
-      - name: Debug MSBuild evaluation (temporary)
-        shell: pwsh
-        run: |
-          Write-Host '--- TargetFramework as MSBuild sees it ---'
-          dotnet msbuild TuneLab.GUI/TuneLab.GUI.csproj -getProperty:TargetFramework -nologo
-          dotnet msbuild TuneLab.Foundation/TuneLab.Foundation.csproj -getProperty:TargetFramework -nologo
-          Write-Host '--- relevant env ---'
-          Get-ChildItem Env: | Where-Object { $_.Name -match 'DOTNET|MSBUILD|NUGET|GITHUB|VERSION|CI' } |
-            Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }
       - name: Publish TuneLab (self-contained)
         shell: pwsh
         run: |
@@ -147,7 +138,7 @@ jobs:
           New-Item -ItemType Directory -Force package | Out-Null
 
           # 绿色版
-          Compress-Archive -Path workspace/* -DestinationPath "package/TuneLab-$env:RID-v$env:VERSION.zip"
+          Compress-Archive -Path workspace/* -DestinationPath "package/TuneLab-$env:RID-v$env:TUNE_VERSION.zip"
 
           # Inno Setup（x64 / arm64 共用一份 iss）
           choco install innosetup -y --no-progress
@@ -160,7 +151,7 @@ jobs:
           & $iscc `
             "/DArch=${{ matrix.inno_arch }}" `
             "/DRid=$env:RID" `
-            "/DVersion=$env:VERSION" `
+            "/DVersion=$env:TUNE_VERSION" `
             "/DSourceDir=$((Resolve-Path workspace).Path)" `
             "/DOutputDir=$((Resolve-Path package).Path)" `
             "/DIconFile=$((Resolve-Path TuneLab/Assets/TuneLab.ico).Path)" `
@@ -175,7 +166,7 @@ jobs:
         run: |
           chmod +x CIUtils/pack-macos.sh
           mkdir -p package
-          PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-macos.sh
+          VERSION="$TUNE_VERSION" PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-macos.sh
           ls -l package
 
       - name: Install nfpm
@@ -197,7 +188,7 @@ jobs:
         run: |
           chmod +x CIUtils/pack-linux.sh
           mkdir -p package
-          NFPM=./nfpm PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-linux.sh
+          NFPM=./nfpm VERSION="$TUNE_VERSION" PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-linux.sh
           ls -l package
 
       - name: Smoke test (Windows installer + app)
