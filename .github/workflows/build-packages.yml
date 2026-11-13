@@ -191,9 +191,134 @@ jobs:
           NFPM=./nfpm PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-linux.sh
           ls -l package
 
+      - name: Smoke test (Windows installer + app)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem package -Filter 'TuneLab-Setup-*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'installer missing from package/' }
+
+          # 静默安装到默认目录（{localappdata}\Programs\TuneLab）。
+          Start-Process -FilePath $installer.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\TuneLab'
+          if (-not (Test-Path "$dir\TuneLab.exe")) { throw "installer did not place TuneLab.exe in $dir" }
+
+          # 文件关联（HKCU ProgID）
+          $tlpx = (Get-ItemProperty 'HKCU:\Software\Classes\.tlpx').'(default)'
+          if ($tlpx -ne 'TuneLab.Project') { throw ".tlpx association = '$tlpx'" }
+          $tlx = (Get-ItemProperty 'HKCU:\Software\Classes\.tlx').'(default)'
+          if ($tlx -ne 'TuneLab.Extension') { throw ".tlx association = '$tlx'" }
+          $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\TuneLab.Project\shell\open\command').'(default)'
+          if ($cmd -notlike "*$dir\TuneLab.exe*") { throw "project open command = '$cmd'" }
+
+          # 启动：15 秒不退出即视为起来（无音频设备时走退化路径，也应活着）。
+          $p = Start-Process "$dir\TuneLab.exe" -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { throw "TuneLab exited early (exit code $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+
+          $log = Get-ChildItem (Join-Path $env:APPDATA 'TuneLab\Logs') -Filter '*.log' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $log) { throw 'startup produced no log file' }
+          Write-Host "startup log: $($log.FullName)"
+
+          # 卸载：文件与关联都要清掉。
+          Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES' -Wait
+          if (Test-Path "$dir\TuneLab.exe") { throw 'uninstall left TuneLab.exe behind' }
+          if (Test-Path 'HKCU:\Software\Classes\TuneLab.Project') { throw 'uninstall left the .tlpx ProgID behind' }
+          Write-Host 'windows smoke passed'
+
+      - name: Smoke test (macOS dmg + app)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dmg="$(ls package/*.dmg | head -1)"
+          mnt="$RUNNER_TEMP/tlmnt"
+          mkdir -p "$mnt"
+          hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt"
+          cp -R "$mnt/TuneLab.app" "$RUNNER_TEMP/"
+          test -L "$mnt/Applications" || { echo "dmg has no Applications symlink"; exit 1; }
+          hdiutil detach "$mnt"
+
+          APP="$RUNNER_TEMP/TuneLab.app"
+          plutil -p "$APP/Contents/Info.plist" | grep -q 'CFBundleDocumentTypes'
+          plutil -p "$APP/Contents/Info.plist" | grep -q 'tlpx'
+          test -f "$APP/Contents/Resources/TuneLab.icns"
+
+          "$APP/Contents/MacOS/TuneLab" &
+          pid=$!
+          sleep 20
+          if ! kill -0 $pid 2>/dev/null; then
+            echo "TuneLab exited early"
+            exit 1
+          fi
+          kill $pid 2>/dev/null || true
+          echo 'macos smoke passed'
+
+      - name: Smoke test (Linux deb + app)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb rpm
+
+          sudo apt-get install -y ./package/*.deb
+
+          test -x /opt/tunelab/TuneLab
+          test -x /opt/tunelab/TuneLab.Cli
+          test -L /usr/bin/tunelab
+          test -f /usr/share/applications/tunelab.desktop
+          test -f /usr/share/mime/packages/tunelab.xml
+          /opt/tunelab/TuneLab.Cli --help > /dev/null
+
+          # rpm 内容抽查（不安装，避免 Ubuntu 上 rpm 数据库的噪声）。
+          rpm -qpl package/*.rpm | grep -q '/opt/tunelab/TuneLab$'
+
+          # GUI 启动：容器里没有音频设备，必须走"退化无音频"而不是崩掉。
+          xvfb-run -a /opt/tunelab/TuneLab &
+          pid=$!
+          sleep 25
+          if ! kill -0 $pid 2>/dev/null; then
+            echo "TuneLab exited early"
+            exit 1
+          fi
+          kill $pid 2>/dev/null || true
+
+          sudo dpkg -r tunelab
+          test ! -e /opt/tunelab/TuneLab
+          echo 'linux smoke passed'
+
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: TuneLab-${{ matrix.rid }}-v${{ needs.prepare.outputs.version }}
           path: package/*
           if-no-files-found: error
+  # Windows ARM64 没有 x64 runner 上的模拟执行能力：用原生 arm64 runner 跑一次绿色版。
+  # 这台 runner 只做冒烟（构建仍在 windows-2022 上交叉发布，产物已由上面的 job 验证可打包）。
+  smoke-win-arm64:
+    name: Smoke win-arm64 (native runner)
+    needs: [prepare, package]
+    runs-on: windows-11-arm
+    steps:
+      - name: Download win-arm64 package
+        uses: actions/download-artifact@v4
+        with:
+          name: TuneLab-win-arm64-v${{ needs.prepare.outputs.version }}
+          path: pkg
+
+      - name: Run the portable build
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "pkg/TuneLab-win-arm64-v${{ needs.prepare.outputs.version }}.zip" -DestinationPath app
+          if (-not (Test-Path "app/TuneLab.exe")) { throw 'portable zip has no TuneLab.exe' }
+          if (-not (Test-Path "app/bridge/win-arm64/TuneLab.ExperimentalPatch.VstBridge.arm64.exe")) {
+            throw 'arm64 bridge missing'
+          }
+          if (-not (Test-Path "app/bridge/win-arm64/ysfx.tlhost.dll")) { throw 'ysfx native missing' }
+
+          $p = Start-Process "app/TuneLab.exe" -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "TuneLab exited early (exit code $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host 'win-arm64 smoke passed'
