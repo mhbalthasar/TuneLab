@@ -139,6 +139,12 @@ internal static class MixerAutomation
                     if (!midiPart.Automations.TryGetValue(mKeyId, out var curve) || curve.Points.Count == 0)
                         continue;
 
+                    // [EP-MIXER-AUTO] 只收**这条 part 的音流通道上真有这个 FX** 的曲线：
+                    // 拆分 / 选区截取把曲线带到别的轨之后，目标轨没有这条插入 → 休眠数据，
+                    // 不能隔轨绑到源轨的插件上。
+                    if (!InsertAutomationCatalog.IsKeyOwnedByPart(mProject, midiPart, mKeyId))
+                        continue;
+
                     lanes.Add(new LaneSnapshot(part.Pos.Value, part.StartPos(), part.EndPos(),
                         [.. curve.Points.Select(p => new Point(p.Pos, p.Value))]));
                 }

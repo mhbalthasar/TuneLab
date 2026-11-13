@@ -66,10 +66,61 @@ internal static class InsertAutomationCatalog
         slot = null!;
         entry = null!;
 
+        if (!TryParseKeyId(keyId, out var slotId, out var paramId))
+            return false;
+
+        // 先看**这条 part 自己的轨**：拆出来的子段被放到另一条轨、而那条轨没有这条插入时，
+        // 键必须解析不到 —— 否则会"隔轨绑定"到源轨的 FX 上（曲线跟着 part 走了，声音却改
+        // 的是另一条轨的插件）。
+        if (TryGetEntry(part.Track.Inserts, slotId, paramId, out slot, out entry))
+            return true;
+
         if (part.Track.Project is not Project project)
             return false;
 
-        return TryResolveEntry(project, keyId, out slot, out entry);
+        // AUX / Master 是全局去向：任何轨上的 part 曲线都可以自动化它们（与侧栏入口一致）。
+        foreach (var aux in project.Auxes)
+        {
+            if (TryGetEntry(aux.Inserts, slotId, paramId, out slot, out entry))
+                return true;
+        }
+
+        return TryGetEntry(project.MasterInserts, slotId, paramId, out slot, out entry);
+    }
+
+    // 这条键对**这个 part** 是否有效（= 它的音流通道上真有这个 FX）。
+    //
+    // 轨道槽：只有 part 自己的轨算；
+    // AUX / Master：全局去向，任何 part 的曲线都算。
+    // 拆分 / 选区截取会把曲线随 part 带走；判断"这个曲线还算不算数"统一走这里，
+    // 音频绑定与 lane 显示同一口径。
+    public static bool IsKeyOwnedByPart(Project project, IMidiPart part, string keyId)
+    {
+        if (!TryParseKeyId(keyId, out var slotId, out _))
+            return false;
+
+        foreach (var candidate in part.Track.Inserts)
+        {
+            if (candidate.Id == slotId)
+                return true;
+        }
+
+        foreach (var aux in project.Auxes)
+        {
+            foreach (var candidate in aux.Inserts)
+            {
+                if (candidate.Id == slotId)
+                    return true;
+            }
+        }
+
+        foreach (var candidate in project.MasterInserts)
+        {
+            if (candidate.Id == slotId)
+                return true;
+        }
+
+        return false;
     }
 
     static bool TryGetEntry(IReadOnlyDataObjectList<InsertSlot> slots, string slotId, long paramId,

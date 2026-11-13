@@ -569,6 +569,74 @@ public class InsertAutomationTests
             InsertAutomationCatalog.MakeKeyId(trackSlot.Id, 99), out _, out _));
     }
 
+    // ── 拆分 / 选区截取的跟随（6cff736d 的同一条路径）──
+
+    // [EP-MIXER-AUTO] 插入参数自动化的曲线住在 part.Automations 里（键 = "{slotId}:{paramId}"），
+    // 与 SDK 自动化同一张表：RangeInfo 按 key 泛化复制，锚点裁到子段并换到子段起点 ——
+    // 所以拆分 / 选区截取后曲线天然跟着子段走，不需要单独一条通道。
+    [Fact]
+    public void Split_CarriesInsertAutomationCurves_RebasedToTheSubPart()
+    {
+        var (_, part) = NewProjectWithPart(0);
+        var slot = AddSlot(part.Track, "vst3", "p", "FX");
+        AddEntry(slot, 0.5, 0, 1);
+        AddCurve(part, slot, new Point(0, 0), new Point(480, 0.25), new Point(960, -0.25), new Point(1440, 0));
+
+        string keyId = InsertAutomationCatalog.MakeKeyId(slot.Id, 3);
+
+        // 截取 [480, 960)：边界锚点取原曲线在该 tick 的值，内部锚点换到子段起点。
+        var info = part.RangeInfo(480, 960);
+
+        Assert.True(info.Automations.ContainsKey(keyId));
+        var points = info.Automations[keyId].Points;
+
+        Assert.Contains(points, p => Math.Abs(p.X) < 1e-6 && Math.Abs(p.Y - 0.25) < 1e-6);
+        Assert.Contains(points, p => Math.Abs(p.X - 480) < 1e-6 && Math.Abs(p.Y + 0.25) < 1e-6);
+        Assert.All(points, p => Assert.InRange(p.X, 0, 480));
+    }
+
+    // 目标轨道**没有**这条插入时：曲线数据会跟着 part 走，但解析不到条目 ——
+    // lane 不显示、音频不绑定（= 不跟随这个 FX）。槽位 id 是全局唯一的 "insert-<hex>"，
+    // 所以不存在"接到别人同序号 FX 上"的误绑。
+    [Fact]
+    public void InsertAutomationCurve_IsInertOnATrackWithoutThatInsert()
+    {
+        TestVoices.EnsureBuiltIn();
+
+        var t1 = new NativeTrackInfo { Name = "t1" };
+        t1.Parts.Add(new MidiPartInfo { Name = "p", Pos = 0, StartOffset = 0, EndOffset = 1920 });
+        var t2 = new NativeTrackInfo { Name = "t2" };
+
+        var document = new ProjectDocument();
+        document.SetProject(new Project(new ProjectInfo { Tracks = { t1, t2 } }));
+        var project = document.Project!;
+
+        var source = (MidiPart)project.Tracks.First().Parts.First();
+        var slot = AddSlot(project.Tracks.First(), "vst3", "p", "FX");
+        AddEntry(slot, 0.5, 0, 1);
+        AddCurve(source, slot, new Point(0, 0.25), new Point(960, 0.25));
+
+        string keyId = InsertAutomationCatalog.MakeKeyId(slot.Id, 3);
+        Assert.NotNull(source.GetEffectiveAutomation(AutomationKey.Insert(keyId)));
+
+        // 选区截取 → 放到另一条轨（那台轨没有这条 FX）。
+        var carried = source.RangeInfo(0, 1920);
+        var target = (MidiPart)project.Tracks.Skip(1).First().CreatePart(carried);
+
+        // 曲线数据还在 part 里（休眠）……
+        Assert.True(target.Automations.TryGetValue(keyId, out _));
+        // ……但按**这条 part 所属的轨**解析不到条目 → 没有 lane、没有音频绑定。
+        // （工程级重载会扫到源轨上的槽位，那是给"工程里还有没有这个 FX"用的，不是这套语义。）
+        Assert.False(InsertAutomationCatalog.TryResolveEntry(target, keyId, out _, out _));
+        Assert.Null(target.GetEffectiveAutomation(AutomationKey.Insert(keyId)));
+
+        // 音频绑定也不会把这条休眠曲线算进去：tick 480 上只该有源轨 part 的 +0.25 偏移
+        // （0.5 + 0.25），不是两份（0.5 + 0.25 + 0.25）。
+        var binding = new MixerAutomation.Binding(slot.Automations.Values.Single(), keyId, project, 0, 1,
+            _ => true);
+        Assert.Equal(0.75, binding.Evaluate(480), 6);
+    }
+
     // ── 测试脚手架 ──
 
     static InsertSlotAutomation AddEntry(InsertSlot slot, double baseValue, double min, double max)
