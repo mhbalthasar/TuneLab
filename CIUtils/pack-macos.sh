@@ -28,14 +28,15 @@ RES_DIR="${CONTENTS}/Resources"
 rm -rf "${APP_DIR}" "${OUT_DIR}/dmg-root"
 mkdir -p "${MACOS_DIR}" "${RES_DIR}" "${OUT_DIR}/dmg-root"
 
+echo "==> [1/5] staging app bundle"
 # ── 1. 载荷进 Contents/MacOS（Avalonia 的运行时文件必须与可执行文件同目录）──
 cp -R "${PAYLOAD_DIR}/." "${MACOS_DIR}/"
 chmod +x "${MACOS_DIR}/TuneLab" "${MACOS_DIR}/TuneLab.Cli"
-find "${MACOS_DIR}/bridge" -type f -perm -u+x 2>/dev/null | true
 if [ -d "${MACOS_DIR}/bridge" ]; then
   chmod +x "${MACOS_DIR}"/bridge/*/TuneLab.ExperimentalPatch.VstBridge.* 2>/dev/null || true
 fi
 
+echo "==> [2/5] icon"
 # ── 2. 图标：png → .icns（iconutil 是 macOS 自带）──
 ICONSET="${OUT_DIR}/TuneLab.iconset"
 rm -rf "${ICONSET}"
