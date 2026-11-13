@@ -38,26 +38,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Generate release notes
-        id: notes
-        uses: RedCrafter07/release-notes-action@v1.0.0
         with:
-          tag-name: ${{ github.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: 'master'
+          fetch-depth: 0
 
-      # 自动生成的正文是 commit message 拼出来的，反引号很容易混进去。而 1.5.10 / 1.6.0
+      # 自产 release notes：tag 落在 expermental 上，按上一个 tag 到本 tag 的提交生成，
+      # 不依赖第三方 action 的 branch 假设。
+      - name: Generate release notes
+        shell: bash
+        run: |
+          prev="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then
+            range="$prev..$GITHUB_REF_NAME"
+          else
+            range="$(git rev-list --max-parents=0 HEAD)..$GITHUB_REF_NAME"
+          fi
+          echo "range = $range"
+          git log --no-merges --format='- %s' "$range" > notes.md
+          test -s notes.md || echo '- No changes recorded.' > notes.md
+
+      # 正文是 commit message 拼出来的，反引号很容易混进去。而 1.5.10 / 1.6.0
       # 渲染 Markdown 代码元素会崩溃、老用户一开软件就闪退（见 CIUtils/check-release-notes.py）。
       # 这份文案没人斟酌过，剥掉代码语法不损语义，所以这里直接净化而不是卡住发版；人手编辑
       # 正文那条路由 check-release-notes.yml 硬拦。
       - name: Sanitize release notes
         shell: bash
-        env:
-          NOTES: ${{ steps.notes.outputs.release-notes }}
         run: |
           python3 -m pip install --quiet markdown-it-py
-          printf '%s\n' "$NOTES" > notes.md
           python3 CIUtils/check-release-notes.py notes.md --fix > notes.safe.md
 
       - name: Download all package artifacts
