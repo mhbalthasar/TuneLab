@@ -51,6 +51,11 @@
 		<PackageReference Include="Avalonia" Version="11.3.15" />
 		<PackageReference Include="Avalonia.AvaloniaEdit" Version="11.2.0" />
 		<PackageReference Include="Avalonia.Svg.Skia" Version="11.3.0" />
+    <!-- Linux 自带一份 libSkiaSharp：Avalonia.Skia 把 NativeAssets.Linux 钉在 2.88.9，
+         而托管 SkiaSharp 被 Svg.Skia 提到 3.116.x —— 不显式覆盖的话自包含包里的原生库
+         版本对不上，Linux 启动即崩（SKFontManager 版本检查）。其他平台的原生包
+         本来就是 3.116.x，不受这条影响。 -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.116.1" />
 		<PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.15" />
 		<PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.15" />
 		<PackageReference Include="Avalonia.ReactiveUI" Version="11.3.8" />

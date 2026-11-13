@@ -192,7 +192,7 @@ jobs:
           ls -l package
 
       - name: Smoke test (Windows installer + app)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.rid == 'win-x64'
         shell: pwsh
         run: |
           $installer = Get-ChildItem package -Filter 'TuneLab-Setup-*.exe' | Select-Object -First 1
@@ -319,6 +319,29 @@ jobs:
 
           $p = Start-Process "app/TuneLab.exe" -PassThru
           Start-Sleep -Seconds 20
-          if ($p.HasExited) { throw "TuneLab exited early (exit code $($p.ExitCode))" }
+          if ($p.HasExited) { throw "portable TuneLab exited early (exit code $($p.ExitCode))" }
           Stop-Process -Id $p.Id -Force
+
+      # x64 runner 装不了 arm64 安装器（ArchitecturesAllowed 会正确拒绝），所以安装器冒烟只能在原生 arm 上做。
+      - name: Install, associate, launch and uninstall (native arm64)
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem pkg -Filter 'TuneLab-Setup-win-arm64-*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'arm64 installer missing from artifact' }
+          Start-Process -FilePath $installer.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\TuneLab'
+          if (-not (Test-Path "$dir\TuneLab.exe")) { throw "installer did not place TuneLab.exe in $dir" }
+          $tlpx = (Get-ItemProperty 'HKCU:\Software\Classes\.tlpx').'(default)'
+          if ($tlpx -ne 'TuneLab.Project') { throw ".tlpx association = '$tlpx'" }
+          $tlx = (Get-ItemProperty 'HKCU:\Software\Classes\.tlx').'(default)'
+          if ($tlx -ne 'TuneLab.Extension') { throw ".tlx association = '$tlx'" }
+
+          $p = Start-Process "$dir\TuneLab.exe" -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "installed TuneLab exited early (exit code $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+
+          Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES' -Wait
+          if (Test-Path "$dir\TuneLab.exe") { throw 'uninstall left TuneLab.exe behind' }
           Write-Host 'win-arm64 smoke passed'
