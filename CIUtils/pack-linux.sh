@@ -129,3 +129,6 @@ YAML
 
 echo "Linux packages:"
 ls -l "${OUT_DIR}/TuneLab-${RID}-v${VERSION}".{tar.gz,deb,rpm}
+
+# 中间产物不留在 OUT_DIR（CI 整个目录当 artifact 上传，未压缩副本会让上传翻倍）。
+rm -rf "${PORTABLE}" "${NFPM_STAGE}" "${OUT_DIR}/nfpm.yaml"

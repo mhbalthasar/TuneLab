@@ -111,3 +111,7 @@ hdiutil create -volname "TuneLab" -srcfolder "${OUT_DIR}/dmg-root" -ov -format U
 
 echo "macOS packages:"
 ls -l "${OUT_DIR}/TuneLab-${RID}-v${VERSION}.tar.gz" "${OUT_DIR}/TuneLab-${RID}-v${VERSION}.dmg"
+
+# 中间产物不能留在 OUT_DIR：CI 把 OUT_DIR 整个当 artifact 上传，留着未压缩的 .app 与
+# dmg 暂存目录会让体积翻两倍以上（上传会卡到十几分钟）。
+rm -rf "${APP_DIR}" "${OUT_DIR}/dmg-root" "${ICONSET}"

@@ -1,0 +1,131 @@
+# 重新生成 ysfx 原生运行时（六平台），产物按 RID 上传，供提交回仓库：
+#   ExperimentalPatch/InsertHost/Native/<rid>/ysfx.tlhost.dll | libysfx.tlhost.so | .dylib
+#
+# 平时不需要跑：包构建直接用仓库里已提交的 native（桥工程会自动拷到桥 exe 旁边）。
+# 只有升级 ysfx_lib 时才手动跑一次，把下载到的文件覆盖进上面的目录并提交。
+#
+# 依赖：mhbalthasar/ysfx_lib 公有（私有仓库时给 secret YSFX_REPO_TOKEN）。
+
+name: Build ysfx natives
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ysfx ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-2022
+            arch: x64
+            portable: "OFF"
+            nasm: true
+            deployment: ""
+          - rid: win-arm64
+            os: windows-2022
+            arch: ARM64
+            portable: "ON"
+            nasm: false
+            deployment: ""
+          - rid: linux-x64
+            os: ubuntu-24.04
+            arch: ""
+            portable: "OFF"
+            nasm: false
+            deployment: ""
+          - rid: linux-arm64
+            os: ubuntu-24.04-arm
+            arch: ""
+            portable: "ON"
+            nasm: false
+            deployment: ""
+          - rid: osx-x64
+            os: macos-15-intel
+            arch: x86_64
+            portable: "OFF"
+            nasm: false
+            deployment: "10.13"
+          - rid: osx-arm64
+            os: macos-15
+            arch: arm64
+            portable: "ON"
+            nasm: false
+            deployment: "11.0"
+
+    steps:
+      - name: Checkout ysfx_lib
+        uses: actions/checkout@v4
+        with:
+          repository: mhbalthasar/ysfx_lib
+          path: ysfx-src
+          token: ${{ secrets.YSFX_REPO_TOKEN || github.token }}
+
+      - name: Install NASM (Windows x64)
+        if: runner.os == 'Windows' && matrix.nasm
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libfontconfig1-dev libfreetype6-dev \
+            libgtk-3-dev libgl-dev libx11-dev libxi-dev
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S ysfx-src -B ysfx-build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} `
+            -DCMAKE_BUILD_TYPE=Release -DYSFX_LIBRARY=ON -DYSFX_PLUGIN=OFF -DYSFX_GFX=ON `
+            -DYSFX_PORTABLE=${{ matrix.portable }} -DYSFX_STATIC_CRT=ON -DYSFX_SMOKE_TEST=OFF
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build ysfx-build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          cmake --install ysfx-build --config Release --prefix ysfx-dist
+          New-Item -ItemType Directory -Force ysfx-out | Out-Null
+          Copy-Item "ysfx-dist/bin/ysfx.dll" "ysfx-out/ysfx.tlhost.dll"
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cmake -S ysfx-src -B ysfx-build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deployment }} \
+            -DYSFX_LIBRARY=ON -DYSFX_PLUGIN=OFF -DYSFX_GFX=ON \
+            -DYSFX_PORTABLE=${{ matrix.portable }} -DYSFX_SMOKE_TEST=OFF
+          cmake --build ysfx-build -j"$(sysctl -n hw.ncpu)"
+          cmake --install ysfx-build --prefix ysfx-dist
+          mkdir -p ysfx-out
+          cp ysfx-dist/lib/libysfx.dylib ysfx-out/libysfx.tlhost.dylib
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cmake -S ysfx-src -B ysfx-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DYSFX_LIBRARY=ON -DYSFX_PLUGIN=OFF -DYSFX_GFX=ON \
+            -DYSFX_PORTABLE=${{ matrix.portable }} -DYSFX_SMOKE_TEST=OFF
+          cmake --build ysfx-build
+          cmake --install ysfx-build --prefix ysfx-dist
+          mkdir -p ysfx-out
+          cp ysfx-dist/lib/libysfx.so ysfx-out/libysfx.tlhost.so
+
+      - name: Upload ysfx native
+        uses: actions/upload-artifact@v4
+        with:
+          name: ysfx-${{ matrix.rid }}
+          path: ysfx-out/*
+          if-no-files-found: error
