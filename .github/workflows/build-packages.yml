@@ -104,13 +104,13 @@ jobs:
         shell: pwsh
         run: |
           dotnet publish TuneLab/TuneLab.csproj -c Release -r $env:RID --self-contained true `
-            -p:PublishSingleFile=false -o workspace --nologo
+            -p:PublishSingleFile=false -p:InformationalVersion=$env:VERSION -o workspace --nologo
           if ($LASTEXITCODE -ne 0) { throw "app publish failed" }
 
       - name: Publish CLI into the package
         shell: pwsh
         run: |
-          dotnet publish TuneLab.Cli/TuneLab.Cli.csproj -c Release -r $env:RID --self-contained true --nologo
+          dotnet publish TuneLab.Cli/TuneLab.Cli.csproj -c Release -r $env:RID --self-contained true -p:InformationalVersion=$env:VERSION --nologo
           if ($LASTEXITCODE -ne 0) { throw "cli publish failed" }
           Copy-Item "TuneLab.Cli/bin/Release/net8.0/$env:RID/publish/*" -Destination "workspace/" -Recurse -Force
 

@@ -5,6 +5,11 @@
 
 ## 产物矩阵
 
+> **版本号约定**：Release tag 用「基线版本 + 编译时间」：`v<基线版本>.<yyyyMMddHHmm>`，
+> 例如 `v2.1.1.202611132043`。tag 去掉 `v` 就是本轮的完整版本号（资产名里的 `<版本>`），
+> 程序的 `InformationalVersion` 也取它；`TuneLab.csproj` 里的 `<Version>` 保持基线版本。
+> 非 tag 构建用 csproj 里的基线版本命名 artifact。
+
 | RID | 绿色版 | 安装包 |
 |---|---|---|
 | win-x64 | `TuneLab-win-x64-v<版本>.zip` | `TuneLab-Setup-win-x64-v<版本>.exe`（Inno Setup） |
