@@ -41,12 +41,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 自产 release notes：tag 落在 expermental 上，按上一个 tag 到本 tag 的提交生成，
-      # 不依赖第三方 action 的 branch 假设。
+      # 自产 release notes：以上一个**已发布 release** 的 tag 为起点（不是上一个 tag ——
+      # 调试期的 tag 可能没有 release）。没有历史 release 时退回上一个 tag。
       - name: Generate release notes
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          prev="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          prev=""
+          if command -v gh >/dev/null 2>&1; then
+            prev="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name' 2>/dev/null || true)"
+          fi
+          if [ -z "$prev" ]; then
+            prev="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          fi
           if [ -n "$prev" ]; then
             range="$prev..$GITHUB_REF_NAME"
           else

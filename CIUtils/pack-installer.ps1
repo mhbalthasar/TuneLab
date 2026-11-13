@@ -55,6 +55,16 @@ if (-not $Version) {
     Write-Host "Version (from TuneLab.csproj) = $Version" -ForegroundColor Yellow
 }
 
+# -p:Version 只收 MSBuild/NuGet 合法版本。Release tag 可能是「基线版本.编译时间」
+# （四段，末段 12 位超过 Int32），直接传会让 restore 判版本非法（NU1201）。
+# 程序集/包内版本一律用基线版本；tag 版本只进文件名与安装清单。
+$buildVersion = $Version
+$tagMatch = [regex]::Match($Version, '^(\d+\.\d+\.\d+)\.\d{12}$')
+if ($tagMatch.Success) {
+    $buildVersion = $tagMatch.Groups[1].Value
+    Write-Host "Build version = $buildVersion (tag version $Version is naming-only)" -ForegroundColor Yellow
+}
+
 # 工作目录（构建产物，随 bin 一并被 .gitignore 忽略）
 $work     = Join-Path $repoRoot 'TuneLab.Setup\bin\pack'
 $stageDir = Join-Path $work 'stage'       # app + 向导，共享一份 Avalonia/Skia
@@ -76,12 +86,12 @@ New-Item -ItemType Directory -Force -Path $stageDir, $stubDir, $installerDir | O
 
 Write-Host "==> [1/6] Publishing TuneLab app (framework-dependent $runtime)…" -ForegroundColor Cyan
 dotnet publish $appProj -c $Configuration -r $runtime --self-contained false `
-    -p:Version=$Version -o $stageDir
+    -p:Version=$buildVersion -o $stageDir
 if ($LASTEXITCODE -ne 0) { throw "App publish failed." }
 
 Write-Host "==> [2/6] Publishing wizard into the same stage (shares Avalonia/Skia)…" -ForegroundColor Cyan
 dotnet publish $setupProj -c $Configuration -r $runtime --self-contained false `
-    -p:Version=$Version -o $stageDir
+    -p:Version=$buildVersion -o $stageDir
 if ($LASTEXITCODE -ne 0) { throw "Wizard publish failed." }
 if (-not (Test-Path (Join-Path $stageDir 'TuneLab.Setup.exe'))) { throw "Wizard exe missing in stage." }
 
@@ -90,7 +100,7 @@ if (-not (Test-Path (Join-Path $stageDir 'TuneLab.Setup.exe'))) { throw "Wizard 
 # 用户敲的 `tunelab` 是安装期落的转发入口（TuneLab.Setup 的 CommandLineEntry），与这里无关。
 Write-Host "==> [3/6] Publishing the command line into the same stage…" -ForegroundColor Cyan
 dotnet publish $cliProj -c $Configuration -r $runtime --self-contained false `
-    -p:Version=$Version -o $stageDir
+    -p:Version=$buildVersion -o $stageDir
 if ($LASTEXITCODE -ne 0) { throw "CLI publish failed." }
 if (-not (Test-Path (Join-Path $stageDir 'TuneLab.Cli.exe'))) { throw "CLI exe missing in stage." }
 
@@ -105,7 +115,7 @@ Write-Host ("    payload.zip = {0:N1} MB" -f ($zipLen / 1MB))
 
 Write-Host "==> [5/6] Publishing tiny extractor stub (single-file, no Avalonia)…" -ForegroundColor Cyan
 dotnet publish $stubProj -c $Configuration -p:PublishSingleFile=true `
-    -p:Version=$Version -o $stubDir
+    -p:Version=$buildVersion -o $stubDir
 if ($LASTEXITCODE -ne 0) { throw "Stub publish failed." }
 $stub = Join-Path $stubDir 'TuneLab.Setup.Stub.exe'
 if (-not (Test-Path $stub)) { throw "Stub exe not found: $stub" }
