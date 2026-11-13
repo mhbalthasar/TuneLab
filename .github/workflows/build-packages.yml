@@ -100,6 +100,15 @@ jobs:
           dotnet-version: 8.0.x
 
       # ── TuneLab 本体：self-contained + CLI + 桥（自带 ownvst3 / ysfx）──
+      - name: Debug MSBuild evaluation (temporary)
+        shell: pwsh
+        run: |
+          Write-Host '--- TargetFramework as MSBuild sees it ---'
+          dotnet msbuild TuneLab.GUI/TuneLab.GUI.csproj -getProperty:TargetFramework -nologo
+          dotnet msbuild TuneLab.Foundation/TuneLab.Foundation.csproj -getProperty:TargetFramework -nologo
+          Write-Host '--- relevant env ---'
+          Get-ChildItem Env: | Where-Object { $_.Name -match 'DOTNET|MSBUILD|NUGET|GITHUB|VERSION|CI' } |
+            Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }
       - name: Publish TuneLab (self-contained)
         shell: pwsh
         run: |
