@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <!-- TuneLab 工程文件 -->
+  <mime-type type="application/x-tunelab-project">
+    <comment>TuneLab project</comment>
+    <comment xml:lang="zh-CN">TuneLab 工程文件</comment>
+    <glob pattern="*.tlpx"/>
+    <glob pattern="*.tlp"/>
+  </mime-type>
+  <!-- TuneLab 扩展包 -->
+  <mime-type type="application/x-tunelab-extension">
+    <comment>TuneLab extension package</comment>
+    <comment xml:lang="zh-CN">TuneLab 扩展包</comment>
+    <glob pattern="*.tlx"/>
+  </mime-type>
+</mime-info>

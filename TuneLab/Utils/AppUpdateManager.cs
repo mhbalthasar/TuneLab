@@ -145,11 +145,11 @@ internal static class AppUpdateManager
             return false;
         }
 
-        // 去掉结尾分隔符：BaseDirectory 以 '\' 结尾，朴素加引号时结尾 \" 会把闭合引号转义掉，
-        // 导致安装器收到的目标路径尾部混入一个 " 而建目录失败。
+        // [EP-PACKAGE] Windows 安装器改为 Inno Setup：用它的静默升级参数覆盖到原安装目录并重启。
+        // 自研安装器（TuneLab-Setup 的 classic 产物）保留，但不再作为自动更新的目标。
         var installDir = AppDomain.CurrentDomain.BaseDirectory
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        ProcessHelper.CreateProcess(installerPath, ["-update", installDir]);
+        ProcessHelper.CreateProcess(installerPath, ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=" + installDir]);
         return true;
     }
 

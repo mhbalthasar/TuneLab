@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=TuneLab
+GenericName=Singing Synthesis Studio
+Comment=Open the TuneLab singing synthesis editor
+Exec=/opt/tunelab/TuneLab.Cli %F
+Icon=tunelab
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+MimeType=application/x-tunelab-project;application/x-tunelab-extension;
+StartupWMClass=TuneLab
+StartupNotify=true

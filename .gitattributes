@@ -1,0 +1,13 @@
+# CI 脚本在 runner 上以 bash 执行：Windows 检出时必须保持 LF，否则 `set -euo pipefail`
+# 会带上 CRLF，直接报 "bad interpreter"。
+*.sh        text eol=lf
+*.iss       text
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# 原生二进制：绝不换行转换（ysfx / ownvst3 的 .dll/.so/.dylib 与图标）。
+*.dll       binary
+*.so        binary
+*.dylib     binary
+*.png       binary
+*.ico       binary

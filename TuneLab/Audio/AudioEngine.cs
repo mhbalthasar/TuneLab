@@ -92,20 +92,35 @@ internal static class AudioEngine
         }
 
         mAudioSampleProvider.SampleRate = SampleRate.Value;
-        mAudioPlaybackHandler = new SDLPlaybackHandler() { SampleRate = SampleRate.Value, BufferSize = BufferSize.Value, ChannelCount = 2 };
-        mAudioPlaybackHandler.Init(mAudioSampleProvider);
-        mAudioSampleProvider.SecondarySink = mAudioPlaybackHandler as ISecondaryAudioSink;
-        SetDriverToPlaybackHandler();
-        SetDeviceToPlaybackHandler();
-        // 【必须是具名方法，好在 Destroy 里退订】这三个事件都由 SDL 侧 marshal 回 UI 线程（context.Post）。
-        // Destroy 里 handler.Destroy() 会把设备切成"空设备"——那本身就是一次设备变更，于是又 Post 一个
-        // 回调进 UI 队列，而紧接着的下一行就把 mAudioPlaybackHandler 置空了。等 Dispatcher 轮到那个回调时，
-        // 回调里访问已为 null 的 handler → NullReferenceException，而它是在 Dispatcher 操作里抛的、无人
-        // 接管 → 退出期直接崩掉进程（用户看到的是关窗口时闪退，未保存的工作一并没了；因为要赶在进程真正
-        // 结束前被取到才会炸，所以表现成偶发）。原先这三个订阅是匿名 lambda、压根没法退订。
-        mAudioPlaybackHandler.ProgressChanged += OnHandlerProgressChanged;
-        mAudioPlaybackHandler.CurrentDeviceChanged += OnHandlerCurrentDeviceChanged;
-        mAudioPlaybackHandler.DevicesChanged += OnHandlerDevicesChanged;
+
+        // [EP-PACKAGE] 音频后端起不来（缺少 SDL2 / 被系统策略禁用）不应该让整个应用起不来：
+        // 退化成"无音频"，日志留下原因，界面与其余功能照常。linux-arm64 的 SDL2 由安装包附带，
+        // 但这条兜底对所有平台、所有安装方式都成立。
+        try
+        {
+            mAudioPlaybackHandler = new SDLPlaybackHandler() { SampleRate = SampleRate.Value, BufferSize = BufferSize.Value, ChannelCount = 2 };
+            mAudioPlaybackHandler.Init(mAudioSampleProvider);
+            mAudioSampleProvider.SecondarySink = mAudioPlaybackHandler as ISecondaryAudioSink;
+            SetDriverToPlaybackHandler();
+            SetDeviceToPlaybackHandler();
+            // 【必须是具名方法，好在 Destroy 里退订】这三个事件都由 SDL 侧 marshal 回 UI 线程（context.Post）。
+            // Destroy 里 handler.Destroy() 会把设备切成"空设备"——那本身就是一次设备变更，于是又 Post 一个
+            // 回调进 UI 队列，而紧接着的下一行就把 mAudioPlaybackHandler 置空了。等 Dispatcher 轮到那个回调时，
+            // 回调里访问已为 null 的 handler → NullReferenceException，而它是在 Dispatcher 操作里抛的、无人
+            // 接管 → 退出期直接崩掉进程（用户看到的是关窗口时闪退，未保存的工作一并没了；因为要赶在进程真正
+            // 结束前被取到才会炸，所以表现成偶发）。原先这三个订阅是匿名 lambda、压根没法退订。
+            mAudioPlaybackHandler.ProgressChanged += OnHandlerProgressChanged;
+            mAudioPlaybackHandler.CurrentDeviceChanged += OnHandlerCurrentDeviceChanged;
+            mAudioPlaybackHandler.DevicesChanged += OnHandlerDevicesChanged;
+            mAudioPlaybackHandler.Start();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("audio backend unavailable; continuing without playback: " + ex);
+            mAudioPlaybackHandler = null;
+            mAudioSampleProvider.SecondarySink = null;
+            mAudioBackendUnavailable = true;
+        }
 
         InitDefaultSoundFont();
 
@@ -114,15 +129,15 @@ internal static class AudioEngine
         BufferSize.Modified.Subscribe(OnBufferSizeModified);
         CurrentDriver.Modified.Subscribe(OnCurrentDriverModified);
         CurrentDevice.Modified.Subscribe(OnCurrentDeviceModified);
-
-        mAudioPlaybackHandler.Start();
     }
 
     public static void Destroy()
     {
         if (mAudioPlaybackHandler == null)
         {
-            Log.Error("Engine is not inited!");
+            if (!mAudioBackendUnavailable)
+                Log.Error("Engine is not inited!");
+
             return;
         }
 
@@ -1001,6 +1016,10 @@ internal static class AudioEngine
     }
 
     static IAudioPlaybackHandler? mAudioPlaybackHandler;
+
+    // [EP-PACKAGE] 音频后端初始化失败（缺 SDL2 / 被策略禁用）：null handler 是"退化态"而不是
+    // "没调用 Init"，Destroy 据此不再报 "Engine is not inited"。
+    static bool mAudioBackendUnavailable;
     static AudioSampleProvider mAudioSampleProvider = new();
     static AudioGraph AudioGraph => mAudioSampleProvider.AudioGraph;
     static AudioPlayer AudioPlayer => mAudioSampleProvider.AudioPlayer;

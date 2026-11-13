@@ -1,0 +1,301 @@
+# 六平台开箱即用包：绿色版 + 安装包（Windows Inno Setup / macOS dmg / Linux deb+rpm）。
+#
+# 触发：
+#   · push 到 expermental / master → 只产出 artifacts（不建 Release）；
+#   · 手动 workflow_dispatch → 同上；
+#   · 被 upload-release.yml（v* tag）调用 → 产出 artifacts，由调用方发布到 Release。
+#
+# 平台矩阵（六环境）：
+#   win-x64      windows-2022        （顺带发 win-x86 桥）
+#   win-arm64    windows-2022        （x64 上交叉发布；x86 桥靠模拟）
+#   linux-x64    ubuntu-24.04
+#   linux-arm64  ubuntu-24.04-arm    （SDL2 从系统包取一份随包）
+#   osx-x64      macos-15-intel
+#   osx-arm64    macos-15
+#
+# 每个包都是 **self-contained**：用户不需要装 .NET。插件桥、CLI、ysfx/ownvst3 原生库
+# 一起装进包里（"开箱即用"）。ysfx 从 mhbalthasar/ysfx_lib 现场编译（私有仓库时给
+# secret YSFX_REPO_TOKEN）；编译产物同样上传为 artifact，便于按需提交进
+# ExperimentalPatch/InsertHost/Native/<rid>/。
+
+name: Build packages
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [ "expermental", "master" ]
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(grep -oP '(?<=<Version>)[^<]+' TuneLab/TuneLab.csproj | head -n1)"
+          fi
+          [ -n "$v" ] || { echo "cannot resolve version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Resolved version = $v"
+
+  package:
+    name: Package ${{ matrix.rid }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-2022
+            arch: x64
+            ysfx_portable: "OFF"
+            ysfx_nasm: true
+            ysfx_deployment: ""
+          - rid: win-arm64
+            os: windows-2022
+            arch: ARM64
+            ysfx_portable: "ON"
+            ysfx_nasm: false
+            ysfx_deployment: ""
+          - rid: linux-x64
+            os: ubuntu-24.04
+            arch: ""
+            ysfx_portable: "OFF"
+            ysfx_nasm: false
+            ysfx_deployment: ""
+          - rid: linux-arm64
+            os: ubuntu-24.04-arm
+            arch: ""
+            ysfx_portable: "ON"
+            ysfx_nasm: false
+            ysfx_deployment: ""
+          - rid: osx-x64
+            os: macos-15-intel
+            arch: x86_64
+            ysfx_portable: "OFF"
+            ysfx_nasm: false
+            ysfx_deployment: "10.13"
+          - rid: osx-arm64
+            os: macos-15
+            arch: arm64
+            ysfx_portable: "ON"
+            ysfx_nasm: false
+            ysfx_deployment: "11.0"
+
+    env:
+      RID: ${{ matrix.rid }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # 私有 ysfx 仓库需要 secret；公开仓库留空即可（走匿名 https）。
+      YSFX_TOKEN: ${{ secrets.YSFX_REPO_TOKEN }}
+
+    steps:
+      - name: Checkout TuneLab
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Checkout ysfx_lib
+        uses: actions/checkout@v4
+        with:
+          repository: mhbalthasar/ysfx_lib
+          path: ysfx-src
+          token: ${{ env.YSFX_TOKEN || github.token }}
+
+      # ── ysfx 原生运行时（与包同架构；编译参数照抄 ysfx 自己的 CI）──
+      - name: Install NASM (Windows x64)
+        if: runner.os == 'Windows' && matrix.ysfx_nasm
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install ysfx build deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libfontconfig1-dev libfreetype6-dev \
+            libgtk-3-dev libgl-dev libx11-dev libxi-dev
+
+      - name: Build ysfx (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S ysfx-src -B ysfx-build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} `
+            -DCMAKE_BUILD_TYPE=Release -DYSFX_LIBRARY=ON -DYSFX_PLUGIN=OFF -DYSFX_GFX=ON `
+            -DYSFX_PORTABLE=${{ matrix.ysfx_portable }} -DYSFX_STATIC_CRT=ON -DYSFX_SMOKE_TEST=OFF
+          if ($LASTEXITCODE -ne 0) { throw "ysfx configure failed" }
+          cmake --build ysfx-build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "ysfx build failed" }
+          cmake --install ysfx-build --config Release --prefix ysfx-dist
+          if ($LASTEXITCODE -ne 0) { throw "ysfx install failed" }
+          New-Item -ItemType Directory -Force ysfx-out | Out-Null
+          Copy-Item "ysfx-dist/bin/ysfx.dll" "ysfx-out/ysfx.tlhost.dll"
+
+      - name: Build ysfx (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cmake -S ysfx-src -B ysfx-build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.ysfx_deployment }} \
+            -DYSFX_LIBRARY=ON -DYSFX_PLUGIN=OFF -DYSFX_GFX=ON \
+            -DYSFX_PORTABLE=${{ matrix.ysfx_portable }} -DYSFX_SMOKE_TEST=OFF
+          cmake --build ysfx-build -j"$(sysctl -n hw.ncpu)"
+          cmake --install ysfx-build --prefix ysfx-dist
+          mkdir -p ysfx-out
+          cp ysfx-dist/lib/libysfx.dylib ysfx-out/libysfx.tlhost.dylib
+
+      - name: Build ysfx (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cmake -S ysfx-src -B ysfx-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DYSFX_LIBRARY=ON -DYSFX_PLUGIN=OFF -DYSFX_GFX=ON \
+            -DYSFX_PORTABLE=${{ matrix.ysfx_portable }} -DYSFX_SMOKE_TEST=OFF
+          cmake --build ysfx-build
+          cmake --install ysfx-build --prefix ysfx-dist
+          mkdir -p ysfx-out
+          cp ysfx-dist/lib/libysfx.so ysfx-out/libysfx.tlhost.so
+
+      - name: Upload ysfx native (for committing into the repo)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ysfx-${{ matrix.rid }}
+          path: ysfx-out/*
+          if-no-files-found: error
+
+      # ── TuneLab 本体：self-contained + CLI + 桥 ──
+      - name: Publish TuneLab (self-contained)
+        shell: pwsh
+        run: |
+          dotnet publish TuneLab/TuneLab.csproj -c Release -r $env:RID --self-contained true `
+            -p:PublishSingleFile=false -o workspace --nologo
+          if ($LASTEXITCODE -ne 0) { throw "app publish failed" }
+
+      - name: Publish CLI into the package
+        shell: pwsh
+        run: |
+          dotnet publish TuneLab.Cli/TuneLab.Cli.csproj -c Release -r $env:RID --self-contained true --nologo
+          $out = "TuneLab.Cli/bin/Release/net8.0/$env:RID/publish"
+          Copy-Item "$out/*" -Destination "workspace/" -Recurse -Force
+          if ($LASTEXITCODE -ne 0) { throw "cli publish failed" }
+
+      - name: Publish isolation bridges
+        shell: pwsh
+        run: ./tools/publish-bridges.ps1 -Configuration Release -Runtime $env:RID -AppOutput workspace -YsfxNativeDir ysfx-out
+
+      - name: Add ysfx native next to the bridge
+        shell: pwsh
+        run: |
+          $target = "workspace/bridge/$env:RID"
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item "ysfx-out/*" $target -Force
+          Get-ChildItem $target | ForEach-Object { Write-Host "  bridge: $($_.Name)" }
+
+      - name: Copy license
+        shell: pwsh
+        run: Copy-Item "LICENSE.txt" -Destination "workspace/"
+
+      # ── linux-arm64：NuGet 的 SDL2 不带 arm64，从系统包取一份随包 ──
+      - name: Bundle SDL2 (linux-arm64)
+        if: matrix.rid == 'linux-arm64'
+        shell: bash
+        run: |
+          sudo apt-get install -y libsdl2-2.0-0
+          echo "SDL2_SRC=/usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0" >> "$GITHUB_ENV"
+          # deb/rpm 与绿色版都从 workspace 取载荷，所以两边都要放一份。
+          cp /usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0 workspace/libSDL2.so
+
+      # ── 打包：绿色版 + 安装包 ──
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+
+          # 绿色版
+          Compress-Archive -Path workspace/* -DestinationPath "package/TuneLab-$env:RID-v$env:VERSION.zip"
+
+          # Inno Setup（x64 / arm64 共用一份 iss）
+          choco install innosetup -y --no-progress
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found" }
+
+          $arch = if ($env:RID -eq "win-arm64") { "arm64" } else { "x64" }
+          & $iscc `
+            "/DArch=$arch" `
+            "/DRid=$env:RID" `
+            "/DVersion=$env:VERSION" `
+            "/DSourceDir=$((Resolve-Path workspace).Path)" `
+            "/DOutputDir=$((Resolve-Path package).Path)" `
+            "/DIconFile=$((Resolve-Path TuneLab/Assets/TuneLab.ico).Path)" `
+            "CIUtils/innosetup/TuneLab.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
+
+          Get-ChildItem package | ForEach-Object { Write-Host "  package: $($_.Name)" }
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          chmod +x CIUtils/pack-macos.sh
+          mkdir -p package
+          CIUtils/pack-macos.sh
+          ls -l package
+
+      - name: Install nfpm
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          case "$(uname -m)" in
+            x86_64) nfpm_arch="x86_64" ;;
+            aarch64) nfpm_arch="arm64" ;;
+            *) echo "unsupported machine: $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v2.43.0/nfpm_2.43.0_Linux_${nfpm_arch}.tar.gz" \
+            | tar -xz nfpm
+          chmod +x nfpm
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x CIUtils/pack-linux.sh
+          mkdir -p package
+          NFPM=./nfpm PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-linux.sh
+          ls -l package
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TuneLab-${{ matrix.rid }}-v${{ needs.prepare.outputs.version }}
+          path: package/*
+          if-no-files-found: error

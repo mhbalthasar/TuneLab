@@ -1,183 +1,128 @@
+# v* tag → 六平台开箱即用包 + 安装包进 Release。
+#
+# 资产清单（每个平台一套）：
+#   Windows  : TuneLab-win-x64-v<ver>.zip / TuneLab-Setup-win-x64-v<ver>.exe（Inno，自动更新契约名）
+#              TuneLab-win-arm64-v<ver>.zip / TuneLab-Setup-win-arm64-v<ver>.exe
+#              TuneLab-Setup-classic-win-x64-v<ver>.exe（自研安装器，保留、供手动安装）
+#   macOS    : TuneLab-osx-arm64-v<ver>.tar.gz / .dmg   （拖到 Applications 即安装）
+#              TuneLab-osx-x64-v<ver>.tar.gz / .dmg
+#   Linux    : TuneLab-linux-x64-v<ver>.tar.gz / .deb / .rpm
+#              TuneLab-linux-arm64-v<ver>.tar.gz / .deb / .rpm
+#
+# 非 tag 的推送只出 artifacts（见 build-packages.yml），不建 Release。
+
 name: Upload release
 
 on:
   push:
     tags:
       - 'v*'
-  
+
+permissions:
+  contents: read
+
 jobs:
-    call-build:
-      uses: ./.github/workflows/build-artifacts.yml
+  call-build:
+    name: Build packages
+    uses: ./.github/workflows/build-packages.yml
+    permissions:
+      contents: read
 
-      permissions:
-        id-token: write
-        contents: read
-        attestations: write
+  release:
+    name: Publish release
+    needs: call-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-    create-release:
-      name: Create release
-      runs-on: ubuntu-latest
-    
-      outputs:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-    
-      permissions:
-        contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v4
+      - name: Generate release notes
+        id: notes
+        uses: RedCrafter07/release-notes-action@v1.0.0
+        with:
+          tag-name: ${{ github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: 'master'
 
-        - name: Generate release notes
-          id: notes
-          uses: RedCrafter07/release-notes-action@v1.0.0
-          with:
-            tag-name: ${{ github.ref }}
-            token: ${{ secrets.GITHUB_TOKEN }}
-            branch: 'master'
+      # 自动生成的正文是 commit message 拼出来的，反引号很容易混进去。而 1.5.10 / 1.6.0
+      # 渲染 Markdown 代码元素会崩溃、老用户一开软件就闪退（见 CIUtils/check-release-notes.py）。
+      # 这份文案没人斟酌过，剥掉代码语法不损语义，所以这里直接净化而不是卡住发版；人手编辑
+      # 正文那条路由 check-release-notes.yml 硬拦。
+      - name: Sanitize release notes
+        shell: bash
+        env:
+          NOTES: ${{ steps.notes.outputs.release-notes }}
+        run: |
+          python3 -m pip install --quiet markdown-it-py
+          printf '%s\n' "$NOTES" > notes.md
+          python3 CIUtils/check-release-notes.py notes.md --fix > notes.safe.md
 
-        # 自动生成的正文是 commit message 拼出来的，反引号很容易混进去。而 1.5.10 / 1.6.0
-        # 渲染 Markdown 代码元素会崩溃、老用户一开软件就闪退（见 CIUtils/check-release-notes.py）。
-        # 这份文案没人斟酌过，剥掉代码语法不损语义，所以这里直接净化而不是卡住发版；人手编辑
-        # 正文那条路由 check-release-notes.yml 硬拦。
-        - name: Sanitize release notes
-          id: safe_notes
-          shell: bash
-          env:
-            NOTES: ${{ steps.notes.outputs.release-notes }}
-          run: |
-            python3 -m pip install --quiet markdown-it-py
-            printf '%s\n' "$NOTES" > notes.md
-            python3 CIUtils/check-release-notes.py notes.md --fix > notes.safe.md
-            {
-              echo 'notes<<TUNELAB_NOTES_EOF'
-              cat notes.safe.md
-              # 兜底换行：正文末尾若不带换行，分隔符会被拼到最后一行尾巴上，GitHub 报
-              # "Matching delimiter not found"，整个发版就停在建 release 之前。
-              echo ''
-              echo 'TUNELAB_NOTES_EOF'
-            } >> "$GITHUB_OUTPUT"
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: TuneLab-*
+          merge-multiple: true
+          path: dist
 
-        - name: Create release
-          id: create_release
-          uses: actions/create-release@v1
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          with:
-            tag_name: ${{ github.ref }}
-            release_name: TuneLab ${{ github.ref }}
-            body: ${{ steps.safe_notes.outputs.notes }}
-            draft: false
-            prerelease: false
-    
-    installer:
-      name: Build Windows installer
-      needs: create-release
-      runs-on: windows-latest
+      - name: List assets
+        shell: bash
+        run: ls -lh dist
 
-      permissions:
-        contents: write
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TuneLab ${{ github.ref_name }}
+          body_path: notes.safe.md
+          draft: false
+          prerelease: false
+          files: dist/*
+          fail_on_unmatched_files: true
 
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
+  classic-installer:
+    name: Build classic Windows installer
+    needs: [call-build, release]
+    runs-on: windows-latest
+    permissions:
+      contents: write
 
-        - name: Install .NET Core
-          uses: actions/setup-dotnet@v4
-          with:
-            dotnet-version: 8.0.x
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-        - name: Resolve version (strip leading v)
-          id: ver
-          shell: pwsh
-          run: |
-            $v = "${{ github.ref_name }}".TrimStart('v')
-            "version=$v" >> $env:GITHUB_OUTPUT
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
 
-        - name: Pack installer
-          shell: pwsh
-          run: ./CIUtils/pack-installer.ps1 -Version ${{ steps.ver.outputs.version }}
+      - name: Resolve version (strip leading v)
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          "version=$v" >> $env:GITHUB_OUTPUT
 
-        # asset_name 是对外契约，不是随手起的名字：更新接口 /api/app/get-update 按
-        # 「TuneLab-Setup-{platform}-v{version}.exe」在 release assets 里找安装器，匹配到才把
-        # installerUrl 发给客户端。改了这里的命名，服务端就匹配不到，应用内的自动更新会**静默**
-        # 退化成「打开下载页让用户手动装」——不报错、不告警，只是功能悄悄没了。
-        # 真要改命名，先同步改服务端的匹配规则。
-        - name: Upload installer to release
-          uses: actions/upload-release-asset@v1
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          with:
-            upload_url: ${{ needs.create-release.outputs.upload_url }}
-            asset_path: TuneLab.Setup/bin/installer/TuneLab-Setup-win-x64-v${{ steps.ver.outputs.version }}.exe
-            asset_name: TuneLab-Setup-win-x64-v${{ steps.ver.outputs.version }}.exe
-            asset_content_type: application/octet-stream
+      # 自研安装器保留：它有自己的更新器语义（-update <dir>），但自动更新的资产名
+      # 归 Inno 安装器所有，所以这里用带 classic 的名字发布，避免服务端按名匹配到它。
+      - name: Pack classic installer
+        shell: pwsh
+        run: ./CIUtils/pack-installer.ps1 -Version ${{ steps.ver.outputs.version }}
 
-    release:
-      name: Upload release
-      needs: [call-build, create-release]
-      runs-on: ${{matrix.os}}
-    
-      strategy:
-        fail-fast: false
-        matrix:
-          runtime: [ "win-x64", "osx-arm64", "linux-x64" ]
-          include:
-            - runtime: "win-x64"
-              os: "windows-latest"
-            - runtime: "osx-arm64"
-              os: "macos-latest"
-            - runtime: "linux-x64"
-              os: "ubuntu-latest"
+      - name: Rename for the release
+        shell: pwsh
+        run: |
+          $src = "TuneLab.Setup/bin/installer/TuneLab-Setup-win-x64-v${{ steps.ver.outputs.version }}.exe"
+          $dst = "TuneLab.Setup/bin/installer/TuneLab-Setup-classic-win-x64-v${{ steps.ver.outputs.version }}.exe"
+          Move-Item $src $dst -Force
 
-      permissions:
-        contents: write
-    
-      steps:
-        - name: Get short SHA
-          uses: benjlevesque/short-sha@v3.0
-          id: short-sha
-          with:
-            length: 7
-
-        - name: Download artifact
-          uses: actions/download-artifact@v4
-          with:
-            name: TuneLab-${{ matrix.runtime }}-${{ steps.short-sha.outputs.sha }}
-          
-        - name: Package - Windows
-          if: runner.os == 'Windows'
-          shell: pwsh
-          working-directory: ${{github.workspace}}
-          run: Compress-Archive -Path .\* -DestinationPath package.zip
-          
-        - name: Package - MacOS and Linux
-          if: runner.os != 'Windows'
-          shell: bash
-          working-directory: ${{github.workspace}}
-          run: tar -zcvf package.tar.gz ./*
-    
-        - name: Upload - Windows
-          if: runner.os == 'Windows'
-          uses: actions/upload-release-asset@v1
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          with:
-            upload_url: ${{ needs.create-release.outputs.upload_url }}
-            asset_path: ./package.zip
-            asset_name: TuneLab-${{ matrix.runtime }}-${{ github.ref_name }}.zip
-            asset_content_type: application/zip
-    
-        # 因为还没有解决跨平台的问题所以这个先关掉掉，等跨平台完成了就可以去掉执行条件里的 false 一并发布 linux 和 osx 的版本了
-        - name: Upload - MacOS and Linux
-          if: runner.os != 'Windows' && false
-          uses: actions/upload-release-asset@v1
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          with:
-            upload_url: ${{ needs.create-release.outputs.upload_url }}
-            asset_path: ./package.tar.gz
-            asset_name: TuneLab-${{ matrix.runtime }}-${{ github.ref_name }}.tar.gz
-            asset_content_type: application/gzip
+      - name: Upload classic installer
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: TuneLab.Setup/bin/installer/TuneLab-Setup-classic-win-x64-v${{ steps.ver.outputs.version }}.exe
+          fail_on_unmatched_files: true
