@@ -65,6 +65,15 @@ cp CIUtils/linux/tunelab.xml "${NFPM_STAGE}/share/mime/packages/tunelab.xml"
 NFPM_STAGE_ABS="$(realpath "${NFPM_STAGE}")"
 OUT_ABS="$(realpath "${OUT_DIR}")"
 
+# nfpm 的 scripts 字段是**文件路径**（不是内联内容），先落两个脚本再引用。
+cat > "${NFPM_STAGE}/postinstall.sh" <<'SH'
+#!/bin/sh
+update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+SH
+cp "${NFPM_STAGE}/postinstall.sh" "${NFPM_STAGE}/postremove.sh"
+chmod +x "${NFPM_STAGE}/postinstall.sh" "${NFPM_STAGE}/postremove.sh"
+
 cat > "${OUT_DIR}/nfpm.yaml" <<YAML
 name: tunelab
 arch: ${NFPM_ARCH}
@@ -98,7 +107,7 @@ overrides:
       - glib2
       - gtk3
 contents:
-  - src: ${PAYLOAD_ABS}/
+  - src: ${PAYLOAD_ABS}
     dst: ${INSTALL_ROOT}
     type: tree
   - src: ${NFPM_STAGE_ABS}/share/applications/tunelab.desktop
@@ -111,14 +120,8 @@ contents:
     dst: /usr/bin/tunelab
     type: symlink
 scripts:
-  postinstall: |
-    #!/bin/sh
-    update-mime-database /usr/share/mime >/dev/null 2>&1 || true
-    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
-  postremove: |
-    #!/bin/sh
-    update-mime-database /usr/share/mime >/dev/null 2>&1 || true
-    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+  postinstall: ${NFPM_STAGE_ABS}/postinstall.sh
+  postremove: ${NFPM_STAGE_ABS}/postremove.sh
 YAML
 
 "${NFPM}" package -f "${OUT_DIR}/nfpm.yaml" -p deb -t "${OUT_DIR}/TuneLab-${RID}-v${VERSION}.deb"

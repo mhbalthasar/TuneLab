@@ -121,18 +121,3 @@ function IsUpdateMode: Boolean;
 begin
   Result := Pos('/DIR=', Uppercase(GetCmdTail)) > 0;
 end;
-
-// 旧版本的自研安装器留下的卸载项不会自动消失；升级时只覆盖文件，不重复写关联。
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if (CurStep = ssPostInstall) and IsUpdateMode then
-  begin
-    // 升级完成：让资源管理器的文件关联立即指向新路径（ProgID 的 command 已在 [Registry] 更新）。
-    RegisterAssociations;
-  end;
-end;
-
-procedure RegisterAssociations;
-begin
-  // 占位：关联由 [Registry] 落盘；这里留给将来需要 shell 通知的场景（SHChangeNotify）。
-end;

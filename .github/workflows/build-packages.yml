@@ -268,7 +268,7 @@ jobs:
         run: |
           chmod +x CIUtils/pack-macos.sh
           mkdir -p package
-          CIUtils/pack-macos.sh
+          PAYLOAD_DIR=workspace OUT_DIR=package CIUtils/pack-macos.sh
           ls -l package
 
       - name: Install nfpm
